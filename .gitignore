@@ -1,0 +1,16 @@
+# Virtual Environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Data and logs
+*.log
+data/
+datasets/
+
+# OS
+.DS_Store
