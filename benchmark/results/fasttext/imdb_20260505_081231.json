@@ -1,0 +1,42 @@
+{
+  "model_name": "fasttext",
+  "dataset_name": "imdb",
+  "tokenizer": "ngram",
+  "embedding_dim": 128,
+  "aggregation_method": "mean",
+  "attention_config": null,
+  "categorical_cols": [],
+  "train_size": 10000,
+  "test_size": 2000,
+  "test_accuracy": 0.847,
+  "test_f1_macro": 0.847,
+  "train_time_s": 169.3,
+  "timestamp": "2026-05-05T08:12:31.273401",
+  "classification_report": {
+    "negative": {
+      "precision": 0.8401960784313726,
+      "recall": 0.857,
+      "f1-score": 0.8485148514851485,
+      "support": 1000.0
+    },
+    "positive": {
+      "precision": 0.8540816326530613,
+      "recall": 0.837,
+      "f1-score": 0.8454545454545455,
+      "support": 1000.0
+    },
+    "accuracy": 0.847,
+    "macro avg": {
+      "precision": 0.8471388555422169,
+      "recall": 0.847,
+      "f1-score": 0.846984698469847,
+      "support": 2000.0
+    },
+    "weighted avg": {
+      "precision": 0.8471388555422169,
+      "recall": 0.847,
+      "f1-score": 0.846984698469847,
+      "support": 2000.0
+    }
+  }
+}

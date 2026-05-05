@@ -1,12 +1,11 @@
 """
-Build a summary (CSV + Markdown) from existing JSON result files.
+Build a summary (Markdown) from existing JSON result files.
 
 How to use:
-    uv run python summarize.py configs/fasttext.yaml
+    uv run summarize.py configs/fasttext.yaml
 """
 
 import argparse
-import csv
 import json
 
 import yaml
@@ -31,13 +30,6 @@ def build_summary(model_name: str):
         print("No results found.")
         return
 
-    # CSV
-    csv_path = result_dir / "summary.csv"
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=SUMMARY_COLS)
-        writer.writeheader()
-        writer.writerows(rows)
-
     # Markdown
     def fmt(v):
         return f"{v:.4f}" if isinstance(v, float) else str(v)
@@ -52,7 +44,6 @@ def build_summary(model_name: str):
     md_path = result_dir / "summary.md"
     md_path.write_text(f"# {model_name} — benchmark results\n\n" + "\n".join(lines) + "\n")
 
-    print(f"Summary saved → {csv_path}")
     print(f"Summary saved → {md_path}")
 
 

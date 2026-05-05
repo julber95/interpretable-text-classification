@@ -1,0 +1,48 @@
+{
+  "model_name": "wordpiece_transformer",
+  "dataset_name": "sst2",
+  "tokenizer": "wordpiece",
+  "embedding_dim": 128,
+  "aggregation_method": "mean",
+  "attention_config": {
+    "n_layers": 2,
+    "n_head": 4,
+    "n_kv_head": 4,
+    "positional_encoding": true,
+    "sequence_len": 128
+  },
+  "categorical_cols": [],
+  "train_size": 50000,
+  "test_size": 872,
+  "test_accuracy": 0.8154,
+  "test_f1_macro": 0.8152,
+  "train_time_s": 245.3,
+  "timestamp": "2026-05-05T09:49:44.926489",
+  "classification_report": {
+    "negative": {
+      "precision": 0.8201438848920863,
+      "recall": 0.7990654205607477,
+      "f1-score": 0.8094674556213017,
+      "support": 428.0
+    },
+    "positive": {
+      "precision": 0.810989010989011,
+      "recall": 0.831081081081081,
+      "f1-score": 0.8209121245828699,
+      "support": 444.0
+    },
+    "accuracy": 0.8153669724770642,
+    "macro avg": {
+      "precision": 0.8155664479405487,
+      "recall": 0.8150732508209144,
+      "f1-score": 0.8151897901020858,
+      "support": 872.0
+    },
+    "weighted avg": {
+      "precision": 0.8154824582717131,
+      "recall": 0.8153669724770642,
+      "f1-score": 0.8152947870650361,
+      "support": 872.0
+    }
+  }
+}

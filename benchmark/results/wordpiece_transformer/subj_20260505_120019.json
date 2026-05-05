@@ -1,0 +1,48 @@
+{
+  "model_name": "wordpiece_transformer",
+  "dataset_name": "subj",
+  "tokenizer": "wordpiece",
+  "embedding_dim": 128,
+  "aggregation_method": "mean",
+  "attention_config": {
+    "n_layers": 2,
+    "n_head": 4,
+    "n_kv_head": 4,
+    "positional_encoding": true,
+    "sequence_len": 128
+  },
+  "categorical_cols": [],
+  "train_size": 6000,
+  "test_size": 2000,
+  "test_accuracy": 0.879,
+  "test_f1_macro": 0.879,
+  "train_time_s": 35.8,
+  "timestamp": "2026-05-05T12:00:19.917954",
+  "classification_report": {
+    "objective": {
+      "precision": 0.9150052465897167,
+      "recall": 0.8441432720232332,
+      "f1-score": 0.878147029204431,
+      "support": 1033.0
+    },
+    "subjective": {
+      "precision": 0.8462273161413563,
+      "recall": 0.9162357807652534,
+      "f1-score": 0.8798411122144985,
+      "support": 967.0
+    },
+    "accuracy": 0.879,
+    "macro avg": {
+      "precision": 0.8806162813655365,
+      "recall": 0.8801895263942433,
+      "f1-score": 0.8789940707094648,
+      "support": 2000.0
+    },
+    "weighted avg": {
+      "precision": 0.8817511172179345,
+      "recall": 0.879,
+      "f1-score": 0.8789661183397987,
+      "support": 2000.0
+    }
+  }
+}

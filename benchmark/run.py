@@ -1,7 +1,7 @@
 """
 How to use:
 
-    python run.py <config> --dataset <dataset_name>
+    python run.py configs/<config_name.yaml> --dataset <dataset_name>
 
 Arguments:
     config          Path to a YAML model config file (e.g. configs/fasttext.yaml)
@@ -18,26 +18,28 @@ import argparse
 import json
 import logging
 import time
+
 import warnings
 from datetime import datetime
 from pathlib import Path
 
 import torch
 
-import datasets as _ds
 import numpy as np
 import yaml
 from datasets import load_dataset
 from sklearn.metrics import accuracy_score, classification_report, f1_score
+from sklearn.preprocessing import LabelEncoder as SKLabelEncoder
 
 from torchTextClassifiers import ModelConfig, TrainingConfig, torchTextClassifiers
 from torchTextClassifiers.tokenizers import NGramTokenizer
+from torchTextClassifiers.value_encoder import DictEncoder, ValueEncoder
 
+# Suppress noisy logs
 warnings.filterwarnings("ignore", category=UserWarning, module="pytorch_lightning")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 logging.getLogger("datasets").setLevel(logging.WARNING)
-_ds.disable_progress_bars()
 
 RESULTS_DIR = Path(__file__).parent / "results"
 
@@ -47,8 +49,9 @@ RESULTS_DIR = Path(__file__).parent / "results"
 def _make_X(texts, titles, cat_arrays):
     """Build the X array: text only (1D) or text + categorical features (2D)."""
     if titles is not None:
-        texts = [(t + " " + b) if t is not None else b for t, b in zip(titles, texts)]
+        texts = [(t + " " + b) if t is not None else b for t, b in zip(titles, texts)]  # prepend title to text
     if cat_arrays:
+        # Stack text + categorical columns: col 0 = text, cols 1+ = raw categorical values
         return np.column_stack([np.array(texts)] + [np.array(c) for c in cat_arrays])
     return np.array(texts)
 
@@ -58,57 +61,56 @@ def _make_y(labels, label_offset, oos_label=None):
 
 
 def load_data(dataset_cfg: dict, seed: int):
-    text_col   = dataset_cfg["text_col"]
-    title_col  = dataset_cfg.get("title_col")
-    label_col  = dataset_cfg["label_col"]
+    text_col     = dataset_cfg["text_col"]
+    title_col    = dataset_cfg.get("title_col")
+    label_col    = dataset_cfg["label_col"]
     label_offset = dataset_cfg.get("label_offset", 0)
     oos_label    = dataset_cfg.get("oos_label")
     cat_cols_cfg = dataset_cfg.get("categorical_cols", {})
-    cat_cols   = list(cat_cols_cfg.keys())
-    n_train    = dataset_cfg["train_size"]
-    n_val      = dataset_cfg["val_size"]
-    hf_config = dataset_cfg.get("hf_config")
+    cat_cols     = list(cat_cols_cfg.keys())
+    n_train      = dataset_cfg["train_size"]
+    n_val        = dataset_cfg["val_size"]
+    hf_config    = dataset_cfg.get("hf_config")
 
-    ds = load_dataset(dataset_cfg["hf_path"], hf_config) if hf_config else load_dataset(dataset_cfg["hf_path"])
-
-    # Encoders for string categoricals (vocab size unknown until we see the data)
-    cat_encoders = {}  # col -> {str_value: int}
-
-    def _encode_cat(col, vals):
-        if col in cat_encoders:
-            return np.array([cat_encoders[col].get(v, 0) for v in vals])  # string col: apply mapping, unknown values → 0
-        return np.array(vals).astype(int)  # numeric col: cast directly
-
-    def _build_encoders(col_values: dict):
-        """Build string→int encoders for cols with no known vocab size (None in config)."""
-        for col in cat_cols:
-            if cat_cols_cfg.get(col) is None:  # vocab size unknown → infer from training data
-                unique_vals = sorted(set(col_values[col]))  # collect unique values from train set
-                cat_encoders[col] = {v: i for i, v in enumerate(unique_vals)}  # build string→int mapping
-                dataset_cfg["categorical_cols"][col] = len(unique_vals)  # update vocab size in config for ModelConfig
+    ds = load_dataset(dataset_cfg["hf_path"], hf_config) if hf_config else load_dataset(dataset_cfg["hf_path"]) #Dataset Dict 
 
     train_split = dataset_cfg.get("train_split", "train")
     test_split  = dataset_cfg.get("test_split", "test")
     train_data  = ds[train_split].shuffle(seed=seed)
 
-    _build_encoders({col: train_data[col][:n_train] for col in cat_cols})
-
     def from_split(data, start, end):
+        """Extract a slice [start:end] from a HuggingFace Dataset split and return (X, y)."""
         texts  = data[text_col][start:end]
         titles = data[title_col][start:end] if title_col else None
         labels = _make_y(data[label_col][start:end], label_offset, oos_label)
-        cats   = [_encode_cat(col, data[col][start:end]) for col in cat_cols]
+        cats   = [data[col][start:end] for col in cat_cols]  # raw values, encoding handled by ValueEncoder
         return _make_X(texts, titles, cats), labels
 
     X_train, y_train = from_split(train_data, 0, n_train)
-    X_val, y_val = from_split(train_data, n_train, n_train + n_val)
+    X_val, y_val     = from_split(train_data, n_train, n_train + n_val)
 
     test_data = ds[test_split].shuffle(seed=seed)
     n_test    = dataset_cfg.get("test_size", len(test_data))
     X_test, y_test = from_split(test_data, 0, n_test)
 
+    # Build ValueEncoder for categorical columns with unknown vocab (string cols).
+    # Categorical cols with a known vocab size in the config are already integers — no encoder needed.
+    value_encoder = None
+    if cat_cols:
+        cat_train = X_train[:, 1:] if X_train.ndim > 1 else None
+        categorical_encoders = {}
+        for i, col in enumerate(cat_cols):
+            if cat_cols_cfg[col] is None:  # string col: build DictEncoder from training data
+                unique_vals = sorted(set(cat_train[:, i].tolist()))
+                categorical_encoders[str(i)] = DictEncoder({v: idx for idx, v in enumerate(unique_vals)})
+        label_enc = SKLabelEncoder().fit(y_train)
+        value_encoder = ValueEncoder(
+            label_encoder=label_enc,
+            categorical_encoders=categorical_encoders if categorical_encoders else None,
+        )
+
     print(f"Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
-    return X_train, y_train, X_val, y_val, X_test, y_test
+    return X_train, y_train, X_val, y_val, X_test, y_test, value_encoder
 
 
 # ── Tokenizer ─────────────────────────────────────────────────────────────────
@@ -171,25 +173,24 @@ def run(config_path: str, dataset_name: str):
     print(f"Model : {model_name} | Dataset : {dataset_name}")
     print(f"{'='*50}")
 
-    X_train, y_train, X_val, y_val, X_test, y_test = load_data(dataset_cfg, seed)
+    X_train, y_train, X_val, y_val, X_test, y_test, value_encoder = load_data(dataset_cfg, seed)
     num_classes = len(np.unique(y_train))
 
     tokenizer = build_tokenizer(cfg["tokenizer"], X_train)
 
-    # Categorical variables
     cat_cols_cfg = dataset_cfg.get("categorical_cols", {})
-    categorical_vocabulary_sizes = list(cat_cols_cfg.values()) if cat_cols_cfg else None
 
     m = cfg["model"]
     model_config = ModelConfig(
         embedding_dim=m["embedding_dim"],
         num_classes=num_classes,
         aggregation_method=m.get("aggregation_method", "mean"),
-        categorical_vocabulary_sizes=categorical_vocabulary_sizes,
+        # categorical_vocabulary_sizes is derived from value_encoder when provided
+        categorical_vocabulary_sizes=value_encoder.vocabulary_sizes if value_encoder else None,
         attention_config=m.get("attention_config"),
         n_heads_label_attention=m.get("n_heads_label_attention"),
     )
-    clf = torchTextClassifiers(tokenizer=tokenizer, model_config=model_config)
+    clf = torchTextClassifiers(tokenizer=tokenizer, model_config=model_config, value_encoder=value_encoder)
 
     t = cfg["training"]
     training_config = TrainingConfig(
@@ -198,8 +199,8 @@ def run(config_path: str, dataset_name: str):
         lr=t["lr"],
         patience_early_stopping=t.get("patience_early_stopping", 3),
         num_workers=t.get("num_workers", 0),
-        raw_labels=False,
-        raw_categorical_inputs=False,
+        raw_labels=False,                                    # labels are already integer-encoded by _make_y
+        raw_categorical_inputs=value_encoder is not None,   # True only if there are categorical cols to encode
         save_path=str(RESULTS_DIR / "models" / model_name / dataset_name),
     )
 
@@ -207,13 +208,17 @@ def run(config_path: str, dataset_name: str):
     clf.train(X_train, y_train, training_config=training_config, X_val=X_val, y_val=y_val)
     train_time = round(time.time() - t0, 1)
 
-    predict_batch_size = 512 #to avoid predicting every exemple at once --> OOM
+    # Predict in batches to avoid OOM (predicting all test examples at once can exceed GPU memory).
+    # predict_batch_size can be reduced per dataset in the config (e.g. for long texts like 20newsgroups).
+    predict_batch_size = dataset_cfg.get("predict_batch_size", 512)
     all_preds = []
     for i in range(0, len(X_test), predict_batch_size):
         batch = X_test[i:i + predict_batch_size]
-        result = clf.predict(batch, raw_categorical_inputs=False)
-        all_preds.append(result["prediction"].squeeze(dim=-1))
-    preds = torch.cat(all_preds).numpy()
+        result = clf.predict(batch, raw_categorical_inputs=value_encoder is not None)
+        pred = result["prediction"]
+        pred = pred.squeeze(dim=-1).numpy() if isinstance(pred, torch.Tensor) else np.array(pred).squeeze(axis=-1)
+        all_preds.append(pred)
+    preds = np.concatenate(all_preds)
 
     metrics = {
         "model_name": model_name,

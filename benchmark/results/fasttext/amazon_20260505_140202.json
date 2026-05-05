@@ -1,0 +1,62 @@
+{
+  "model_name": "fasttext",
+  "dataset_name": "amazon",
+  "tokenizer": "ngram",
+  "embedding_dim": 128,
+  "aggregation_method": "mean",
+  "attention_config": null,
+  "categorical_cols": [
+    "product_category"
+  ],
+  "train_size": 10000,
+  "test_size": 2000,
+  "test_accuracy": 0.509,
+  "test_f1_macro": 0.5067,
+  "train_time_s": 432.3,
+  "timestamp": "2026-05-05T14:02:02.322728",
+  "classification_report": {
+    "1star": {
+      "precision": 0.6330049261083743,
+      "recall": 0.6658031088082902,
+      "f1-score": 0.648989898989899,
+      "support": 386.0
+    },
+    "2stars": {
+      "precision": 0.38317757009345793,
+      "recall": 0.3178294573643411,
+      "f1-score": 0.3474576271186441,
+      "support": 387.0
+    },
+    "3stars": {
+      "precision": 0.38181818181818183,
+      "recall": 0.41895261845386533,
+      "f1-score": 0.3995243757431629,
+      "support": 401.0
+    },
+    "4stars": {
+      "precision": 0.46275395033860045,
+      "recall": 0.5036855036855037,
+      "f1-score": 0.4823529411764706,
+      "support": 407.0
+    },
+    "5stars": {
+      "precision": 0.6794871794871795,
+      "recall": 0.6324582338902148,
+      "f1-score": 0.6551297898640297,
+      "support": 419.0
+    },
+    "accuracy": 0.509,
+    "macro avg": {
+      "precision": 0.5080483615691588,
+      "recall": 0.5077457844404429,
+      "f1-score": 0.5066909265784413,
+      "support": 2000.0
+    },
+    "weighted avg": {
+      "precision": 0.5093923490030151,
+      "recall": 0.509,
+      "f1-score": 0.5080012531949383,
+      "support": 2000.0
+    }
+  }
+}

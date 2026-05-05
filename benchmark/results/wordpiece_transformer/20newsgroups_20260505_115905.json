@@ -1,0 +1,156 @@
+{
+  "model_name": "wordpiece_transformer",
+  "dataset_name": "20newsgroups",
+  "tokenizer": "wordpiece",
+  "embedding_dim": 128,
+  "aggregation_method": "mean",
+  "attention_config": {
+    "n_layers": 2,
+    "n_head": 4,
+    "n_kv_head": 4,
+    "positional_encoding": true,
+    "sequence_len": 128
+  },
+  "categorical_cols": [],
+  "train_size": 9000,
+  "test_size": 5000,
+  "test_accuracy": 0.4574,
+  "test_f1_macro": 0.451,
+  "train_time_s": 142.2,
+  "timestamp": "2026-05-05T11:59:05.743965",
+  "classification_report": {
+    "alt.atheism": {
+      "precision": 0.21597633136094674,
+      "recall": 0.35784313725490197,
+      "f1-score": 0.2693726937269373,
+      "support": 204.0
+    },
+    "comp.graphics": {
+      "precision": 0.3883495145631068,
+      "recall": 0.45977011494252873,
+      "f1-score": 0.42105263157894735,
+      "support": 261.0
+    },
+    "comp.os.ms-windows.misc": {
+      "precision": 0.583710407239819,
+      "recall": 0.4708029197080292,
+      "f1-score": 0.5212121212121212,
+      "support": 274.0
+    },
+    "comp.sys.ibm.pc.hardware": {
+      "precision": 0.5869565217391305,
+      "recall": 0.432,
+      "f1-score": 0.4976958525345622,
+      "support": 250.0
+    },
+    "comp.sys.mac.hardware": {
+      "precision": 0.3796095444685466,
+      "recall": 0.6481481481481481,
+      "f1-score": 0.478796169630643,
+      "support": 270.0
+    },
+    "comp.windows.x": {
+      "precision": 0.7105263157894737,
+      "recall": 0.5152671755725191,
+      "f1-score": 0.5973451327433629,
+      "support": 262.0
+    },
+    "misc.forsale": {
+      "precision": 0.6071428571428571,
+      "recall": 0.684981684981685,
+      "f1-score": 0.6437177280550774,
+      "support": 273.0
+    },
+    "rec.autos": {
+      "precision": 0.48058252427184467,
+      "recall": 0.40408163265306124,
+      "f1-score": 0.43902439024390244,
+      "support": 245.0
+    },
+    "rec.motorcycles": {
+      "precision": 0.562753036437247,
+      "recall": 0.5265151515151515,
+      "f1-score": 0.5440313111545988,
+      "support": 264.0
+    },
+    "rec.sport.baseball": {
+      "precision": 0.6180904522613065,
+      "recall": 0.458955223880597,
+      "f1-score": 0.5267665952890792,
+      "support": 268.0
+    },
+    "rec.sport.hockey": {
+      "precision": 0.6445993031358885,
+      "recall": 0.6954887218045113,
+      "f1-score": 0.6690777576853526,
+      "support": 266.0
+    },
+    "sci.crypt": {
+      "precision": 0.49477351916376305,
+      "recall": 0.5318352059925093,
+      "f1-score": 0.5126353790613718,
+      "support": 267.0
+    },
+    "sci.electronics": {
+      "precision": 0.37735849056603776,
+      "recall": 0.3053435114503817,
+      "f1-score": 0.33755274261603374,
+      "support": 262.0
+    },
+    "sci.med": {
+      "precision": 0.6296296296296297,
+      "recall": 0.3244274809160305,
+      "f1-score": 0.4282115869017632,
+      "support": 262.0
+    },
+    "sci.space": {
+      "precision": 0.48638132295719844,
+      "recall": 0.48828125,
+      "f1-score": 0.4873294346978557,
+      "support": 256.0
+    },
+    "soc.religion.christian": {
+      "precision": 0.5561224489795918,
+      "recall": 0.40671641791044777,
+      "f1-score": 0.4698275862068966,
+      "support": 268.0
+    },
+    "talk.politics.guns": {
+      "precision": 0.2394736842105263,
+      "recall": 0.37916666666666665,
+      "f1-score": 0.29354838709677417,
+      "support": 240.0
+    },
+    "talk.politics.mideast": {
+      "precision": 0.5833333333333334,
+      "recall": 0.45714285714285713,
+      "f1-score": 0.5125858123569794,
+      "support": 245.0
+    },
+    "talk.politics.misc": {
+      "precision": 0.23204419889502761,
+      "recall": 0.21,
+      "f1-score": 0.2204724409448819,
+      "support": 200.0
+    },
+    "talk.religion.misc": {
+      "precision": 0.13333333333333333,
+      "recall": 0.17177914110429449,
+      "f1-score": 0.15013404825737264,
+      "support": 163.0
+    },
+    "accuracy": 0.4574,
+    "macro avg": {
+      "precision": 0.4755373384739304,
+      "recall": 0.4464273220822162,
+      "f1-score": 0.45101949009972564,
+      "support": 5000.0
+    },
+    "weighted avg": {
+      "precision": 0.48958804013355045,
+      "recall": 0.4574,
+      "f1-score": 0.4633412115594685,
+      "support": 5000.0
+    }
+  }
+}

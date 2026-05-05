@@ -1,0 +1,42 @@
+{
+  "model_name": "fasttext",
+  "dataset_name": "subj",
+  "tokenizer": "ngram",
+  "embedding_dim": 128,
+  "aggregation_method": "mean",
+  "attention_config": null,
+  "categorical_cols": [],
+  "train_size": 8000,
+  "test_size": 2000,
+  "test_accuracy": 0.8985,
+  "test_f1_macro": 0.8984,
+  "train_time_s": 62.6,
+  "timestamp": "2026-05-05T08:54:17.330946",
+  "classification_report": {
+    "objective": {
+      "precision": 0.9021317829457365,
+      "recall": 0.9012584704743466,
+      "f1-score": 0.9016949152542373,
+      "support": 1033.0
+    },
+    "subjective": {
+      "precision": 0.8946280991735537,
+      "recall": 0.8955532574974147,
+      "f1-score": 0.8950904392764858,
+      "support": 967.0
+    },
+    "accuracy": 0.8985,
+    "macro avg": {
+      "precision": 0.8983799410596451,
+      "recall": 0.8984058639858806,
+      "f1-score": 0.8983926772653615,
+      "support": 2000.0
+    },
+    "weighted avg": {
+      "precision": 0.898503751841886,
+      "recall": 0.8985,
+      "f1-score": 0.8985016511189945,
+      "support": 2000.0
+    }
+  }
+}

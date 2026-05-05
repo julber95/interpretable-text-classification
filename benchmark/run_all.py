@@ -4,9 +4,12 @@ How to use:
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import yaml
+
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 from run import run
 

@@ -8,9 +8,22 @@ dependencies = [
     "datasets>=4.8.5",
     "scikit-learn>=1.8.0",
     "tokenizers>=0.22.2",
+    "torch",
+    "torchvision",
     "torchtextclassifiers[huggingface]",
     "transformers>=5.6.2",
 ]
 
 [tool.uv.sources]
 torchtextclassifiers = { git = "https://github.com/InseeFrLab/torchTextClassifiers.git" }
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
