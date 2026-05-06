@@ -68,15 +68,18 @@ def load_data(dataset_cfg: dict, seed: int):
     oos_label    = dataset_cfg.get("oos_label")
     cat_cols_cfg = dataset_cfg.get("categorical_cols", {})
     cat_cols     = list(cat_cols_cfg.keys())
-    n_train      = dataset_cfg["train_size"]
+    n_train      = dataset_cfg.get("train_size")  # None = take all available data minus val
     n_val        = dataset_cfg["val_size"]
     hf_config    = dataset_cfg.get("hf_config")
 
-    ds = load_dataset(dataset_cfg["hf_path"], hf_config) if hf_config else load_dataset(dataset_cfg["hf_path"]) #Dataset Dict 
+    ds = load_dataset(dataset_cfg["hf_path"], hf_config) if hf_config else load_dataset(dataset_cfg["hf_path"]) #Dataset Dict
 
     train_split = dataset_cfg.get("train_split", "train")
     test_split  = dataset_cfg.get("test_split", "test")
     train_data  = ds[train_split].shuffle(seed=seed)
+
+    if n_train is None:
+        n_train = len(train_data) - n_val
 
     def from_split(data, start, end):
         """Extract a slice [start:end] from a HuggingFace Dataset split and return (X, y)."""

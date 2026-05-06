@@ -8,7 +8,6 @@ datasets:
     class_names: [negative, positive]
     train_split: train
     test_split: validation  # test split has no labels in GLUE
-    train_size: 65349
     val_size: 2000
 
   imdb:  # sentiment | long texts | 2 classes
@@ -18,9 +17,7 @@ datasets:
     class_names: [negative, positive]
     train_split: train
     test_split: test
-    train_size: 23000
     val_size: 2000
-    test_size: 25000
 
   amazon:  # sentiment | medium texts | 5 classes | categorical (product category)
     hf_path: goosmanlei/amazon_reviews_multi
@@ -31,9 +28,7 @@ datasets:
     class_names: ["1star", "2stars", "3stars", "4stars", "5stars"]
     train_split: train
     test_split: test
-    train_size: 198000
     val_size: 2000
-    test_size: 5000
     hf_config: en
     categorical_cols:
       product_category: null  # vocab size inferred from training data
@@ -45,9 +40,7 @@ datasets:
     class_names: [World, Sports, Business, Sci/Tech]
     train_split: train
     test_split: test
-    train_size: 118000
     val_size: 2000
-    test_size: 7600
 
   20newsgroups:  # topic | very long texts | 20 classes
     hf_path: SetFit/20_newsgroups
@@ -60,9 +53,7 @@ datasets:
                   talk.politics.misc, talk.religion.misc]
     train_split: train
     test_split: test
-    train_size: 10314
     val_size: 1000
-    test_size: 7532
     predict_batch_size: 64
 
   subj:  # subjectivity | short texts | 2 classes | small dataset
@@ -72,9 +63,7 @@ datasets:
     class_names: [objective, subjective]
     train_split: train
     test_split: test
-    train_size: 6000
     val_size: 2000
-    test_size: 2000
 
   clinc150:  # intent detection | short texts | 150 classes + out-of-scope
     hf_path: DeepPavlov/clinc150
@@ -82,16 +71,14 @@ datasets:
     label_col: label
     train_split: train
     test_split: test
-    train_size: 13200
     val_size: 2000
-    test_size: 5500
     oos_label: 150
 
 tokenizer:
   type: ngram
   min_count: 1
-  min_n: 3
-  max_n: 6
+  min_n: 2
+  max_n: 4
   num_tokens: 100000
   len_word_ngrams: 1
 
@@ -100,9 +87,9 @@ model:
   aggregation_method: mean
 
 training:
-  num_epochs: 30
-  batch_size: 32
-  lr: 0.001
+  num_epochs: 20
+  batch_size: 128
+  lr: 0.0001
   patience_early_stopping: 3
   num_workers: 0
 

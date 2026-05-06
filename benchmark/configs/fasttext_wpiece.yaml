@@ -1,4 +1,4 @@
-model_name: wordpiece_transformer
+model_name: fasttext_wpiece
 
 datasets:
   sst2:  # sentiment | short texts | 2 classes
@@ -31,7 +31,7 @@ datasets:
     val_size: 2000
     hf_config: en
     categorical_cols:
-      product_category: null
+      product_category: null  # vocab size inferred from training data
 
   ag_news:  # topic | short texts | 4 classes
     hf_path: fancyzhx/ag_news
@@ -54,6 +54,7 @@ datasets:
     train_split: train
     test_split: test
     val_size: 1000
+    predict_batch_size: 64
 
   subj:  # subjectivity | short texts | 2 classes | small dataset
     hf_path: SetFit/subj
@@ -81,16 +82,10 @@ tokenizer:
 model:
   embedding_dim: 128
   aggregation_method: mean
-  attention_config:
-    n_layers: 2
-    n_head: 4
-    n_kv_head: 4
-    positional_encoding: true
-    sequence_len: 128
 
 training:
-  num_epochs: 10
-  batch_size: 64
+  num_epochs: 30
+  batch_size: 32
   lr: 0.001
   patience_early_stopping: 3
   num_workers: 0

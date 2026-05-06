@@ -2,10 +2,11 @@
 Randomized hyperparameter search for fasttext on AG News.
 
 How to use:
-    uv run grid_search.py configs/fasttext.yaml
+    uv run randomized_search.py configs/fasttext.yaml
 
-Results are saved as JSON under benchmark/results/<model_name>/grid_search.json.
+Results are saved as JSON under benchmark/results/<model_name>/randomized.json.
 """
+# embedding_dim = 64, lr = 0.0001, batch_size = 128, num_tokens = 100000, n_gram = (2,4) val_f1_macro : 0.9096
 
 import argparse
 import copy
@@ -126,7 +127,7 @@ def random_search(config_path: str, seed: int = 42):
     print(f"\nBest params: {best_params} → val_f1_macro={best_f1}")
 
     out = {"best_params": best_params, "best_val_f1_macro": best_f1, "all_results": results}
-    out_path = RESULTS_DIR / model_name / "grid_search.json"
+    out_path = RESULTS_DIR / model_name / "randomized.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
