@@ -1,7 +1,7 @@
 """
 How to use:
 
-    uv run.py configs/<config_name.yaml> --dataset <dataset_name>
+    uv run run.py configs/<config_name.yaml> --dataset <dataset_name>
 
 Arguments:
     config          Path to a YAML model config file (e.g. configs/fasttext.yaml)
@@ -225,9 +225,9 @@ def run(config_path: str, dataset_name: str):
             tracking_uri=tracking_uri or "mlruns",
             run_id=mlflow.active_run().info.run_id,
         )
-        # Log once per epoch to avoid per-step HTTP calls to the MLflow server
-        n_steps_per_epoch = len(X_train) // t["batch_size"]
-        training_config.trainer_params = {"logger": mlf_logger, "log_every_n_steps": n_steps_per_epoch}
+
+        steps_per_epoch = max(1, len(X_train) // t["batch_size"])  # log once per epoch
+        training_config.trainer_params = {"logger": mlf_logger, "log_every_n_steps": steps_per_epoch}
 
         t0 = time.time()
         clf.train(X_train, y_train, training_config=training_config, X_val=X_val, y_val=y_val)
