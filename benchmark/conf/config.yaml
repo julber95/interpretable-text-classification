@@ -1,0 +1,16 @@
+defaults:
+  - dataset: ag_news
+  - tokenizer: ngram
+  - model: default
+  - training: default
+  - _self_
+
+seed: 42
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    root:
+      level: WARNING
