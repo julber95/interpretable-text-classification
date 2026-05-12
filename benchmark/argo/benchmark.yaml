@@ -1,35 +1,48 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
+  # Argo generates a unique name for each submission: benchmark-xxxxx
   generateName: benchmark-
 spec:
+  # Entry point — Argo starts here
   entrypoint: main-dag
   templates:
 
+    # ── DAG: defines which tasks to run and in what order ─────────────────────
     - name: main-dag
       dag:
         tasks:
-          - name: train
-            template: trainer
+          - name: train-cpu
+            # Calls the "trainer-cpu" template for each item in withItems
+            template: trainer-cpu
             arguments:
               parameters:
                 - name: tokenizer
                   value: "{{item.tokenizer}}"
                 - name: label_attn_sweep
                   value: "{{item.label_attn_sweep}}"
+                - name: n_layers
+                  value: "{{item.n_layers}}"
+            # Argo creates 1 pod per item, all launched in parallel
             withItems:
-              # n_layers=0 → label attention impossible, sweep sans label attn
-              - { tokenizer: "ngram",     label_attn_sweep: "null" }
-              - { tokenizer: "wordpiece", label_attn_sweep: "null" }
-              # n_layers>0 → sweep avec et sans label attn
-              - { tokenizer: "ngram",     label_attn_sweep: "null,4" }
-              - { tokenizer: "wordpiece", label_attn_sweep: "null,4" }
+              # n_layers=0 → label attention not possible, sweep without it
+              - { tokenizer: "ngram",     label_attn_sweep: "null",   n_layers: "0" }
+              - { tokenizer: "wordpiece", label_attn_sweep: "null",   n_layers: "0" }
+              # n_layers=1 → sweep with and without label attention
+              - { tokenizer: "ngram",     label_attn_sweep: "null,4", n_layers: "1" }
+              - { tokenizer: "wordpiece", label_attn_sweep: "null,4", n_layers: "1" }
 
-    - name: trainer
+          # GPU pod: handles the heaviest configs (n_layers=2)
+          - name: train-gpu
+            template: trainer-gpu
+
+    # ── CPU Trainer template ───────────────────────────────────────────────────
+    - name: trainer-cpu
       inputs:
         parameters:
           - name: tokenizer
           - name: label_attn_sweep
+          - name: n_layers
       script:
         image: "inseefrlab/onyxia-vscode-pytorch:py3.13.5"
         imagePullPolicy: Always
@@ -39,29 +52,22 @@ spec:
           git clone -b main https://github.com/julber95/insee_internship.git
           cd insee_internship
 
-          # Determine n_layers sweep based on whether label attention is used
-          if [ "{{inputs.parameters.label_attn_sweep}}" = "null" ]; then
-            LAYERS="0"
-          else
-            LAYERS="1,2"
-          fi
-
           uv run python -m benchmark.run \
             dataset=ag_news \
             tokenizer={{inputs.parameters.tokenizer}} \
             model.embedding_dim=64,128,256 \
-            model.n_layers=$LAYERS \
+            model.n_layers={{inputs.parameters.n_layers}} \
             model.n_heads_label_attention={{inputs.parameters.label_attn_sweep}} \
             training.lr=0.0001,0.001 \
             -m
         resources:
           limits:
             cpu: "4000m"
-            memory: "16Gi"
+            memory: "32Gi"
           requests:
             cpu: "2000m"
-            memory: "8Gi"
-        env:
+            memory: "16Gi"
+        env: &common-env
           - name: MLFLOW_TRACKING_URI
             valueFrom: { secretKeyRef: { name: vscode-pytorch-gpu-107767-secretmlflow, key: MLFLOW_TRACKING_URI } }
           - name: MLFLOW_TRACKING_USERNAME
@@ -72,3 +78,34 @@ spec:
             valueFrom: { secretKeyRef: { name: vscode-pytorch-gpu-107767-secretmlflow, key: MLFLOW_S3_ENDPOINT_URL } }
           - name: MLFLOW_HTTP_REQUEST_TIMEOUT
             value: "1800"
+
+    # ── GPU Trainer template: n_layers=2 (heaviest configs) ───────────────────
+    - name: trainer-gpu
+      script:
+        image: "inseefrlab/onyxia-vscode-pytorch:py3.13.12-gpu"
+        imagePullPolicy: Always
+        command: ["/bin/bash"]
+        source: |
+          set -e
+          git clone -b main https://github.com/julber95/insee_internship.git
+          cd insee_internship
+
+          # n_layers=2, both tokenizers, all embedding dims, lr, label attention
+          uv run python -m benchmark.run \
+            dataset=ag_news \
+            tokenizer=ngram,wordpiece \
+            model.embedding_dim=64,128,256 \
+            model.n_layers=2 \
+            model.n_heads_label_attention=null,4 \
+            training.lr=0.0001,0.001 \
+            -m
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            cpu: "4000m"
+            memory: "32Gi"
+          requests:
+            nvidia.com/gpu: "1"
+            cpu: "2000m"
+            memory: "16Gi"
+        env: *common-env

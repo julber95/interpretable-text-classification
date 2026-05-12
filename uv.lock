@@ -2632,7 +2632,7 @@ wheels = [
 [[package]]
 name = "torchtextclassifiers"
 version = "0.0.0.dev0"
-source = { git = "https://github.com/InseeFrLab/torchTextClassifiers.git#77fc5bb022f5e54f7ba3b3a626bedcec5b46893c" }
+source = { git = "https://github.com/InseeFrLab/torchTextClassifiers.git#9a8b215dde66d6d549f4e479899edbb7c287fc12" }
 dependencies = [
     { name = "numpy" },
     { name = "pytorch-lightning" },
