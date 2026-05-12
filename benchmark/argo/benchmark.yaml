@@ -6,51 +6,34 @@ metadata:
 spec:
   # Entry point — Argo starts here
   entrypoint: main-dag
+  serviceAccountName: argo-workflows
   templates:
 
     # ── DAG: defines which tasks to run and in what order ─────────────────────
     - name: main-dag
       dag:
         tasks:
+          # CPU pod: n_layers=0, no label attention
           - name: train-cpu
-            # Calls the "trainer-cpu" template for each item in withItems
             template: trainer-cpu
+
+          # GPU pod 1: n_layers=1, both tokenizers
+          - name: train-gpu-1layer
+            template: trainer-gpu
             arguments:
               parameters:
-                - name: tokenizer
-                  value: "{{item.tokenizer}}"
-                - name: label_attn_sweep
-                  value: "{{item.label_attn_sweep}}"
                 - name: n_layers
-                  value: "{{item.n_layers}}"
-            # Argo creates 1 pod per item, all launched in parallel
-            withItems:
-              # n_layers=0 → label attention not possible, sweep without it
-              - { tokenizer: "ngram",     label_attn_sweep: "null",   n_layers: "0" }
-              - { tokenizer: "wordpiece", label_attn_sweep: "null",   n_layers: "0" }
-
-
-          # GPU pods: handle the heaviest configs (n_layers=1,2)
-          - name: train-gpu-ngram
+                  value: "1"
+          # GPU pod 2: n_layers=2, both tokenizers
+          - name: train-gpu-2layers
             template: trainer-gpu
             arguments:
               parameters:
-                - name: tokenizer
-                  value: "ngram"
-          - name: train-gpu-wordpiece
-            template: trainer-gpu
-            arguments:
-              parameters:
-                - name: tokenizer
-                  value: "wordpiece"
+                - name: n_layers
+                  value: "2"
 
-    # ── CPU Trainer template ───────────────────────────────────────────────────
+    # ── CPU Trainer template: n_layers=0 ─────────────────────────────────────
     - name: trainer-cpu
-      inputs:
-        parameters:
-          - name: tokenizer
-          - name: label_attn_sweep
-          - name: n_layers
       script:
         image: "inseefrlab/onyxia-vscode-pytorch:py3.13.5"
         imagePullPolicy: Always
@@ -61,11 +44,11 @@ spec:
           cd insee_internship
 
           uv run python -m benchmark.run \
-            dataset=ag_news \
-            tokenizer={{inputs.parameters.tokenizer}} \
+            dataset=subj \
+            tokenizer=ngram,wordpiece \
             model.embedding_dim=64,128,256 \
-            model.n_layers={{inputs.parameters.n_layers}} \
-            model.n_heads_label_attention={{inputs.parameters.label_attn_sweep}} \
+            model.n_layers=0 \
+            model.n_heads_label_attention=null \
             -m
         resources:
           limits:
@@ -86,11 +69,11 @@ spec:
           - name: MLFLOW_HTTP_REQUEST_TIMEOUT
             value: "1800"
 
-    # ── GPU Trainer template: n_layers=1,2 (heaviest configs) ────────────────
+    # ── GPU Trainer template: n_layers=1,2 ───────────────────────────────────
     - name: trainer-gpu
       inputs:
         parameters:
-          - name: tokenizer
+          - name: n_layers
       script:
         image: "inseefrlab/onyxia-vscode-pytorch:py3.13.12-gpu"
         imagePullPolicy: Always
@@ -99,13 +82,12 @@ spec:
           set -e
           git clone -b main https://github.com/julber95/insee_internship.git
           cd insee_internship
-    
-          # n_layers=1,2, both tokenizers, all embedding dims, lr, label attention
+
           uv run python -m benchmark.run \
             dataset=subj \
-            tokenizer={{inputs.parameters.tokenizer}} \
+            tokenizer=ngram,wordpiece \
             model.embedding_dim=64,128,256 \
-            model.n_layers=1,2 \
+            model.n_layers={{inputs.parameters.n_layers}} \
             model.n_heads_label_attention=null,4 \
             -m
         resources:
