@@ -13,67 +13,39 @@ spec:
     - name: main-dag
       dag:
         tasks:
-          # CPU pod: n_layers=0, no label attention
-          - name: train-cpu
-            template: trainer-cpu
-
-          # GPU pod 1: n_layers=1, both tokenizers
-          - name: train-gpu-1layer
+          - name: train-gpu-1
             template: trainer-gpu
             arguments:
               parameters:
-                - name: n_layers
-                  value: "1"
-          # GPU pod 2: n_layers=2, both tokenizers
-          - name: train-gpu-2layers
+                - name: emb_dims
+                  value: "32"
+
+          - name: train-gpu-2
             template: trainer-gpu
             arguments:
               parameters:
-                - name: n_layers
-                  value: "2"
+                - name: emb_dims
+                  value: "64"
 
-    # ── CPU Trainer template: n_layers=0 ─────────────────────────────────────
-    - name: trainer-cpu
-      script:
-        image: "inseefrlab/onyxia-vscode-pytorch:py3.13.5"
-        imagePullPolicy: Always
-        command: ["/bin/bash"]
-        source: |
-          set -e
-          git clone -b main https://github.com/julber95/insee_internship.git
-          cd insee_internship
+          - name: train-gpu-3
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dims
+                  value: "128"
 
-          uv run python -m benchmark.run \
-            dataset=subj \
-            tokenizer=ngram,wordpiece \
-            model.embedding_dim=64,128,256 \
-            model.n_layers=0 \
-            model.n_heads_label_attention=null \
-            -m
-        resources:
-          limits:
-            cpu: "4000m"
-            memory: "32Gi"
-          requests:
-            cpu: "2000m"
-            memory: "16Gi"
-        env: &common-env
-          - name: MLFLOW_TRACKING_URI
-            valueFrom: { secretKeyRef: { name: vscode-pytorch-gpu-107767-secretmlflow, key: MLFLOW_TRACKING_URI } }
-          - name: MLFLOW_TRACKING_USERNAME
-            valueFrom: { secretKeyRef: { name: vscode-pytorch-gpu-107767-secretmlflow, key: MLFLOW_TRACKING_USERNAME } }
-          - name: MLFLOW_TRACKING_PASSWORD
-            valueFrom: { secretKeyRef: { name: vscode-pytorch-gpu-107767-secretmlflow, key: MLFLOW_TRACKING_PASSWORD } }
-          - name: MLFLOW_S3_ENDPOINT_URL
-            valueFrom: { secretKeyRef: { name: vscode-pytorch-gpu-107767-secretmlflow, key: MLFLOW_S3_ENDPOINT_URL } }
-          - name: MLFLOW_HTTP_REQUEST_TIMEOUT
-            value: "1800"
+          - name: train-gpu-4
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dims
+                  value: "256"
 
-    # ── GPU Trainer template: n_layers=1,2 ───────────────────────────────────
+    # ── GPU Trainer template ──────────────────────────────────────────────────
     - name: trainer-gpu
       inputs:
         parameters:
-          - name: n_layers
+          - name: emb_dims
       script:
         image: "inseefrlab/onyxia-vscode-pytorch:py3.13.12-gpu"
         imagePullPolicy: Always
@@ -83,20 +55,44 @@ spec:
           git clone -b main https://github.com/julber95/insee_internship.git
           cd insee_internship
 
+          # n_layers=0: no label attention
           uv run python -m benchmark.run \
-            dataset=subj \
+            dataset=imdb \
             tokenizer=ngram,wordpiece \
-            model.embedding_dim=64,128,256 \
-            model.n_layers={{inputs.parameters.n_layers}} \
+            model.embedding_dim={{inputs.parameters.emb_dims}} \
+            model.n_layers=0 \
+            model.n_heads_label_attention=null \
+            training.batch_size=32 \
+            tokenizer.num_tokens=50000 \
+            -m
+
+          # n_layers=1,2: with or without label attention
+          uv run python -m benchmark.run \
+            dataset=imdb \
+            tokenizer=ngram,wordpiece \
+            model.embedding_dim={{inputs.parameters.emb_dims}} \
+            model.n_layers=1,2 \
             model.n_heads_label_attention=null,4 \
+            training.batch_size=32 \
+            tokenizer.num_tokens=50000 \
             -m
         resources:
           limits:
             nvidia.com/gpu: "1"
             cpu: "4000m"
-            memory: "32Gi"
+            memory: "72Gi"
           requests:
             nvidia.com/gpu: "1"
             cpu: "2000m"
-            memory: "16Gi"
-        env: *common-env
+            memory: "36Gi"
+        env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-321556-secretmlflow, key: MLFLOW_TRACKING_URI } }
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-321556-secretmlflow, key: MLFLOW_TRACKING_USERNAME } }
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-321556-secretmlflow, key: MLFLOW_TRACKING_PASSWORD } }
+          - name: MLFLOW_S3_ENDPOINT_URL
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-321556-secretmlflow, key: MLFLOW_S3_ENDPOINT_URL } }
+          - name: MLFLOW_HTTP_REQUEST_TIMEOUT
+            value: "1800"

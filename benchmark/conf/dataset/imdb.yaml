@@ -5,3 +5,4 @@ label_col: label
 train_split: train
 test_split: test
 val_size: 2000
+test_size: 5000
