@@ -2,5 +2,5 @@ type: ngram
 min_count: 1
 min_n: 2
 max_n: 4
-num_tokens: 100000
+num_tokens: 50000
 len_word_ngrams: 1

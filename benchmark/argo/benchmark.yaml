@@ -63,7 +63,6 @@ spec:
             model.n_layers=0 \
             model.n_heads_label_attention=null \
             training.batch_size=32 \
-            tokenizer.num_tokens=50000 \
             -m
 
           # n_layers=1,2: with or without label attention
@@ -74,7 +73,6 @@ spec:
             model.n_layers=1,2 \
             model.n_heads_label_attention=null,4 \
             training.batch_size=32 \
-            tokenizer.num_tokens=50000 \
             -m
         resources:
           limits:
