@@ -144,8 +144,21 @@ def build_tokenizer(tok_cfg: dict, X_train: np.ndarray):
 # Hydra assembles the config from conf/config.yaml (which pulls in conf/dataset/, conf/model/, etc.)
 # and passes it as `cfg`. CLI overrides like `model.embedding_dim=128` are applied on top.
 # Example: uv run run.py dataset=sst2 model.embedding_dim=128 model.n_layers=2
+def _resolve_accelerator() -> str:
+    """Test actual CUDA init — is_available() can return True even when init fails."""
+    if torch.cuda.is_available():
+        try:
+            torch.zeros(1).cuda()
+            return "cuda"
+        except RuntimeError:
+            pass
+    return "cpu"
+
+
 @hydra.main(config_path="conf", config_name="config", version_base=None)
 def main(cfg: DictConfig):
+    accelerator = _resolve_accelerator()
+
     # cfg.dataset and cfg.tokenizer are DictConfig objects — convert to plain dicts
     # so they work with load_data() and build_tokenizer() which expect dict.get(), etc.
     dataset_cfg = OmegaConf.to_container(cfg.dataset, resolve=True)
@@ -206,6 +219,7 @@ def main(cfg: DictConfig):
         lr=t.lr,
         patience_early_stopping=t.patience_early_stopping,
         num_workers=t.num_workers,
+        accelerator=accelerator,
         raw_labels=False,
         raw_categorical_inputs=value_encoder is not None,
         save_path=save_path,
