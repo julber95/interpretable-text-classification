@@ -27,11 +27,11 @@ jobs:
       - uses: quarto-dev/quarto-actions/setup@v2
 
       - name: Render Quarto
-        run: uv run quarto render trying_quarto.qmd --to html
+        run: uv run quarto render trying_quarto.qmd --to html --output-dir _site
 
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: _site
 
       - uses: actions/deploy-pages@v4
         id: deployment
