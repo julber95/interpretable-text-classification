@@ -1,0 +1,92 @@
+---
+title: "Benchmarking TorchTextClassifiers at INSEE"
+author: "Julien Bernardi"
+date: today
+format:
+  html:
+    toc: true
+    number-sections: true
+    theme: cosmo
+    embed-resources: false
+lang: en
+execute:
+  python: .venv/bin/python
+keep-ipynb: false
+---
+
+## Introduction
+
+This report presents the work carried out during an internship at **INSEE** (Institut national de la statistique et des études économiques), France's national statistics institute.
+
+The internship focuses on **text classification**, a core natural language processing (NLP) task that consists in assigning a predefined category to a piece of text. At INSEE, this capability is relevant for automatically coding responses to surveys, classifying job descriptions, or categorizing free-text fields in administrative data.
+
+## Motivation
+
+Large language models (LLMs) achieve strong performance on text classification, but they come with significant computational costs. In a production environment processing millions of records, lighter and faster alternatives are desirable.
+
+This internship investigates whether **lightweight neural architectures** — such as FastText-style mean-pooling models and small transformer encoders — can reach competitive accuracy at a fraction of the cost.
+
+## Objectives
+
+The main objectives of this internship are:
+
+1. Benchmark lightweight text classification models across several datasets.
+2. Study the impact of key hyperparameters: embedding dimension, number of transformer layers, number of attention heads, vocabulary size, and learning rate.
+3. Evaluate the trade-off between model size, training time, and classification accuracy.
+
+## Datasets
+
+The benchmark covers the following publicly available text classification datasets:
+
+| Dataset        | Task                        | Classes |
+|----------------|-----------------------------|---------|
+| AG News        | News topic classification   | 4       |
+| SST-2          | Sentiment analysis          | 2       |
+| IMDb           | Sentiment analysis          | 2       |
+| Amazon reviews | Sentiment analysis          | 5       |
+| 20 Newsgroups  | Topic classification        | 20      |
+| SUBJ           | Subjectivity classification | 2       |
+| CLINC150       | Intent detection            | 151     |
+
+## Models
+
+Two families of models are compared:
+
+- **FastText-style** (`n_layers=0`): embeddings are averaged across tokens and fed directly to a classification head. No attention, very fast.
+- **Transformer encoder** (`n_layers=1,2`): a small transformer block is added on top of the embeddings, with varying numbers of attention heads.
+
+Both families use a **WordPiece tokenizer** trained on the training data, with vocabulary sizes ranging from 2,000 to 20,000 tokens.
+
+## Example Interactive Chart
+
+```{python}
+#| echo: false
+import plotly.express as px
+import pandas as pd
+
+df = pd.DataFrame({
+    "dataset": ["AG News", "SST-2", "IMDb", "Amazon", "20 Newsgroups", "SUBJ", "CLINC150"],
+    "accuracy": [0.921, 0.913, 0.895, 0.642, 0.812, 0.934, 0.876],
+    "model": ["FastText", "FastText", "Transformer", "Transformer", "FastText", "Transformer", "FastText"],
+})
+
+fig = px.bar(
+    df, x="dataset", y="accuracy", color="model",
+    title="Test Accuracy by Dataset",
+    labels={"accuracy": "Test Accuracy", "dataset": "Dataset"},
+    range_y=[0.5, 1.0],
+)
+fig.show()
+```
+
+## Experimental Setup
+
+All experiments are tracked with **MLflow** and run on GPU via **Argo Workflows** on the INSEE datalab infrastructure. Each configuration is trained for up to 40 epochs with early stopping (patience = 5).
+
+The key hyperparameters explored are:
+
+- Embedding dimension: 64, 128, 256, 512
+- Number of transformer layers: 0, 1, 2
+- Number of attention heads: 2, 4, 8
+- Vocabulary size: 2,000 / 5,000 / 10,000 / 20,000
+- Learning rate: 0.0001, 0.001
