@@ -62,9 +62,11 @@ spec:
             model.embedding_dim={{inputs.parameters.emb_dims}} \
             model.n_layers=0 \
             model.n_heads_label_attention=null \
-            tokenizer.vocab_size=5000,10000,20000 \
-            training.batch_size=32 \
+            tokenizer.vocab_size=2000,5000,10000,20000 \
+            training.batch_size=128 \
             training.lr=0.0001,0.001 \
+            training.num_epochs=40 \
+            training.patience_early_stopping=5 \
             -m
 
           # n_layers=1,2: sweep n_head (n_kv_head=n_head), label attention, lr and vocab_size
@@ -78,9 +80,11 @@ spec:
               model.n_head=$n_head \
               model.n_kv_head=$n_head \
               model.n_heads_label_attention=null,4 \
-              tokenizer.vocab_size=5000,10000,20000 \
-              training.batch_size=32 \
+              tokenizer.vocab_size=2000,5000,10000,20000 \
+              training.batch_size=128 \
               training.lr=0.0001,0.001 \
+              training.num_epochs=40 \
+              training.patience_early_stopping=5 \
               -m
           done
         resources:
@@ -94,12 +98,12 @@ spec:
             memory: "36Gi"
         env:
           - name: MLFLOW_TRACKING_URI
-            valueFrom: { secretKeyRef: { name: vscode-pytorch-321556-secretmlflow, key: MLFLOW_TRACKING_URI } }
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-gpu-43156-secretmlflow, key: MLFLOW_TRACKING_URI } }
           - name: MLFLOW_TRACKING_USERNAME
-            valueFrom: { secretKeyRef: { name: vscode-pytorch-321556-secretmlflow, key: MLFLOW_TRACKING_USERNAME } }
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-gpu-43156-secretmlflow, key: MLFLOW_TRACKING_USERNAME } }
           - name: MLFLOW_TRACKING_PASSWORD
-            valueFrom: { secretKeyRef: { name: vscode-pytorch-321556-secretmlflow, key: MLFLOW_TRACKING_PASSWORD } }
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-gpu-43156-secretmlflow, key: MLFLOW_TRACKING_PASSWORD } }
           - name: MLFLOW_S3_ENDPOINT_URL
-            valueFrom: { secretKeyRef: { name: vscode-pytorch-321556-secretmlflow, key: MLFLOW_S3_ENDPOINT_URL } }
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-gpu-43156-secretmlflow, key: MLFLOW_S3_ENDPOINT_URL } }
           - name: MLFLOW_HTTP_REQUEST_TIMEOUT
             value: "1800"

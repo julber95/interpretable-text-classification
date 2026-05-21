@@ -232,6 +232,7 @@ def main(cfg: DictConfig):
             "tokenizer": tok_cfg["type"],
             "emb_dim": m.embedding_dim,
             "n_layers": m.n_layers,
+            "n_head": m.n_head if m.n_layers > 0 else None,
             "n_heads_label_attention": m.n_heads_label_attention,
             "agg": m.aggregation_method,
             "lr": t.lr,
