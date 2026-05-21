@@ -32,56 +32,35 @@ The main objectives of this internship are:
 
 1. Benchmark lightweight text classification models across several datasets.
 2. Study the impact of key hyperparameters: embedding dimension, number of transformer layers, number of attention heads, vocabulary size, and learning rate.
-3. Evaluate the trade-off between model size, training time, and classification accuracy.
+3. Evaluate the trade-off between model size (number of parameters) and classification accuracy, through systematic validation loss curves.
+4. Analyse the effect of training data size by training each model on increasing subsets of the data (10%, 20%, …, 100%) to study data efficiency and learning curves.
+5. Compare three architecture families — from simple mean-pooling to attention-based models — to understand when the added complexity pays off.
 
 ## Datasets
 
 The benchmark covers the following publicly available text classification datasets:
 
-| Dataset        | Task                        | Classes |
-|----------------|-----------------------------|---------|
-| AG News        | News topic classification   | 4       |
-| SST-2          | Sentiment analysis          | 2       |
-| IMDb           | Sentiment analysis          | 2       |
-| Amazon reviews | Sentiment analysis          | 5       |
-| 20 Newsgroups  | Topic classification        | 20      |
-| SUBJ           | Subjectivity classification | 2       |
-| CLINC150       | Intent detection            | 151     |
+| Dataset        | Task             | Classes |
+|----------------|------------------|---------|
+| IMDb           | Sentiment analysis | 2     |
+| Amazon reviews | Sentiment analysis | 5     |
 
 ## Models
 
-Two families of models are compared:
+Three architectures of increasing complexity are compared:
 
-- **FastText-style** (`n_layers=0`): embeddings are averaged across tokens and fed directly to a classification head. No attention, very fast.
-- **Transformer encoder** (`n_layers=1,2`): a small transformer block is added on top of the embeddings, with varying numbers of attention heads.
+- **FastText-style** (`n_layers=0`): embeddings are averaged across tokens and fed directly to a classification head. No attention mechanism, minimal parameter count, very fast at both training and inference.
+- **Transformer encoder** (`n_layers=1,2`): a small transformer encoder block (multi-head self-attention + feed-forward) is stacked on top of the embeddings before the classification head. Captures contextual interactions between tokens.
+- **Label Attention**: an attention mechanism where the query is derived from label representations, allowing the model to focus on the parts of the input that are most relevant to each candidate class. This hybrid architecture sits between the transformer encoder and a full cross-attention model.
 
-Both families use a **WordPiece tokenizer** trained on the training data, with vocabulary sizes ranging from 2,000 to 20,000 tokens.
+All three architectures use a **WordPiece tokenizer** trained on the training data, with vocabulary sizes ranging from 2,000 to 20,000 tokens.
 
-## Example Interactive Chart
-
-```{python}
-#| echo: false
-import plotly.express as px
-import pandas as pd
-
-df = pd.DataFrame({
-    "dataset": ["AG News", "SST-2", "IMDb", "Amazon", "20 Newsgroups", "SUBJ", "CLINC150"],
-    "accuracy": [0.921, 0.913, 0.895, 0.642, 0.812, 0.934, 0.876],
-    "model": ["FastText", "FastText", "Transformer", "Transformer", "FastText", "Transformer", "FastText"],
-})
-
-fig = px.bar(
-    df, x="dataset", y="accuracy", color="model",
-    title="Test Accuracy by Dataset",
-    labels={"accuracy": "Test Accuracy", "dataset": "Dataset"},
-    range_y=[0.5, 1.0],
-)
-fig.show()
-```
 
 ## Experimental Setup
 
 All experiments are tracked with **MLflow** and run on GPU via **Argo Workflows** on the INSEE datalab infrastructure. Each configuration is trained for up to 40 epochs with early stopping (patience = 5).
+
+### Hyperparameter grid search
 
 The key hyperparameters explored are:
 
@@ -90,3 +69,15 @@ The key hyperparameters explored are:
 - Number of attention heads: 2, 4, 8
 - Vocabulary size: 2,000 / 5,000 / 10,000 / 20,000
 - Learning rate: 0.0001, 0.001
+
+### Validation loss vs. number of parameters
+
+For each dataset and architecture, the final validation loss is plotted against the total number of trainable parameters. This study reveals whether increasing model capacity consistently improves performance or leads to overfitting, and helps identify the optimal operating regime for each architecture.
+
+### Training data size study (learning curves)
+
+Each model configuration is re-trained on successive fractions of the training set: 10%, 20%, 30%, …, 100%. The resulting accuracy and validation loss curves highlight:
+
+- How quickly each architecture reaches its performance ceiling.
+- Whether simpler models (FastText) are more data-efficient than heavier ones.
+- The minimum amount of labelled data needed to reach a given accuracy threshold.

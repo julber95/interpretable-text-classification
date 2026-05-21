@@ -64,7 +64,7 @@ spec:
             model.n_heads_label_attention=null \
             tokenizer.vocab_size=2000,5000,10000,20000 \
             training.batch_size=128 \
-            training.lr=0.0001,0.001 \
+            training.lr=0.0001,0.001,0.0005 \
             training.num_epochs=40 \
             training.patience_early_stopping=5 \
             -m
@@ -82,7 +82,7 @@ spec:
               model.n_heads_label_attention=null,4 \
               tokenizer.vocab_size=2000,5000,10000,20000 \
               training.batch_size=128 \
-              training.lr=0.0001,0.001 \
+              training.lr=0.0001,0.001,0.0005 \
               training.num_epochs=40 \
               training.patience_early_stopping=5 \
               -m
