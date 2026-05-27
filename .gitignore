@@ -7,9 +7,6 @@ env/
 lightning_logs/
 checkpoints/
 
-# Benchmark artifacts
-benchmark/results/
-
 # Jupyter
 .ipynb_checkpoints/
 
