@@ -61,6 +61,449 @@ Three architectures of increasing complexity are compared:
 - **Transformer encoder** (`n_layers=1,2`): a small transformer encoder block (multi-head self-attention + feed-forward) is stacked on top of the embeddings before the classification head. Captures contextual interactions between tokens.
 - **Label Attention**: an attention mechanism where the query is derived from label representations, allowing the model to focus on the parts of the input that are most relevant to each candidate class. This hybrid architecture sits between the transformer encoder and a full cross-attention model.
 
+```{=html}
+<div style="margin:1.5rem 0;font-family:sans-serif;">
+
+<!-- Buttons -->
+<div style="margin-bottom:1.4rem;">
+  <button onclick="showArch('fasttext')" id="btn-fasttext"
+    style="padding:6px 16px;margin-right:6px;border:1.5px solid #1565C0;border-radius:4px;
+           background:#1565C0;color:white;font-size:13px;cursor:pointer;font-weight:600;">
+    FastText
+  </button>
+  <button onclick="showArch('transformer')" id="btn-transformer"
+    style="padding:6px 16px;margin-right:6px;border:1.5px solid #7b1fa2;border-radius:4px;
+           background:#7b1fa2;color:white;font-size:13px;cursor:pointer;font-weight:600;">
+    Transformer
+  </button>
+</div>
+
+<!-- FastText horizontal diagram -->
+<div id="arch-fasttext-wrap"
+  style="display:block;overflow:hidden;cursor:grab;position:relative;height:170px;
+         border-radius:8px;border:1px solid #eee;background:#fafafa;user-select:none;">
+<div id="arch-fasttext" style="display:flex;align-items:center;flex-wrap:nowrap;padding:16px 4px 10px;gap:0;
+     position:absolute;will-change:transform;">
+
+  <!-- Input stub -->
+  <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;margin-right:2px;">
+    <div style="font-size:10px;font-weight:700;color:#333;white-space:nowrap;">(B,)&nbsp;str</div>
+    <div style="font-size:13px;color:#bbb;">─────▶</div>
+  </div>
+
+  <!-- Block 1: WordPiece -->
+  <div id="ft-wp" class="ah-block" style="border-color:#78909c;background:#eceff1;"
+    data-tip="The WordPiece tokenizer is trained on the training corpus. It splits raw text into sub-word pieces (e.g. 'playing' : 'play' + 'ing') and maps each to an integer ID. Output is truncated to seq_len tokens; shorter sequences are right-padded with padding_idx=0. An attention mask (1 = real token, 0 = pad) is produced alongside the IDs.">
+    <div class="ah-icon" style="color:#546e7a;">⌨</div>
+    <div class="ah-name" style="color:#37474f;">WordPiece</div>
+  </div>
+
+  <div class="ah-arr">
+    <div class="ah-shape">(B, seq_len)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">int64</div>
+  </div>
+
+  <!-- Block 2: Embedding -->
+  <div id="ft-emb" class="ah-block" style="border-color:#1976d2;background:#e3f2fd;"
+    data-tip="nn.Embedding : a learnable look-up table of shape (vocab_size × emb_dim). Each token ID selects one row, replacing the integer with a dense float vector. Parameters: vocab_size × emb_dim (the largest component of FastText).">
+    <div class="ah-icon" style="color:#1565c0;">⊞</div>
+    <div class="ah-name" style="color:#0d47a1;">Embedding</div>
+    <div class="ah-params" style="color:#1976d2;">vocab_size × emb_dim</div>
+  </div>
+
+  <div class="ah-arr">
+    <div class="ah-shape">(B, seq_len, emb_dim)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">float32</div>
+  </div>
+
+  <!-- Block 3: RMSNorm (token-level) — slim -->
+  <div id="ft-rms1" class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;"
+    data-tip="RMSNorm (per token): normalises each token embedding by its root-mean-square — x̂ = x / RMS(x) · γ — where γ ∈ ℝ^emb_dim is a learnable scale vector (emb_dim params). Shape unchanged. Stabilises embedding magnitudes before pooling.">
+    <div class="ah-slim-text">σ</div>
+  </div>
+
+  <div style="width:6px;flex-shrink:0;"></div>
+
+  <!-- Block 4: Mean Pooling -->
+  <div id="ft-pool" class="ah-block" style="border-color:#388e3c;background:#e8f5e9;"
+    data-tip="The attention mask (1 / 0) is used to exclude padding positions. Real token embeddings are summed then divided by the count of real tokens, collapsing the seq_len dimension. No parameters. This is the core FastText design choice: word order is ignored. Produces a sentence embedding.">
+    <div class="ah-icon" style="color:#2e7d32;">∑÷n</div>
+    <div class="ah-name" style="color:#1b5e20;">Mean Pool</div>
+    <div class="ah-params" style="color:#388e3c;">masked avg<br>over seq_len</div>
+  </div>
+
+  <div class="ah-arr">
+    <div class="ah-shape">(B, emb_dim)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">float32</div>
+  </div>
+
+  <!-- Block 5: RMSNorm (sentence-level) — slim -->
+  <div id="ft-rms2" class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;"
+    data-tip="RMSNorm (per sentence): same operation applied to the pooled sentence vector. Normalises the aggregated representation before the linear head, preventing scale instability across batches. γ ∈ ℝ^emb_dim (emb_dim params). Shape unchanged.">
+    <div class="ah-slim-text">σ</div>
+  </div>
+
+  <div style="width:6px;flex-shrink:0;"></div>
+
+  <!-- Block 6: Linear -->
+  <div id="ft-lin" class="ah-block" style="border-color:#f57c00;background:#fff3e0;"
+    data-tip="W·x + b — a single linear layer mapping the emb_dim-dim sentence vector to n_classes logits. W ∈ ℝ^(n_classes×emb_dim), b ∈ ℝ^n_classes. The argmax gives the predicted class.">
+    <div class="ah-icon" style="color:#e65100;">⊸</div>
+    <div class="ah-name" style="color:#bf360c;">Linear</div>
+    <div class="ah-params" style="color:#f57c00;">emb_dim → n_classes</div>
+  </div>
+
+  <!-- Output stub -->
+  <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;margin-left:2px;">
+    <div style="font-size:13px;color:#bbb;">────▶</div>
+    <div style="font-size:10px;font-weight:700;color:#333;white-space:nowrap;">(B, n_classes)&nbsp;logits</div>
+  </div>
+
+</div><!-- end diagram -->
+</div><!-- end fasttext wrap -->
+
+<!-- Transformer horizontal diagram -->
+<div id="arch-transformer-wrap"
+  style="display:none;overflow:hidden;cursor:grab;position:relative;height:185px;
+         border-radius:8px;border:1px solid #eee;background:#fafafa;user-select:none;">
+<div id="arch-transformer" style="display:flex;align-items:center;flex-wrap:nowrap;padding:16px 4px 10px;gap:0;
+     position:absolute;will-change:transform;">
+
+  <!-- Input stub -->
+  <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;margin-right:2px;">
+    <div style="font-size:10px;font-weight:700;color:#333;white-space:nowrap;">(B,)&nbsp;str</div>
+    <div style="font-size:13px;color:#bbb;">─────▶</div>
+  </div>
+
+  <!-- Block 1: WordPiece -->
+  <div id="tr-wp" class="ah-block" style="border-color:#78909c;background:#eceff1;"
+    data-tip="The WordPiece tokenizer splits raw text into sub-word pieces and maps each to an integer ID. Output truncated to seq_len tokens; shorter sequences padded with padding_idx=0. Attention mask produced alongside (1 = real token, 0 = pad).">
+    <div class="ah-icon" style="color:#546e7a;">⌨</div>
+    <div class="ah-name" style="color:#37474f;">WordPiece</div>
+  </div>
+
+  <div class="ah-arr">
+    <div class="ah-shape">(B, seq_len)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">int64</div>
+  </div>
+
+  <!-- Block 2: Embedding -->
+  <div id="tr-emb" class="ah-block" style="border-color:#1976d2;background:#e3f2fd;"
+    data-tip="nn.Embedding (text_embedder.py:153) — table de recherche (vocab_size × emb_dim). Chaque token ID sélectionne une ligne → vecteur dense float32. Params: vocab_size × emb_dim.">
+    <div class="ah-icon" style="color:#1565c0;">⊞</div>
+    <div class="ah-name" style="color:#0d47a1;">Embedding</div>
+    <div class="ah-params" style="color:#1976d2;">vocab_size × emb_dim</div>
+  </div>
+
+  <div class="ah-arr">
+    <div class="ah-shape">(B, seq_len, emb_dim)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">float32</div>
+  </div>
+
+  <!-- σ1 : RMSNorm token-level (text_embedder.py:157) -->
+  <div id="tr-rms1" class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;"
+    data-tip="RMSNorm token-level — text_embedder.py:157. x̂ = x / RMS(x), purement fonctionnel (F.rms_norm), aucun paramètre appris. Shape (B, seq_len, emb_dim) inchangée. Commun à FastText et Transformer.">
+    <div class="ah-slim-text">σ</div>
+  </div>
+
+  <div class="ah-arr">
+    <div class="ah-shape">(B, seq_len, emb_dim)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">float32</div>
+  </div>
+
+  <!-- ── Début du bloc répété n_layers fois ── -->
+
+  <!-- σ pre-attn (attention.py:54) -->
+  <div id="tr-prenorm-attn" class="ah-slim" style="border-color:#6a1b9a;background:#f3e5f5;color:#4a148c;"
+    data-tip="Pre-attention RMSNorm — attention.py:54. x_normed = x / RMS(x). Résultat passé à c_q, c_k, c_v. La valeur x originale est conservée pour la connexion résiduelle x = x + attn_out. Shape (B, seq_len, emb_dim) inchangée.">
+    <div class="ah-slim-text">σ</div>
+  </div>
+
+  <div class="ah-arr">
+    <div class="ah-shape">(B, seq_len, emb_dim)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">x_normed</div>
+  </div>
+
+  <!-- c_q (attention.py:86) -->
+  <div id="tr-cq" class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;"
+    data-tip="c_q — attention.py:86. Linear(emb_dim, n_head × head_dim, bias=False) appliquée sur x_normed (B, seq_len, emb_dim). Reshape → Q: (B, seq_len, n_head, head_dim) avec head_dim = emb_dim / n_head. Q = requêtes : chaque token formule une question à tous les autres.">
+    <div class="ah-icon" style="color:#6a1b9a; font-style:italic;">Q</div>
+    <div class="ah-name" style="color:#4a148c;">c_q</div>
+    <div class="ah-params" style="color:#7b1fa2;">(B, seq_len, emb_dim)<br>→ (B, seq_len, n_head, head_dim)</div>
+  </div>
+
+  <div style="width:6px;flex-shrink:0;"></div>
+
+  <!-- c_k (attention.py:87) -->
+  <div id="tr-ck" class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;"
+    data-tip="c_k — attention.py:87. Linear(emb_dim, n_kv_head × head_dim, bias=False) appliquée sur le même x_normed (B, seq_len, emb_dim). Reshape → K: (B, seq_len, n_kv_head, head_dim). K = clés : chaque token expose un résumé de son contenu. Si n_kv_head < n_head : Group Query Attention (GQA), K et V partagés entre plusieurs têtes de Q.">
+    <div class="ah-icon" style="color:#6a1b9a; font-style:italic;">K</div>
+    <div class="ah-name" style="color:#4a148c;">c_k</div>
+    <div class="ah-params" style="color:#7b1fa2;">(B, seq_len, emb_dim)<br>→ (B, seq_len, n_kv_head, head_dim)</div>
+  </div>
+
+  <div style="width:6px;flex-shrink:0;"></div>
+
+  <!-- c_v (attention.py:88) -->
+  <div id="tr-cv" class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;"
+    data-tip="c_v — attention.py:88. Linear(emb_dim, n_kv_head × head_dim, bias=False) appliquée sur le même x_normed. Reshape → V: (B, seq_len, n_kv_head, head_dim). V = valeurs : ce qui sera agrégé en sortie selon les poids d'attention.">
+    <div class="ah-icon" style="color:#6a1b9a; font-style:italic;">V</div>
+    <div class="ah-name" style="color:#4a148c;">c_v</div>
+    <div class="ah-params" style="color:#7b1fa2;">(B, seq_len, emb_dim)<br>→ (B, seq_len, n_kv_head, head_dim)</div>
+  </div>
+
+  <div class="ah-arr" style="min-width:70px;">
+    <div class="ah-shape">Q,K,V prêts</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">transpose heads</div>
+  </div>
+
+  <!-- RoPE (attention.py:93-96) -->
+  <div id="tr-rope" class="ah-slim" style="border-color:#6a1b9a;background:#f3e5f5;color:#4a148c;"
+    data-tip="RoPE — attention.py:93-96. Rotary Positional Embedding appliquée sur Q et K uniquement (pas V). Chaque paire de coordonnées (x₁, x₂) est rotée d'un angle θ·position : y₁ = x₁·cos + x₂·sin, y₂ = -x₁·sin + x₂·cos. La similarité Q·Kᵀ encode automatiquement la distance relative entre tokens. Shape inchangée.">
+    <div class="ah-slim-text" style="font-size:14px;">↻</div>
+  </div>
+
+  <div style="width:6px;flex-shrink:0;"></div>
+
+  <!-- QK-norm (attention.py:98) -->
+  <div id="tr-qknorm" class="ah-slim" style="border-color:#6a1b9a;background:#f3e5f5;color:#4a148c;"
+    data-tip="QK-norm — attention.py:98. norm(Q) et norm(K) appliquées séparément avant le produit scalaire. Stabilise les magnitudes des requêtes et clés, évitant les scores d'attention extrêmes (explosion du softmax). Shape Q et K inchangée.">
+    <div class="ah-slim-text">σ</div>
+  </div>
+
+  <div class="ah-arr" style="min-width:70px;">
+    <div class="ah-shape">(B, n_head, seq_len, head_dim)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">Q·Kᵀ / √head_dim</div>
+  </div>
+
+  <!-- Scaled Dot-Product Attention (attention.py:106) -->
+  <div id="tr-sdpa" class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;min-width:150px;max-width:165px;"
+    data-tip="Scaled Dot-Product Attention — attention.py:106. F.scaled_dot_product_attention(Q, K, V, is_causal=False). (1) Scores = Q·Kᵀ / √head_dim → (B, n_head, seq_len, seq_len) : chaque token regarde tous les autres tokens. (2) softmax(Scores) → poids d'attention normalisés. (3) Weighted sum: poids · V → (B, n_head, seq_len, head_dim). enable_gqa=True si n_kv_head < n_head.">
+    <div class="ah-icon" style="color:#6a1b9a;">⊗</div>
+    <div class="ah-name" style="color:#4a148c;">Scaled Attn</div>
+    <div class="ah-params" style="color:#7b1fa2;font-size:9.5px;">Scores: (B, n_head, seq_len, seq_len)<br>softmax(Scores) · V<br>→ (B, n_head, seq_len, head_dim)</div>
+  </div>
+
+  <div class="ah-arr" style="min-width:70px;">
+    <div class="ah-shape">(B, n_head, seq_len, head_dim)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">reassemble heads</div>
+  </div>
+
+  <!-- c_proj (attention.py:109-110) -->
+  <div id="tr-cproj" class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;"
+    data-tip="c_proj — attention.py:109-110. Réassemblage des têtes : (B, n_head, seq_len, head_dim) → (B, seq_len, emb_dim). Puis projection linéaire c_proj: Linear(emb_dim, emb_dim, bias=False) → (B, seq_len, emb_dim). Connexion résiduelle: x = x + c_proj_out.">
+    <div class="ah-icon" style="color:#6a1b9a;">⊸</div>
+    <div class="ah-name" style="color:#4a148c;">c_proj</div>
+    <div class="ah-params" style="color:#7b1fa2;">(B, seq_len, n_head, head_dim)<br>→ (B, seq_len, emb_dim)</div>
+  </div>
+
+  <div class="ah-arr">
+    <div class="ah-shape">(B, seq_len, emb_dim)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">+ résiduelle</div>
+  </div>
+
+  <!-- σ pre-MLP (attention.py:55) -->
+  <div id="tr-prenorm-mlp" class="ah-slim" style="border-color:#6a1b9a;background:#f3e5f5;color:#4a148c;"
+    data-tip="Pre-MLP RMSNorm — attention.py:55. Normalise x (après résiduelle d'attention) avant le MLP : x_normed = x / RMS(x). La valeur x est conservée pour la connexion résiduelle x = x + mlp(x_normed). Shape (B, seq_len, emb_dim) inchangée.">
+    <div class="ah-slim-text">σ</div>
+  </div>
+
+  <div style="width:6px;flex-shrink:0;"></div>
+
+  <!-- MLP (attention.py:118-124) -->
+  <div id="tr-mlp" class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;"
+    data-tip="MLP — attention.py:118-124. (1) c_fc: Linear(emb_dim, 4·emb_dim, bias=False) → (B, seq_len, 4·emb_dim). (2) Squared ReLU: F.relu(x).square() — activation simple et efficace. (3) c_proj: Linear(4·emb_dim, emb_dim, bias=False) → (B, seq_len, emb_dim). Connexion résiduelle: x = x + mlp_out.">
+    <div class="ah-icon" style="color:#6a1b9a;">⇔</div>
+    <div class="ah-name" style="color:#4a148c;">MLP</div>
+    <div class="ah-params" style="color:#7b1fa2;">emb_dim<br>→ 4·emb_dim<br>→ emb_dim</div>
+  </div>
+
+  <!-- indicateur × n_layers -->
+  <div style="display:flex;align-items:center;flex-shrink:0;padding:0 5px;">
+    <div style="font-size:10px;color:#7b1fa2;font-weight:700;white-space:nowrap;
+                background:#f3e5f5;border:1.5px solid #ce93d8;border-radius:12px;padding:3px 8px;">
+      × n_layers
+    </div>
+  </div>
+
+  <!-- ── Fin du bloc répété ── -->
+
+  <!-- σ post-blocks (text_embedder.py:168) -->
+  <div id="tr-postnorm" class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;"
+    data-tip="Post-blocks RMSNorm — text_embedder.py:168. Appliquée après le dernier bloc transformer (uniquement si n_layers > 0). Normalise les représentations contextuelles finales avant le pooling. Absente dans FastText. Shape (B, seq_len, emb_dim) inchangée.">
+    <div class="ah-slim-text">σ</div>
+  </div>
+
+  <div style="width:6px;flex-shrink:0;"></div>
+
+  <!-- Mean Pool (text_embedder.py:390) -->
+  <div id="tr-pool" class="ah-block" style="border-color:#388e3c;background:#e8f5e9;"
+    data-tip="Masked mean pooling — text_embedder.py:390. Moyenne les token embeddings sur seq_len (padding exclu). mask = attention_mask.unsqueeze(-1); sentence_emb = (tokens * mask).sum(1) / mask.sum(1). (B, seq_len, emb_dim) → (B, emb_dim). Même opération que FastText mais sur des vecteurs contextualisés par l'attention.">
+    <div class="ah-icon" style="color:#2e7d32;">∑÷n</div>
+    <div class="ah-name" style="color:#1b5e20;">Mean Pool</div>
+    <div class="ah-params" style="color:#388e3c;">masked avg<br>over seq_len</div>
+  </div>
+
+  <div class="ah-arr">
+    <div class="ah-shape">(B, emb_dim)</div>
+    <div class="ah-line">────▶</div>
+    <div class="ah-dtype">float32</div>
+  </div>
+
+  <!-- σ pre-head (model.py:195) -->
+  <div id="tr-headnorm" class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;"
+    data-tip="Pre-head RMSNorm — model.py:195. Normalise le vecteur de phrase avant la projection finale. Shape (B, emb_dim) inchangée.">
+    <div class="ah-slim-text">σ</div>
+  </div>
+
+  <div style="width:6px;flex-shrink:0;"></div>
+
+  <!-- Linear (model.py:195) -->
+  <div id="tr-lin" class="ah-block" style="border-color:#f57c00;background:#fff3e0;"
+    data-tip="Classification head — model.py:195. Linear(emb_dim, n_classes, bias=False). (B, emb_dim) → (B, n_classes) logits. L'argmax donne la classe prédite.">
+    <div class="ah-icon" style="color:#e65100;">⊸</div>
+    <div class="ah-name" style="color:#bf360c;">Linear</div>
+    <div class="ah-params" style="color:#f57c00;">emb_dim → n_classes</div>
+  </div>
+
+  <!-- Output stub -->
+  <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;margin-left:2px;">
+    <div style="font-size:13px;color:#bbb;">────▶</div>
+    <div style="font-size:10px;font-weight:700;color:#333;white-space:nowrap;">(B, n_classes)&nbsp;logits</div>
+  </div>
+
+</div><!-- end transformer diagram -->
+</div><!-- end transformer wrap -->
+
+<div style="font-size:10px;color:#aaa;margin-top:4px;text-align:center;">
+  scroll to zoom · drag to pan · double-click to reset
+</div>
+
+<!-- Tooltip box -->
+<div id="arch-tooltip-h"
+  style="margin-top:.8rem;margin-left:auto;margin-right:auto;padding:12px 18px;background:#fff;border:1px solid #ddd;
+         border-radius:6px;font-size:14px;color:#444;line-height:1.6;
+         max-width:640px;display:none;">
+</div>
+
+</div><!-- end outer -->
+
+<style>
+.ah-block {
+  min-width:110px; max-width:130px; height:130px; padding:12px 10px; border-radius:10px;
+  border:2px solid; text-align:center; cursor:default; flex-shrink:0;
+  display:flex; flex-direction:column; justify-content:center; align-items:center;
+  transition:box-shadow .15s,transform .15s;
+}
+.ah-block:hover { box-shadow:0 4px 16px rgba(0,0,0,.18); transform:translateY(-2px); }
+.ah-icon   { font-size:20px; margin-bottom:4px; }
+.ah-name   { font-size:13px; font-weight:700; margin-bottom:5px; }
+.ah-params { font-size:10.5px; line-height:1.5; }
+.ah-arr {
+  display:flex; flex-direction:column; align-items:center;
+  flex-shrink:0; padding:0 3px; min-width:80px;
+}
+.ah-shape  { font-size:9.5px; font-weight:700; color:#333; white-space:nowrap; margin-bottom:1px; }
+.ah-line   { font-size:14px; color:#bbb; letter-spacing:-2px; }
+.ah-dtype  { font-size:9px; color:#aaa; margin-top:1px; }
+.ah-slim {
+  width:36px; height:130px; padding:12px 4px; border-radius:8px; border:2px solid;
+  text-align:center; cursor:default; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  transition:box-shadow .15s, transform .15s;
+}
+.ah-slim:hover { box-shadow:0 4px 14px rgba(0,0,0,.18); transform:translateY(-2px); }
+.ah-slim-text { font-size:22px; font-weight:400; line-height:1; }
+.ah-tblock {
+  min-width:185px; max-width:205px; height:160px; padding:8px 10px; border-radius:10px;
+  border:2px dashed #7b1fa2; background:#f9f0ff; flex-shrink:0;
+  display:flex; flex-direction:column; justify-content:space-between;
+  cursor:default; position:relative;
+  transition:box-shadow .15s, transform .15s;
+}
+.ah-tblock:hover { box-shadow:0 4px 16px rgba(0,0,0,.18); transform:translateY(-2px); }
+.ah-tblock-badge {
+  position:absolute; top:-11px; right:8px;
+  background:#7b1fa2; color:white; font-size:9px; font-weight:700;
+  padding:2px 7px; border-radius:10px; white-space:nowrap;
+}
+.ah-tblock-section {
+  background:#fff; border:1px solid #ce93d8; border-radius:6px;
+  padding:5px 8px; flex:1;
+  display:flex; flex-direction:column; justify-content:center;
+}
+.ah-tblock-title { font-size:11px; font-weight:700; color:#6a1b9a; margin-bottom:3px; }
+.ah-tblock-dim   { font-size:8px; color:#8e24aa; line-height:1.5; }
+</style>
+
+<script>
+(function(){
+  var tip = document.getElementById('arch-tooltip-h');
+  document.querySelectorAll('.ah-block, .ah-slim, .ah-tblock').forEach(function(el){
+    el.addEventListener('mouseenter', function(){
+      tip.textContent = el.getAttribute('data-tip');
+      tip.style.display = 'block';
+    });
+    el.addEventListener('mouseleave', function(){
+      tip.style.display = 'none';
+    });
+  });
+
+  var WRAPS = ['arch-fasttext-wrap', 'arch-transformer-wrap'];
+  window.showArch = function(name){
+    WRAPS.forEach(function(wid){ document.getElementById(wid).style.display = 'none'; });
+    var w = document.getElementById('arch-'+name+'-wrap');
+    if(w) w.style.display = 'block';
+  };
+
+  // ── Pan + Zoom (générique) ────────────────────────────────────────────────
+  function makePanZoom(wrapId, diagId){
+    var wrap = document.getElementById(wrapId);
+    var diag = document.getElementById(diagId);
+    if(!wrap || !diag) return;
+    var sc=1, tx=0, ty=0, dragging=false, ox, oy, otx, oty;
+    function applyT(){
+      diag.style.transform='translate('+tx+'px,'+ty+'px) scale('+sc+')';
+      diag.style.transformOrigin='0 0';
+    }
+    wrap.addEventListener('wheel',function(e){
+      e.preventDefault();
+      var r=wrap.getBoundingClientRect();
+      var mx=e.clientX-r.left, my=e.clientY-r.top;
+      var d=e.deltaY>0?0.88:1.12;
+      tx=mx-(mx-tx)*d; ty=my-(my-ty)*d;
+      sc=Math.max(0.25,Math.min(4,sc*d)); applyT();
+    },{passive:false});
+    wrap.addEventListener('mousedown',function(e){
+      dragging=true; ox=e.clientX; oy=e.clientY; otx=tx; oty=ty;
+      wrap.style.cursor='grabbing';
+    });
+    document.addEventListener('mousemove',function(e){
+      if(!dragging) return;
+      tx=otx+(e.clientX-ox); ty=oty+(e.clientY-oy); applyT();
+    });
+    document.addEventListener('mouseup',function(){
+      dragging=false; wrap.style.cursor='grab';
+    });
+    wrap.addEventListener('dblclick',function(){ sc=1;tx=0;ty=0;applyT(); });
+  }
+  makePanZoom('arch-fasttext-wrap',    'arch-fasttext');
+  makePanZoom('arch-transformer-wrap', 'arch-transformer');
+})();
+</script>
+```
+
 All three architectures use a **WordPiece tokenizer** trained on the training data, with vocabulary sizes ranging from 2,000 to 20,000 tokens.
 
 ### Experimental Setup
@@ -585,12 +1028,11 @@ fig.show()
 ### Error analysis
 
 ```{python}
-#| label: fig-error-analysis-amazon
-#| fig-cap: "Error analysis: prediction distance and directional bias"
+#| label: fig-error-seg-amazon
+#| fig-cap: "Prediction distance per architecture"
 
 import random
 from collections import Counter
-from plotly.subplots import make_subplots
 random.seed(42)
 
 SEG_KEYS   = ["Correct", "Off by 1", "Off by 2", "Off by 3+"]
@@ -598,13 +1040,12 @@ SEG_COLORS = {"Correct": "#43A047", "Off by 1": "#FDD835", "Off by 2": "#FB8C00"
 n_archs    = len(ARCHS_AVAIL)
 labels_d   = [f"±{dd} star{'s' if dd>1 else ''}" for dd in range(1, 5)]
 
-# Pre-compute per architecture
 arch_segs, arch_bias = {}, {}
 for arch in ARCHS_AVAIL:
-    d      = preds_by_arch[arch]
+    d        = preds_by_arch[arch]
     y_t, y_p = d["y_test"], d["y_pred"]
-    dist   = np.abs(y_p - y_t)
-    n      = len(dist)
+    dist     = np.abs(y_p - y_t)
+    n        = len(dist)
     arch_segs[arch] = {
         "Correct":   (dist == 0).sum() / n * 100,
         "Off by 1":  (dist == 1).sum() / n * 100,
@@ -618,85 +1059,90 @@ for arch in ARCHS_AVAIL:
         "under": [(signed == -dd).sum() / n_tot * 100 for dd in range(1, 5)],
     }
 
-fig = make_subplots(
-    rows=2, cols=1,
-    specs=[[{"type": "xy"}], [{"type": "xy"}]],
-    row_heights=[0.28, 0.72],
-    vertical_spacing=0.12,
-)
-
-# Row 1 — stacked bar (4 traces per arch)
+fig1 = go.Figure()
 for i, arch in enumerate(ARCHS_AVAIL):
     segs = arch_segs[arch]
     for seg in SEG_KEYS:
         pct = segs[seg]
-        fig.add_trace(go.Bar(
-            x=[pct], y=[""], orientation="h",
+        fig1.add_trace(go.Bar(
+            x=[pct], y=[arch], orientation="h",
             name=seg, legendgroup=seg, showlegend=(i == 0),
             marker_color=SEG_COLORS[seg],
             text=f"<b>{seg}</b><br>{pct:.1f}%",
             textposition="inside", insidetextanchor="middle",
             textfont=dict(size=12, color="white" if seg != "Off by 1" else "#333"),
             hovertemplate=f"<b>{seg}</b>: {pct:.1f}%<extra></extra>",
-            visible=(i == 0),
-        ), row=1, col=1)
+        ))
 
-# Row 2 — diverging bar (2 traces per arch)
+fig1.update_layout(
+    barmode="relative",
+    template="simple_white",
+    xaxis=dict(range=[0, 100], ticksuffix="%", showgrid=False, title_text="% of test examples"),
+    yaxis=dict(autorange="reversed"),
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.22, yanchor="top", itemclick=False, itemdoubleclick=False),
+    height=360, margin=dict(t=20, b=80),
+)
+fig1.show()
+```
+
+```{python}
+#| label: fig-error-bias-amazon
+#| fig-cap: "Directional bias per architecture"
+
+fig2 = go.Figure()
 for i, arch in enumerate(ARCHS_AVAIL):
     b = arch_bias[arch]
-    fig.add_trace(go.Bar(
+    fig2.add_trace(go.Bar(
         x=[-u for u in b["under"]], y=labels_d,
         orientation="h", name="Under-predicted",
         legendgroup="under", showlegend=(i == 0),
         marker_color="#1565C0",
+        text=[f"{u:.1f}%" for u in b["under"]],
+        textposition="outside", textfont=dict(size=11, color="#333"), cliponaxis=False,
         hovertemplate="%{y} — under: <b>%{customdata:.1f}%</b><extra></extra>",
         customdata=b["under"],
         visible=(i == 0),
-    ), row=2, col=1)
-    fig.add_trace(go.Bar(
+    ))
+    fig2.add_trace(go.Bar(
         x=b["over"], y=labels_d,
         orientation="h", name="Over-predicted",
         legendgroup="over", showlegend=(i == 0),
         marker_color="#E53935",
+        text=[f"{v:.1f}%" for v in b["over"]],
+        textposition="outside", textfont=dict(size=11, color="#333"), cliponaxis=False,
         hovertemplate="%{y} — over: <b>%{x:.1f}%</b><extra></extra>",
         visible=(i == 0),
-    ), row=2, col=1)
+    ))
 
-n_seg_traces  = n_archs * 4
-n_bias_traces = n_archs * 2
-
-def make_vis(k):
-    v = [False] * (n_seg_traces + n_bias_traces)
-    for j in range(4):
-        v[k * 4 + j] = True
-    v[n_seg_traces + k * 2]     = True
-    v[n_seg_traces + k * 2 + 1] = True
+def make_vis2(k):
+    v = [False] * (n_archs * 2)
+    v[k * 2]     = True
+    v[k * 2 + 1] = True
     return v
 
-fig.update_xaxes(range=[0, 100], ticksuffix="%", showgrid=False, row=1, col=1)
-fig.update_yaxes(showticklabels=False, row=1, col=1)
-fig.update_xaxes(
-    tickvals=[-15, -10, -5, 0, 5, 10, 15],
-    ticktext=["15%", "10%", "5%", "0", "5%", "10%", "15%"],
-    title_text="% of test examples", row=2, col=1,
+fig2.update_xaxes(
+    tickvals=[-20, -15, -10, -5, 0, 5, 10, 15, 20],
+    ticktext=["20%", "15%", "10%", "5%", "0", "5%", "10%", "15%", "20%"],
+    range=[-22, 22],
+    title_text="% of test examples",
 )
-fig.update_yaxes(autorange="reversed", row=2, col=1)
-fig.add_vline(x=0, line_width=1.5, line_color="#333", row=2, col=1)
+fig2.update_yaxes(autorange="reversed")
+fig2.add_vline(x=0, line_width=1.5, line_color="#333")
 
-fig.update_layout(
+fig2.update_layout(
     barmode="relative",
     template="simple_white",
-    legend=dict(orientation="h", x=0.5, y=-0.20, xanchor="center"),
-    height=560, margin=dict(t=110, b=65),
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.18, yanchor="top", itemclick=False, itemdoubleclick=False),
+    height=480, margin=dict(t=90, b=80),
     annotations=[dict(
         text="<b>Choose the model:</b>", x=0, xanchor="left", xref="paper",
-        y=1.21, yanchor="bottom", yref="paper",
+        y=1.22, yanchor="bottom", yref="paper",
         showarrow=False, font=dict(size=12, color="#555"),
     )],
     updatemenus=[dict(
         type="buttons", direction="right",
         buttons=[
-            dict(label=arch, method="update", args=[{"visible": make_vis(i)}])
+            dict(label=arch, method="update", args=[{"visible": make_vis2(i)}])
             for i, arch in enumerate(ARCHS_AVAIL)
         ],
         x=0, xanchor="left", y=1.18, yanchor="top",
@@ -706,7 +1152,7 @@ fig.update_layout(
         pad=dict(l=4, r=4, t=4, b=4),
     )],
 )
-fig.show()
+fig2.show()
 ```
 
 ### Examples
