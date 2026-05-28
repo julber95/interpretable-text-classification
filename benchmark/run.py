@@ -79,6 +79,9 @@ def load_data(dataset_cfg: dict, seed: int):
 
     if n_train is None:
         n_train = len(train_data) - n_val
+    train_fraction = dataset_cfg.get("train_fraction", 1.0)
+    if train_fraction < 1.0:
+        n_train = max(1, int(n_train * train_fraction))
 
     def from_split(data, start, end):
         """Extract a slice [start:end] from a HuggingFace Dataset split and return (X, y)."""
@@ -179,11 +182,14 @@ def main(cfg: DictConfig):
     if tracking_uri:
         mlflow.set_tracking_uri(tracking_uri)
     # 1 MLflow experiment per dataset — all hyperparameter runs for a dataset are grouped together
-    mlflow.set_experiment(dataset_name)
+    experiment_name = cfg.get("experiment_name") or dataset_name
+    mlflow.set_experiment(experiment_name)
 
     if m.n_layers == 0 and m.n_heads_label_attention is not None:
         raise ValueError("n_heads_label_attention requires n_layers > 0")
 
+    train_fraction = cfg.get("train_fraction", 1.0)
+    dataset_cfg["train_fraction"] = train_fraction
     X_train, y_train, X_val, y_val, X_test, y_test, value_encoder = load_data(dataset_cfg, cfg.seed)
     num_classes = len(np.unique(y_train))
 
@@ -243,6 +249,7 @@ def main(cfg: DictConfig):
             "epochs": t.num_epochs,
             "n_classes": num_classes,
             "vocab_size": vocab_size,
+            "train_fraction": train_fraction,
             "n_train": len(X_train),
             "n_val": len(X_val),
             "n_test": len(X_test),

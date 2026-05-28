@@ -15,6 +15,12 @@ execute:
 keep-ipynb: false
 ---
 
+```{=html}
+<style>
+  figcaption, .figure-caption { margin-top: 14px; }
+</style>
+```
+
 ## Introduction
 
 This report presents the work carried out during an internship at **INSEE** (Institut national de la statistique et des études économiques), France's national statistics institute.
@@ -147,6 +153,7 @@ The second tab shows the **distribution of validation loss across all runs** for
 
 ```{python}
 #| label: fig-pareto
+#| fig-cap: "Validation loss vs. number of parameters"
 
 import plotly.graph_objects as go
 
@@ -203,6 +210,7 @@ fig.show()
 
 ```{python}
 #| label: fig-violin
+#| fig-cap: "Distribution of validation loss by architecture"
 
 arch_order = ["FastText", "Transformer (L=1)", "Transformer (L=2)", "Label Attention"]
 arch_order = [a for a in arch_order if a in df["architecture"].unique()]
@@ -259,6 +267,7 @@ fig.show()
 
 ```{python}
 #| label: fig-vocab
+#| fig-cap: "Effect of vocabulary size on validation loss"
 
 import numpy as np
 
@@ -303,7 +312,7 @@ for arch, group in df_vocab_mean.groupby("architecture"):
 fig.update_layout(
     xaxis_title="Vocabulary size", yaxis_title="Validation loss",
     xaxis=dict(tickvals=vocab_vals, ticktext=[f"{v:,}" for v in vocab_vals]),
-    legend_title="Architecture", height=430,
+    legend_title="Architecture", height=430, width=750, margin=dict(l=60, r=20),
 )
 fig.show()
 ```
@@ -312,6 +321,7 @@ fig.show()
 
 ```{python}
 #| label: fig-emb
+#| fig-cap: "Effect of embedding dimension on validation loss"
 
 emb_offsets = {
     "FastText":           0,
@@ -342,7 +352,7 @@ for arch, group in df_emb_mean.groupby("architecture"):
 fig.update_layout(
     xaxis_title="Embedding dimension", yaxis_title="Validation loss",
     xaxis=dict(tickvals=emb_vals, ticktext=[str(v) for v in emb_vals]),
-    legend_title="Architecture", height=430,
+    legend_title="Architecture", height=430, width=750, margin=dict(l=60, r=20),
 )
 fig.show()
 ```
@@ -357,6 +367,7 @@ fig.show()
 
 ```{python}
 #| label: fig-nhead
+#| fig-cap: "Effect of number of attention heads on validation loss"
 
 df_attn = df[df["n_layers"] > 0].copy()
 df_attn["n_head"] = df_attn["n_head"].astype(int)
@@ -406,12 +417,13 @@ The number of attention heads has virtually no effect on validation loss across 
 
 ```{python}
 #| label: fig-train-time
+#| fig-cap: "Validation loss vs. training time"
 
 fig = go.Figure()
 for arch, group in df.groupby("architecture"):
     fig.add_trace(go.Scatter(
         x=group["train_time_s"], y=group["min_val_loss"],
-        mode="markers", name=arch,
+        mode="markers", name=arch, legendgroup=arch,
         marker=dict(color=COLORS.get(arch, "grey"), size=6, opacity=0.5),
         hovertemplate="time=%{x:.0f}s<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
     ))
@@ -426,6 +438,7 @@ fig.show()
 
 ```{python}
 #| label: fig-heatmap
+#| fig-cap: "Mean validation loss by embedding dimension and vocabulary size"
 
 from plotly.subplots import make_subplots
 
@@ -518,6 +531,7 @@ ARCHS_AVAIL = list(preds_by_arch.keys())
 
 ```{python}
 #| label: fig-confusion-amazon
+#| fig-cap: "Confusion matrix on the Amazon test set"
 
 from sklearn.metrics import confusion_matrix
 
@@ -541,7 +555,7 @@ fig.update_layout(
     xaxis_title="Predicted", yaxis_title="True",
     yaxis=dict(autorange="reversed"),
     height=500, width=540,
-    margin=dict(t=90, r=20),
+    margin=dict(t=125, r=20),
     updatemenus=[dict(
         type="buttons",
         direction="right",
@@ -560,8 +574,8 @@ fig.update_layout(
         pad=dict(l=4, r=4, t=4, b=4),
     )],
     annotations=[dict(
-        text="<b>Model</b>", x=0, xanchor="left", xref="paper",
-        y=1.26, yanchor="bottom", yref="paper",
+        text="<b>Choose the model:</b>", x=0, xanchor="left", xref="paper",
+        y=1.21, yanchor="bottom", yref="paper",
         showarrow=False, font=dict(size=12, color="#555"),
     )],
 )
@@ -572,6 +586,7 @@ fig.show()
 
 ```{python}
 #| label: fig-error-analysis-amazon
+#| fig-cap: "Error analysis: prediction distance and directional bias"
 
 import random
 from collections import Counter
@@ -671,11 +686,11 @@ fig.add_vline(x=0, line_width=1.5, line_color="#333", row=2, col=1)
 fig.update_layout(
     barmode="relative",
     template="simple_white",
-    legend=dict(orientation="h", x=0.5, y=-0.08, xanchor="center"),
-    height=560, margin=dict(t=110, b=10),
+    legend=dict(orientation="h", x=0.5, y=-0.20, xanchor="center"),
+    height=560, margin=dict(t=110, b=65),
     annotations=[dict(
-        text="<b>Model</b>", x=0, xanchor="left", xref="paper",
-        y=1.16, yanchor="bottom", yref="paper",
+        text="<b>Choose the model:</b>", x=0, xanchor="left", xref="paper",
+        y=1.21, yanchor="bottom", yref="paper",
         showarrow=False, font=dict(size=12, color="#555"),
     )],
     updatemenus=[dict(
@@ -684,7 +699,7 @@ fig.update_layout(
             dict(label=arch, method="update", args=[{"visible": make_vis(i)}])
             for i, arch in enumerate(ARCHS_AVAIL)
         ],
-        x=0, xanchor="left", y=1.12, yanchor="top",
+        x=0, xanchor="left", y=1.18, yanchor="top",
         showactive=True, bgcolor="#f0f0f0",
         bordercolor="#cccccc", borderwidth=1,
         font=dict(size=12, color="#222"),
@@ -698,31 +713,98 @@ fig.show()
 
 ```{python}
 #| label: fig-examples-amazon
+#| fig-cap: "Example predictions on the Amazon test set"
 
-arch   = ARCHS_AVAIL[0]
-d      = preds_by_arch[arch]
-y_test, y_pred = d["y_test"], d["y_pred"]
-X_test = d["X_test"]
+import json, random
+from IPython.display import HTML
 
-texts = X_test.tolist() if X_test.ndim == 1 else X_test[:, 0].tolist()
-mask  = y_pred != y_test
-pair_counts = Counter(zip(y_test[mask], y_pred[mask]))
-top_pairs   = [pair for pair, _ in pair_counts.most_common(6)]
+random.seed(42)
 
-rows = []
-for true_c, pred_c in top_pairs:
-    idxs   = np.where((y_test == true_c) & (y_pred == pred_c))[0]
-    sample = random.sample(list(idxs), min(2, len(idxs)))
-    for idx in sample:
-        text = str(texts[idx])
-        rows.append({
-            "True": STAR_LABELS[true_c],
-            "Pred": STAR_LABELS[pred_c],
-            "Review (truncated)": text[:200] + ("…" if len(text) > 200 else ""),
-        })
+y_test = preds_by_arch[ARCHS_AVAIL[0]]["y_test"]
+X_test = preds_by_arch[ARCHS_AVAIL[0]]["X_test"]
+texts  = X_test.tolist() if X_test.ndim == 1 else X_test[:, 0].tolist()
 
-df_errors = pd.DataFrame(rows)
-df_errors.style.set_properties(**{"text-align": "left", "white-space": "pre-wrap"})
+df_ex = pd.DataFrame({"true": y_test, "text": texts})
+for arch in ARCHS_AVAIL:
+    df_ex[arch] = preds_by_arch[arch]["y_pred"]
+
+df_ex["disagree"] = df_ex[ARCHS_AVAIL].nunique(axis=1) > 1
+df_ex["any_wrong"] = (df_ex[ARCHS_AVAIL].values != df_ex[["true"]].values).any(axis=1)
+pool   = df_ex[df_ex["disagree"] & df_ex["any_wrong"]]
+sample = pool.sample(12, random_state=42).reset_index(drop=True)
+
+ARCH_SHORT = {"FastText": "FastText", "Transformer (L=1)": "Trans (L=1)",
+              "Transformer (L=2)": "Trans (L=2)", "Label Attention": "Label Att"}
+
+examples = [
+    {"true": int(r["true"]), "text": str(r["text"]),
+     "preds": {a: int(r[a]) for a in ARCHS_AVAIL}}
+    for _, r in sample.iterrows()
+]
+
+html = f"""
+<style>
+  .ex-wrap  {{ font-family:sans-serif; font-size:14px; max-width:100%; }}
+  .ex-card  {{ border:1px solid #ddd; border-radius:8px; padding:20px 24px;
+               background:#fafafa; margin-bottom:14px; }}
+  .ex-meta  {{ font-size:13px; color:#555; margin-bottom:10px; }}
+  .ex-meta b {{ color:#222; }}
+  .ex-text  {{ line-height:1.75; color:#222; margin-bottom:18px; }}
+  .ex-preds {{ display:flex; gap:12px; flex-wrap:wrap; }}
+  .ex-model {{ display:flex; flex-direction:column; align-items:center; gap:4px; }}
+  .ex-mname {{ font-size:11px; color:#888; font-weight:600; text-transform:uppercase;
+               letter-spacing:.04em; }}
+  .ex-badge {{ padding:5px 14px; border-radius:5px; font-weight:700; font-size:15px; }}
+  .correct  {{ background:#d4edda; color:#155724; }}
+  .wrong    {{ background:#f8d7da; color:#721c24; }}
+  .ex-nav   {{ display:flex; align-items:center; gap:12px; }}
+  .ex-btn   {{ padding:6px 18px; background:#f0f0f0; border:1px solid #ccc;
+               border-radius:5px; cursor:pointer; font-size:13px; }}
+  .ex-btn:hover {{ background:#e0e0e0; }}
+  .ex-count {{ font-size:12px; color:#999; }}
+</style>
+
+<div class="ex-wrap">
+  <div class="ex-nav" style="justify-content:center; margin-bottom:12px;">
+    <button class="ex-btn" onclick="exNav(-1)">← Prev</button>
+    <span class="ex-count" id="ex-count"></span>
+    <button class="ex-btn" onclick="exNav(1)">Next →</button>
+  </div>
+  <div class="ex-card">
+    <div class="ex-meta" id="ex-meta"></div>
+    <div class="ex-text" id="ex-text"></div>
+    <div class="ex-preds" id="ex-preds"></div>
+  </div>
+</div>
+
+<script>
+(function() {{
+  const EX   = {json.dumps(examples)};
+  const SL   = {json.dumps(STAR_LABELS)};
+  const AS   = {json.dumps(ARCH_SHORT)};
+  let cur = 0;
+
+  function render(i) {{
+    const e = EX[i];
+    document.getElementById('ex-meta').innerHTML =
+      'True rating: <b>' + SL[e.true] + '</b>';
+    document.getElementById('ex-text').textContent = e.text;
+    let h = '';
+    for (const [arch, pred] of Object.entries(e.preds)) {{
+      const cls = pred === e.true ? 'correct' : 'wrong';
+      h += '<div class="ex-model"><span class="ex-mname">' + (AS[arch]||arch) + '</span>'
+         + '<span class="ex-badge ' + cls + '">' + SL[pred] + '</span></div>';
+    }}
+    document.getElementById('ex-preds').innerHTML = h;
+    document.getElementById('ex-count').textContent = (i+1) + ' / ' + EX.length;
+  }}
+
+  window.exNav = function(d) {{ cur = (cur + d + EX.length) % EX.length; render(cur); }};
+  render(0);
+}})();
+</script>
+"""
+HTML(html)
 ```
 
 :::
