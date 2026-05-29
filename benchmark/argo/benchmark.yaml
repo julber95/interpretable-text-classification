@@ -13,26 +13,26 @@ spec:
     - name: main-dag
       dag:
         tasks:
-          - name: train-gpu-L2
-            template: trainer-gpu
-            arguments:
-              parameters:
-                - name: n_layers
-                  value: "2"
-
-          - name: train-gpu-L4
-            template: trainer-gpu
-            arguments:
-              parameters:
-                - name: n_layers
-                  value: "4"
-
           - name: train-gpu-L6
             template: trainer-gpu
             arguments:
               parameters:
                 - name: n_layers
                   value: "6"
+
+          - name: train-gpu-L8
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: n_layers
+                  value: "8"
+
+          - name: train-gpu-L10
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: n_layers
+                  value: "10"
 
     # ── GPU Trainer template ──────────────────────────────────────────────────
     - name: trainer-gpu
@@ -60,10 +60,12 @@ spec:
               model.n_kv_head=$n_head \
               model.n_heads_label_attention=null \
               tokenizer.vocab_size=10000 \
-              training.batch_size=128 \
-              training.lr=0.0001 \
-              training.num_epochs=40 \
+              training.batch_size=64,128 \
+              training.lr=0.0001,0.00005 \
+              training.num_epochs=50 \
               training.patience_early_stopping=5 \
+              tokenizer.output_dim=256 \
+              experiment_name=amazon_opti \
               -m
           done
         resources:
