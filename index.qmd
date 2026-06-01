@@ -116,7 +116,6 @@ Three architectures of increasing complexity are compared:
       <div class="ah-arr">
         <div class="ah-shape">(B, seq_len)</div>
         <div class="ah-line">────▶</div>
-        <div class="ah-dtype">int64</div>
       </div>
 
       <!-- Embedding -->
@@ -130,19 +129,17 @@ Three architectures of increasing complexity are compared:
       <div class="ah-arr">
         <div class="ah-shape">(B, seq_len, emb_dim)</div>
         <div class="ah-line">────▶</div>
-        <div class="ah-dtype">float32</div>
       </div>
 
       <!-- σ RMSNorm token-level -->
       <div id="ft-rms1" class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;"
-        data-tip="RMSNorm (per token): normalises each token embedding by its root-mean-square — x̂ = x / RMS(x) · γ — where γ ∈ ℝ^emb_dim is a learnable scale vector (emb_dim params). Shape unchanged. Stabilises embedding magnitudes before pooling.">
+        data-tip="RMSNorm (per token): normalises each token embedding by its root-mean-square — x̂ = x / RMS(x) · γ — where γ ∈ ℝ<sup>emb_dim</sup> is a learnable scale vector (emb_dim params). Shape unchanged. Stabilises embedding magnitudes before pooling.">
         <div class="ah-slim-text">σ</div>
       </div>
 
       <div class="ah-arr" style="min-width:72px;">
         <div class="ah-shape">(B, seq, emb)</div>
         <div class="ah-line">────▶</div>
-        <div class="ah-dtype">float32</div>
       </div>
 
       <!-- Mean Pool -->
@@ -157,7 +154,7 @@ Three architectures of increasing complexity are compared:
 
     <!-- ── CONNECTEUR : Ligne 1 → Ligne 2 ── -->
     <div style="display:flex;flex-direction:column;align-items:center;padding:10px 0 6px;">
-      <div style="font-size:9px;font-weight:700;color:#666;white-space:nowrap;">(B, emb_dim) · float32</div>
+      <div style="font-size:9px;font-weight:700;color:#666;white-space:nowrap;">(B, emb_dim)</div>
       <div style="font-size:28px;color:#bbb;line-height:1.1;">↓</div>
     </div>
 
@@ -166,28 +163,30 @@ Three architectures of increasing complexity are compared:
 
       <!-- σ RMSNorm sentence-level -->
       <div id="ft-rms2" class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;"
-        data-tip="RMSNorm (per sentence): same operation applied to the pooled sentence vector. Normalises the aggregated representation before the linear head, preventing scale instability across batches. γ ∈ ℝ^emb_dim (emb_dim params). Shape unchanged.">
+        data-tip="RMSNorm (per sentence): same operation applied to the pooled sentence vector. Normalises the aggregated representation before the linear head, preventing scale instability across batches. γ ∈ ℝ<sup>emb_dim</sup> (emb_dim params). Shape unchanged.">
         <div class="ah-slim-text">σ</div>
       </div>
 
       <div class="ah-arr" style="min-width:72px;">
         <div class="ah-shape">(B, emb_dim)</div>
         <div class="ah-line">────▶</div>
-        <div class="ah-dtype">float32</div>
       </div>
 
       <!-- Linear -->
       <div id="ft-lin" class="ah-block" style="border-color:#f57c00;background:#fff3e0;"
-        data-tip="W·x + b — a single linear layer mapping the emb_dim-dim sentence vector to n_classes logits. W ∈ ℝ^(n_classes×emb_dim), b ∈ ℝ^n_classes. The argmax gives the predicted class.">
+        data-tip="W·x + b — a single linear layer mapping the emb_dim-dim sentence vector to n_classes logits. W ∈ ℝ<sup>n_classes×emb_dim</sup>, b ∈ ℝ<sup>n_classes</sup>. The argmax gives the predicted class.">
         <div class="ah-icon" style="color:#e65100;">⊸</div>
         <div class="ah-name" style="color:#bf360c;">Linear</div>
         <div class="ah-params" style="color:#f57c00;">emb_dim → n_classes</div>
       </div>
 
       <!-- Output stub -->
-      <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;margin-left:2px;">
-        <div style="font-size:13px;color:#bbb;">────▶</div>
-        <div style="font-size:10px;font-weight:700;color:#333;white-space:nowrap;">(B, n_classes)&nbsp;logits</div>
+      <div style="display:flex;align-items:center;flex-shrink:0;gap:14px;margin-left:2px;">
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div style="font-size:9.5px;font-weight:700;color:#333;white-space:nowrap;">(B, n_classes)</div>
+          <div style="font-size:13px;color:#bbb;">────▶</div>
+        </div>
+        <div style="font-size:15px;font-weight:700;color:#333;white-space:nowrap;margin-top:10px;">ŷ (logits)</div>
       </div>
 
     </div>
@@ -224,7 +223,7 @@ Three architectures of increasing complexity are compared:
 
       <!-- WordPiece -->
       <div id="tr-wp" class="ah-block" style="border-color:#78909c;background:#eceff1;"
-        data-tip="WordPiece tokenizer: splits raw text into sub-word pieces and maps each to an integer ID. Output is truncated to seq_len tokens; shorter sequences are right-padded with padding_idx=0. An attention mask (1 = real token, 0 = pad) is produced alongside the IDs.">
+        data-tip="The WordPiece tokenizer is trained on the training corpus. It splits raw text into sub-word pieces (e.g. 'playing' : 'play' + 'ing') and maps each to an integer ID. Output is truncated to seq_len tokens; shorter sequences are right-padded with padding_idx=0. An attention mask (1 = real token, 0 = pad) is produced alongside the IDs.">
         <div class="ah-icon" style="color:#546e7a;">⌨</div>
         <div class="ah-name" style="color:#37474f;">WordPiece</div>
       </div>
@@ -237,7 +236,7 @@ Three architectures of increasing complexity are compared:
 
       <!-- Embedding -->
       <div id="tr-emb" class="ah-block" style="border-color:#1976d2;background:#e3f2fd;"
-        data-tip="nn.Embedding (text_embedder.py:153) — learnable look-up table of shape (vocab_size × emb_dim). Each token ID selects one row, replacing the integer with a dense float32 vector. Parameters: vocab_size × emb_dim.">
+        data-tip="nn.Embedding : a learnable look-up table of shape (vocab_size × emb_dim). Each token ID selects one row, replacing the integer with a dense float vector. Parameters: vocab_size × emb_dim (the largest component of FastText).">
         <div class="ah-icon" style="color:#1565c0;">⊞</div>
         <div class="ah-name" style="color:#0d47a1;">Embedding</div>
         <div class="ah-params" style="color:#1976d2;">vocab_size × emb_dim</div>
@@ -251,7 +250,7 @@ Three architectures of increasing complexity are compared:
 
       <!-- σ RMSNorm token-level -->
       <div id="tr-rms1" class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;"
-        data-tip="RMSNorm token-level (text_embedder.py:157). x̂ = x / RMS(x), no learned parameters. Shape (B, seq_len, emb_dim) unchanged. Shared by both FastText and Transformer.">
+        data-tip="RMSNorm (per token): normalises each token embedding by its root-mean-square — x̂ = x / RMS(x) · γ — where γ ∈ ℝ<sup>emb_dim</sup> is a learnable scale vector (emb_dim params). Shape unchanged. Stabilises embedding magnitudes before pooling.">
         <div class="ah-slim-text">σ</div>
       </div>
 
@@ -276,7 +275,7 @@ Three architectures of increasing complexity are compared:
 
       <!-- σ pre-attn -->
       <div id="tr-prenorm-attn" class="ah-slim" style="border-color:#6a1b9a;background:#f3e5f5;color:#4a148c;"
-        data-tip="Pre-attention RMSNorm (attention.py:54). x_normed = x / RMS(x). The original value x is kept for the residual connection x ← x + attn_out. Shape (B, seq_len, emb_dim) unchanged.">
+        data-tip="<b>Pre-attention RMSNorm</b><br>x_normed = x / RMS(x) — x is kept for the residual: x ← x + attn_out<br><i style='color:#888;'>Only active from block 2 onward: block 1's input already comes from the token-level RMSNorm, so applying this norm there would normalise twice in a row.</i>">
         <div class="ah-slim-text">σ</div>
       </div>
 
@@ -288,7 +287,7 @@ Three architectures of increasing complexity are compared:
 
       <!-- Multi-Head Attention -->
       <div id="tr-mha" class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;min-width:148px;"
-        data-tip="Multi-Head Self-Attention (attention.py:86-110). ① c_q/c_k/c_v: linear projections → Q (B, seq_len, n_head, head_dim), K and V (B, seq_len, n_kv_head, head_dim); head_dim = emb_dim / n_head. GQA if n_kv_head &lt; n_head (K and V are shared). ② RoPE on Q and K: rotation by angle θ·position, encodes relative distance. ③ QK-norm: normalises Q and K separately before softmax. ④ Scores = Q·Kᵀ / √head_dim → softmax → ·V → (B, n_head, seq_len, head_dim). ⑤ c_proj: reassemble + Linear(emb_dim, emb_dim) → (B, seq_len, emb_dim). Residual: x ← x + attn_out.">
+        data-tip="<b>Multi-Head Self-Attention</b><br>① <b>Project</b> — Q = xW<sub>Q</sub>, K = xW<sub>K</sub>, V = xW<sub>V</sub> · head_dim = emb_dim / n_head<br><i style='font-size:12px;color:#888;'>GQA: if n_kv_head &lt; n_head, K and V are shared across heads</i><br>② <b>RoPE</b> — rotate Q and K by angle θ·position to encode relative distance<br>③ <b>QK-norm</b> — normalise Q and K separately before the dot product<br>④ <b>Attend</b> — softmax(QK<sup>T</sup> / √head_dim) · V → (B, n_head, seq, head_dim)<br>⑤ <b>Project back</b> — reassemble heads + linear → (B, seq, emb_dim)<br>⑥ <b>Residual</b> — x ← x + attn_out">
         <div class="ah-icon" style="color:#6a1b9a;font-style:italic;letter-spacing:3px;font-size:11px;">Q K V</div>
         <div class="ah-name" style="color:#4a148c;">Multi-Head Attn</div>
         <div class="ah-params" style="color:#7b1fa2;">head_dim = emb_dim / n_head</div>
@@ -303,7 +302,7 @@ Three architectures of increasing complexity are compared:
 
       <!-- σ pre-MLP -->
       <div id="tr-prenorm-mlp" class="ah-slim" style="border-color:#6a1b9a;background:#f3e5f5;color:#4a148c;"
-        data-tip="Pre-MLP RMSNorm (attention.py:55). x_normed = x / RMS(x). The value x is kept for the residual connection x ← x + mlp(x_normed). Shape unchanged.">
+        data-tip="Pre-MLP RMSNorm. x_normed = x / RMS(x). The value x is kept for the residual connection x ← x + mlp(x_normed). Shape unchanged.">
         <div class="ah-slim-text">σ</div>
       </div>
 
@@ -315,7 +314,7 @@ Three architectures of increasing complexity are compared:
 
       <!-- MLP -->
       <div id="tr-mlp" class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;"
-        data-tip="MLP (attention.py:118-124). ① c_fc: Linear(emb_dim, 4·emb_dim, bias=False) → (B, seq_len, 4·emb_dim). ② Squared ReLU: F.relu(x)². ③ c_proj: Linear(4·emb_dim, emb_dim, bias=False) → (B, seq_len, emb_dim). Residual: x ← x + mlp_out.">
+        data-tip="<b>Feed-Forward Network (MLP)</b><br>① <b>Expand</b> — Linear(emb_dim → 4·emb_dim)<br>② <b>Activate</b> — Squared ReLU: f(x) = ReLU(x)²<br>③ <b>Project back</b> — Linear(4·emb_dim → emb_dim)<br>④ <b>Residual</b> — x ← x + mlp_out">
         <div class="ah-icon" style="color:#6a1b9a;">⇔</div>
         <div class="ah-name" style="color:#4a148c;">MLP</div>
         <div class="ah-params" style="color:#7b1fa2;">emb_dim → 4·emb_dim → emb_dim</div>
@@ -339,7 +338,7 @@ Three architectures of increasing complexity are compared:
 
       <!-- σ post-blocks -->
       <div id="tr-postnorm" class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;"
-        data-tip="Post-blocks RMSNorm (text_embedder.py:168). Applied after the last transformer block. Normalises before pooling. Shape (B, seq_len, emb_dim) unchanged.">
+        data-tip="Post-blocks RMSNorm. Applied after the last transformer block. Normalises before pooling. Shape (B, seq_len, emb_dim) unchanged.">
         <div class="ah-slim-text">σ</div>
       </div>
 
@@ -351,7 +350,7 @@ Three architectures of increasing complexity are compared:
 
       <!-- Mean Pool -->
       <div id="tr-pool" class="ah-block" style="border-color:#388e3c;background:#e8f5e9;"
-        data-tip="Masked mean pooling (text_embedder.py:390). Averages token embeddings over seq_len, excluding padding positions. (B, seq_len, emb_dim) → (B, emb_dim). Same operation as FastText but applied to contextualised vectors.">
+        data-tip="Masked mean pooling. Averages token embeddings over seq_len, excluding padding positions. (B, seq_len, emb_dim) → (B, emb_dim). Same operation as FastText but applied to contextualised vectors.">
         <div class="ah-icon" style="color:#2e7d32;">∑÷n</div>
         <div class="ah-name" style="color:#1b5e20;">Mean Pool</div>
         <div class="ah-params" style="color:#388e3c;">(B, seq, emb_dim)<br>→ (B, emb_dim)</div>
@@ -365,7 +364,7 @@ Three architectures of increasing complexity are compared:
 
       <!-- σ pre-head -->
       <div id="tr-headnorm" class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;"
-        data-tip="Pre-head RMSNorm (model.py:195). Normalises the sentence vector before the final projection. Shape (B, emb_dim) unchanged.">
+        data-tip="RMSNorm (per sentence): same operation applied to the pooled sentence vector. Normalises the aggregated representation before the linear head, preventing scale instability across batches. γ ∈ ℝ<sup>emb_dim</sup> (emb_dim params). Shape unchanged.">
         <div class="ah-slim-text">σ</div>
       </div>
 
@@ -377,16 +376,19 @@ Three architectures of increasing complexity are compared:
 
       <!-- Linear -->
       <div id="tr-lin" class="ah-block" style="border-color:#f57c00;background:#fff3e0;"
-        data-tip="Classification head (model.py:195). Linear(emb_dim, n_classes, bias=False). (B, emb_dim) → (B, n_classes) logits.">
+        data-tip="W·x + b — a single linear layer mapping the emb_dim-dim sentence vector to n_classes logits. W ∈ ℝ<sup>n_classes×emb_dim</sup>, b ∈ ℝ<sup>n_classes</sup>. The argmax gives the predicted class.">
         <div class="ah-icon" style="color:#e65100;">⊸</div>
         <div class="ah-name" style="color:#bf360c;">Linear</div>
         <div class="ah-params" style="color:#f57c00;">emb_dim → n_classes</div>
       </div>
 
       <!-- Output stub -->
-      <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;margin-left:2px;">
-        <div style="font-size:13px;color:#bbb;">────▶</div>
-        <div style="font-size:10px;font-weight:700;color:#333;white-space:nowrap;">(B, n_classes)&nbsp;logits</div>
+      <div style="display:flex;align-items:center;flex-shrink:0;gap:14px;margin-left:2px;">
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div style="font-size:9.5px;font-weight:700;color:#333;white-space:nowrap;">(B, n_classes)</div>
+          <div style="font-size:13px;color:#bbb;">────▶</div>
+        </div>
+        <div style="font-size:15px;font-weight:700;color:#333;white-space:nowrap;margin-top:10px;">ŷ (logits)</div>
       </div>
 
     </div>
@@ -405,7 +407,7 @@ Three architectures of increasing complexity are compared:
 <div id="arch-tooltip-h"
   style="margin-top:.8rem;margin-left:auto;margin-right:auto;padding:12px 18px;background:#fff;border:2px solid #ddd;
          border-radius:6px;font-size:14px;color:#444;line-height:1.6;
-         max-width:640px;display:none;
+         max-width:640px;display:none;text-align:center;
          transition:background .2s ease,border-color .2s ease;">
 </div>
 
@@ -464,7 +466,7 @@ Three architectures of increasing complexity are compared:
   var tip = document.getElementById('arch-tooltip-h');
   document.querySelectorAll('.ah-block, .ah-slim, .ah-tblock').forEach(function(el){
     el.addEventListener('mouseenter', function(){
-      tip.textContent = el.getAttribute('data-tip');
+      tip.innerHTML = el.getAttribute('data-tip');
       tip.style.display = 'block';
       var bg  = el.style.background || el.style.backgroundColor || '#fff';
       var bdr = el.style.borderColor || '#ddd';
@@ -1233,7 +1235,7 @@ for i, arch in enumerate(ARCHS_AVAIL):
     fig2.add_trace(go.Bar(
         x=[-u for u in b["under"]], y=labels_d,
         orientation="h", name="Under-predicted",
-        legendgroup="under", showlegend=(i == 0),
+        legendgroup="under", showlegend=False,
         marker_color="#1565C0",
         text=[f"{u:.1f}%" for u in b["under"]],
         textposition="outside", textfont=dict(size=11, color="#333"), cliponaxis=False,
@@ -1244,7 +1246,7 @@ for i, arch in enumerate(ARCHS_AVAIL):
     fig2.add_trace(go.Bar(
         x=b["over"], y=labels_d,
         orientation="h", name="Over-predicted",
-        legendgroup="over", showlegend=(i == 0),
+        legendgroup="over", showlegend=False,
         marker_color="#E53935",
         text=[f"{v:.1f}%" for v in b["over"]],
         textposition="outside", textfont=dict(size=11, color="#333"), cliponaxis=False,
@@ -1252,10 +1254,19 @@ for i, arch in enumerate(ARCHS_AVAIL):
         visible=(i == 0),
     ))
 
+# Traces fantômes permanents pour la légende (toujours visibles)
+fig2.add_trace(go.Bar(x=[None], y=[None], orientation="h",
+    name="Under-predicted", marker_color="#1565C0",
+    legendgroup="under", showlegend=True))
+fig2.add_trace(go.Bar(x=[None], y=[None], orientation="h",
+    name="Over-predicted", marker_color="#E53935",
+    legendgroup="over", showlegend=True))
+
 def make_vis2(k):
-    v = [False] * (n_archs * 2)
-    v[k * 2]     = True
-    v[k * 2 + 1] = True
+    v = []
+    for i in range(n_archs):
+        v.extend([i == k, i == k])
+    v.extend([True, True])  # traces fantômes toujours visibles
     return v
 
 fig2.update_xaxes(
