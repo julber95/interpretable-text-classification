@@ -1,0 +1,19 @@
+defaults:
+  - dataset: amazon
+  - _self_
+
+run_id: "aged-pug-338"         # MLflow run ID of a trained Label Attention model
+n_examples: 500      # number of test examples to explain (null = full test set)
+batch_size: 32
+top_k_words: 50      # words per class to keep in corpus_word_importance
+n_self_attn: 50      # examples for which to extract seq_len×seq_len self-attention matrices
+n_captum: 200        # examples for Captum Integrated Gradients (slow: ~N forward passes)
+seed: 42
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    root:
+      level: INFO

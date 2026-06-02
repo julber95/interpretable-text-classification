@@ -13,32 +13,34 @@ spec:
     - name: main-dag
       dag:
         tasks:
-          - name: train-gpu-L6
+          - name: train-gpu-labatt-2
             template: trainer-gpu
             arguments:
               parameters:
-                - name: n_layers
-                  value: "6"
+                - name: n_heads_label_attention
+                  value: "2"
 
-          - name: train-gpu-L8
+          - name: train-gpu-labatt-4
             template: trainer-gpu
             arguments:
               parameters:
-                - name: n_layers
+                - name: n_heads_label_attention
+                  value: "4"
+
+          - name: train-gpu-labatt-8
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: n_heads_label_attention
                   value: "8"
 
-          - name: train-gpu-L10
-            template: trainer-gpu
-            arguments:
-              parameters:
-                - name: n_layers
-                  value: "10"
-
     # ── GPU Trainer template ──────────────────────────────────────────────────
+    # 3 GPUs in parallel, one per n_heads_label_attention value
+    # each GPU sweeps n_head in {4, 8} x batch_size in {64, 128} → 4 runs per GPU, 12 total
     - name: trainer-gpu
       inputs:
         parameters:
-          - name: n_layers
+          - name: n_heads_label_attention
       script:
         image: "inseefrlab/onyxia-vscode-pytorch:py3.13.12-gpu"
         imagePullPolicy: Always
@@ -48,20 +50,21 @@ spec:
           git clone -b main https://github.com/julber95/insee_internship.git
           cd insee_internship
 
-          # emb_dim=256, vocab_size=10000, lr=0.0001 fixed
-          # sweep n_head — scheduler ReduceLROnPlateau configured in run.py
-          for n_head in 2 4 8 16; do
-            uv run python -m benchmark.run \
+          # n_layers=6, lr=0.00001, n_heads_label_attention fixed per GPU
+          # sweep n_head in {4, 8} via bash loop (keeps n_kv_head=n_head)
+          # sweep batch_size in {64, 128} via Hydra multirun
+          for n_head in 4 8; do
+            uv run python -m benchmark.train \
               dataset=amazon \
               tokenizer=wordpiece \
               model.embedding_dim=256 \
-              model.n_layers={{inputs.parameters.n_layers}} \
+              model.n_layers=6 \
               model.n_head=$n_head \
               model.n_kv_head=$n_head \
-              model.n_heads_label_attention=null \
+              model.n_heads_label_attention={{inputs.parameters.n_heads_label_attention}} \
               tokenizer.vocab_size=10000 \
               training.batch_size=64,128 \
-              training.lr=0.0001,0.00005 \
+              training.lr=0.00001 \
               training.num_epochs=50 \
               training.patience_early_stopping=5 \
               tokenizer.output_dim=256 \
