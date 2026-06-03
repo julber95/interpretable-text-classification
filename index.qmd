@@ -34,7 +34,7 @@ The main objectives are:
 1. Benchmark lightweight text classification models across several datasets.
 2. Study the impact of key hyperparameters: embedding dimension, number of transformer layers, number of attention heads, vocabulary size, and learning rate.
 3. Evaluate the trade-off between model size (number of parameters) and classification accuracy, through systematic validation loss curves.
-4. Compare three architecture families — from simple mean-pooling to attention-based models — to understand when the added complexity pays off.
+4. Compare several architectures — from FastText to attention-based models — across different sequence aggregation strategies (mean pooling, label attention) to understand when the added complexity pays off.
 
 ## Benchmark Setup
 
@@ -55,20 +55,28 @@ In our experiments, 2,000 (IMDb) and 5,000 (Amazon) training examples are held o
 
 ### Models
 
-Three architectures of increasing complexity are compared:
+Four architectures of increasing complexity are compared, combining two model families with two sequence aggregation strategies:
 
-- **FastText-style** (`n_layers=0`): embeddings are averaged across tokens and fed directly to a classification head. No attention mechanism, minimal parameter count, very fast at both training and inference.
-- **Transformer encoder** (`n_layers=1,2`): a small transformer encoder block (multi-head self-attention + feed-forward) is stacked on top of the embeddings before the classification head. Captures contextual interactions between tokens.
-- **Label Attention**: an attention mechanism where the query is derived from label representations, allowing the model to focus on the parts of the input that are most relevant to each candidate class. This hybrid architecture sits between the transformer encoder and a full cross-attention model.
+- **FastText**: embeddings are averaged across tokens and fed directly to a classification head. No attention mechanism, minimal parameter count, very fast at both training and inference.
+- **FastText + Label Attention**: same backbone as FastText, but the mean pool is replaced by a cross-attention step where one learned embedding per class acts as the query, allowing the model to focus on the tokens most relevant to each candidate class.
+- **AttentiveFastText**: transformer encoder blocks (multi-head self-attention + feed-forward) are stacked on top of the embeddings before mean pooling, capturing contextual interactions between tokens.
+- **AttentiveFastText + Label Attention**: same transformer backbone, but with label attention as the aggregation step instead of mean pooling.
 
 ```{=html}
 <div style="margin:1.5rem 0;font-family:sans-serif;">
 
-<!-- 3-button architecture selector -->
-<div style="display:flex;align-items:center;gap:8px;margin-bottom:1.4rem;flex-wrap:wrap;">
-  <button id="btn-fasttext"    onclick="switchArch('fasttext')"    style="padding:6px 14px;font-size:13px;font-weight:700;border-radius:20px;cursor:pointer;border:2px solid #1565C0;background:#1565C0;color:#fff;transition:all .25s;">FastText</button>
-  <button id="btn-transformer" onclick="switchArch('transformer')" style="padding:6px 14px;font-size:13px;font-weight:700;border-radius:20px;cursor:pointer;border:2px solid #7b1fa2;background:#fff;color:#7b1fa2;transition:all .25s;">+ Transformer</button>
-  <button id="btn-labatt"      onclick="switchArch('labatt')"      style="padding:6px 14px;font-size:13px;font-weight:700;border-radius:20px;cursor:pointer;border:2px solid #2e7d32;background:#fff;color:#2e7d32;transition:all .25s;">+ Label Attention</button>
+<!-- Architecture selector (2 rows) -->
+<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:1.4rem;">
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <span style="font-size:12px;color:#888;font-weight:600;min-width:90px;">Architecture</span>
+    <button id="btn-fasttext"  onclick="switchModel('fasttext')"  style="padding:6px 14px;font-size:13px;font-weight:700;border-radius:20px;cursor:pointer;border:2px solid #1565C0;background:#1565C0;color:#fff;transition:all .25s;">FastText</button>
+    <button id="btn-attentive" onclick="switchModel('attentive')" style="padding:6px 14px;font-size:13px;font-weight:700;border-radius:20px;cursor:pointer;border:2px solid #7b1fa2;background:#fff;color:#7b1fa2;transition:all .25s;">AttentiveFastText</button>
+  </div>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <span style="font-size:12px;color:#888;font-weight:600;min-width:90px;">Aggregation</span>
+    <button id="btn-mean"   onclick="switchAgg('mean')"   style="padding:6px 14px;font-size:13px;font-weight:700;border-radius:20px;cursor:pointer;border:2px solid #455a64;background:#fff;color:#455a64;transition:all .25s;">Mean Pooling</button>
+    <button id="btn-labatt" onclick="switchAgg('labatt')" style="padding:6px 14px;font-size:13px;font-weight:700;border-radius:20px;cursor:pointer;border:2px solid #2e7d32;background:#fff;color:#2e7d32;transition:all .25s;">Label Attention</button>
+  </div>
 </div>
 
 <!-- Conteneur commun pour la transition -->
@@ -630,37 +638,36 @@ Three architectures of increasing complexity are compared:
     });
   });
 
-  window.switchArch = function(arch){
+  var _curModel = 'fasttext', _curAgg = 'mean';
+
+  function _applySelection(){
+    var arch = (_curModel === 'fasttext') ? 'fasttext' : (_curAgg === 'labatt' ? 'labatt' : 'transformer');
     var ft   = document.getElementById('arch-fasttext-wrap');
     var tr   = document.getElementById('arch-transformer-wrap');
     var la   = document.getElementById('arch-labatt-wrap');
     var cont = document.getElementById('arch-container');
-    var btnFt = document.getElementById('btn-fasttext');
-    var btnTr = document.getElementById('btn-transformer');
-    var btnLa = document.getElementById('btn-labatt');
-    var BASE  = 'padding:6px 14px;font-size:13px;font-weight:700;border-radius:20px;cursor:pointer;transition:all .25s;border:2px solid ';
+    var BASE = 'padding:6px 14px;font-size:13px;font-weight:700;border-radius:20px;cursor:pointer;transition:all .25s;border:2px solid ';
 
     ft.style.opacity='0'; ft.style.transform='translateX(-50px)'; ft.style.pointerEvents='none';
     tr.style.opacity='0'; tr.style.transform='translateX(-50px)'; tr.style.pointerEvents='none';
     la.style.opacity='0'; la.style.transform='translateX(-50px)'; la.style.pointerEvents='none';
-    btnFt.style.cssText = BASE + '#1565C0;background:#fff;color:#1565C0;';
-    btnTr.style.cssText = BASE + '#7b1fa2;background:#fff;color:#7b1fa2;';
-    btnLa.style.cssText = BASE + '#2e7d32;background:#fff;color:#2e7d32;';
 
-    if(arch === 'fasttext'){
-      ft.style.opacity='1'; ft.style.transform='translateX(0)'; ft.style.pointerEvents='auto';
-      cont.style.height='420px';
-      btnFt.style.cssText = BASE + '#1565C0;background:#1565C0;color:#fff;';
-    } else if(arch === 'transformer'){
-      tr.style.opacity='1'; tr.style.transform='translateX(0)'; tr.style.pointerEvents='auto';
-      cont.style.height='680px';
-      btnTr.style.cssText = BASE + '#7b1fa2;background:#7b1fa2;color:#fff;';
-    } else {
-      la.style.opacity='1'; la.style.transform='translateX(0)'; la.style.pointerEvents='auto';
-      cont.style.height='680px';
-      btnLa.style.cssText = BASE + '#2e7d32;background:#2e7d32;color:#fff;';
-    }
-  };
+    var target = arch==='fasttext' ? ft : arch==='labatt' ? la : tr;
+    target.style.opacity='1'; target.style.transform='translateX(0)'; target.style.pointerEvents='auto';
+    cont.style.height = arch==='fasttext' ? '420px' : '680px';
+
+    document.getElementById('btn-fasttext').style.cssText  = BASE + (_curModel==='fasttext'  ? '#1565C0;background:#1565C0;color:#fff;' : '#1565C0;background:#fff;color:#1565C0;');
+    document.getElementById('btn-attentive').style.cssText = BASE + (_curModel==='attentive' ? '#7b1fa2;background:#7b1fa2;color:#fff;' : '#7b1fa2;background:#fff;color:#7b1fa2;');
+
+    var aggDisabled = _curModel === 'fasttext';
+    document.getElementById('btn-mean').style.cssText   = aggDisabled ? BASE + '#bbb;background:#f5f5f5;color:#bbb;cursor:default;'
+      : BASE + (_curAgg==='mean'   ? '#455a64;background:#455a64;color:#fff;' : '#455a64;background:#fff;color:#455a64;');
+    document.getElementById('btn-labatt').style.cssText = aggDisabled ? BASE + '#bbb;background:#f5f5f5;color:#bbb;cursor:default;'
+      : BASE + (_curAgg==='labatt' ? '#2e7d32;background:#2e7d32;color:#fff;' : '#2e7d32;background:#fff;color:#2e7d32;');
+  }
+
+  window.switchModel = function(m){ _curModel = m; _applySelection(); };
+  window.switchAgg   = function(a){ if(_curModel !== 'fasttext'){ _curAgg = a; _applySelection(); } };
 
   // ── Pan + Zoom (générique) ────────────────────────────────────────────────
   function makePanZoom(wrapId, diagId){
@@ -1673,15 +1680,300 @@ HTML(html)
 
 :::
 
+
 ## Explainability
 
-One of the key advantages of the Label Attention architecture is its built-in interpretability: the cross-attention weights between label queries and token keys directly reveal which parts of the input each class focused on when making a prediction. This section exploits those weights to understand what the model has learned.
+This section compares how two architectures — **Label Attention** (best model) and its **mean-pooling counterpart** (same backbone, no label attention) — respond to the same test examples, using Captum Layer Integrated Gradients attributions produced by `benchmark/explain.py`.
 
-Four complementary views are presented:
+Two complementary lenses are presented:
 
-- **Per-example token highlighting**: for a given review, the attention weight of each word is shown for every star rating simultaneously, making it possible to see which tokens drove the predicted class.
-- **Corpus-level word importance**: aggregated over the full test set, for each class the most consistently attended words are identified — effectively surfacing the vocabulary the model associates with each rating.
-- **Head specialization**: the label attention heads are compared to assess whether they capture distinct linguistic features or redundant patterns.
-- **Self-attention across layers**: the transformer self-attention matrix (seq_len × seq_len) is shown for each layer of the encoder. This reveals how the model progressively builds contextual representations — early layers tend to attend locally while deeper layers develop longer-range dependencies. The `self_attn.npz` artifact stores shape `(n_layers, L, L)` per example, making layer-by-layer comparison straightforward.
+- **Corpus-level word importance**: attributions aggregated over 200 test examples, surfacing the vocabulary each star rating relies on.
+- **Per-example token attribution**: for individual reviews, signed Captum scores show which words push each model toward or away from each class — side by side for direct comparison.
 
-*Figures coming soon — requires running `benchmark/predict.py` with a run ID.*
+```{python}
+#| label: load-explain-artifacts
+
+import tempfile
+from pathlib import Path
+from collections import defaultdict
+
+import mlflow
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+EXPLAIN_RUN_LABATT  = "8286dc715ad54791bbb1407d840d528b"
+EXPLAIN_RUN_POOLING = "???"   # replace with pooling model run ID once available
+
+_CANDIDATE_NAMES = ["captum.npz", "captum_attn.npz"]   # try new name, fall back to old
+
+def _load_captum(run_id: str):
+    """Download captum artifact for run_id; returns None if unavailable."""
+    if not run_id or run_id.startswith("?"):
+        return None
+    cache_dir = Path(f"benchmark/results/explain_{run_id[:8]}")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    # Return from cache — check all candidate filenames
+    for name in _CANDIDATE_NAMES:
+        cache = cache_dir / name
+        if cache.exists():
+            return np.load(cache, allow_pickle=True)
+    # Try downloading from MLflow
+    client = mlflow.MlflowClient()
+    for name in _CANDIDATE_NAMES:
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                local = client.download_artifacts(run_id, f"explainability/{name}", dst_path=tmp)
+                d     = np.load(local, allow_pickle=True)
+                cache = cache_dir / "captum.npz"
+                np.savez(str(cache), **{k: d[k] for k in d.files})
+                return np.load(cache, allow_pickle=True)
+        except Exception:
+            continue
+    return None
+
+cap_la = _load_captum(EXPLAIN_RUN_LABATT)
+cap_pl = _load_captum(EXPLAIN_RUN_POOLING)
+
+HAS_LA = cap_la is not None
+HAS_PL = cap_pl is not None
+HAS_BOTH = HAS_LA and HAS_PL
+
+if not HAS_LA:
+    print("Label Attention artifacts not yet available — re-run benchmark/explain.py")
+else:
+    N_CLS   = cap_la["word_attn"][0].shape[0]
+    STARS   = [f"{i+1}★" for i in range(N_CLS)]
+    PALETTE = ["#1565C0", "#2E7D32", "#F57F17", "#6A1B9A", "#B71C1C"]
+
+    MODEL_DATA   = {"labatt": cap_la}
+    MODEL_LABELS = {"labatt": "Label Attention"}
+    if HAS_PL:
+        MODEL_DATA["pooling"]   = cap_pl
+        MODEL_LABELS["pooling"] = "Mean Pooling"
+
+    def _class_sorted(cap, i: int) -> np.ndarray:
+        inv = np.argsort(cap["class_order"][i])
+        return cap["word_attn"][i][inv]
+```
+
+### Corpus-level word importance
+
+```{python}
+#| label: fig-captum-corpus
+#| fig-cap: "Top words per star rating (Captum IG, mean over 200 examples, min. 5 occurrences). Bars in class colour push toward the class; red bars push away."
+
+if not HAS_LA:
+    print("Artifacts not yet available.")
+else:
+    def _corpus_acc(cap) -> list:
+        acc = [defaultdict(list) for _ in range(N_CLS)]
+        for i, wds in enumerate(cap["words"]):
+            mat = _class_sorted(cap, i)
+            for c in range(N_CLS):
+                for j, w in enumerate(list(wds)):
+                    if j < mat.shape[1]:
+                        acc[c][w.lower()].append(float(mat[c, j]))
+        return acc
+
+    TOP_K = 12
+
+    def _corpus_traces(acc: list) -> list:
+        traces = []
+        for c in range(N_CLS):
+            means = {w: float(np.mean(v)) for w, v in acc[c].items() if len(v) >= 5}
+            top   = sorted(means.items(), key=lambda x: -x[1])[:TOP_K]
+            ws    = [w for w, _ in top][::-1]
+            ss    = [float(s) for _, s in top][::-1]
+            traces.append(go.Bar(
+                x=ss, y=ws, orientation="h",
+                marker_color=[PALETTE[c] if s >= 0 else "#ef5350" for s in ss],
+                showlegend=False,
+                hovertemplate="%{y}: %{x:.4f}<extra></extra>",
+            ))
+        return traces
+
+    accs_per_model = {k: _corpus_acc(v) for k, v in MODEL_DATA.items()}
+    traces_per_model = {k: _corpus_traces(v) for k, v in accs_per_model.items()}
+    n_tr = N_CLS
+
+    fig_corp = make_subplots(rows=1, cols=N_CLS, subplot_titles=STARS, shared_yaxes=False)
+
+    for model_key, traces in traces_per_model.items():
+        for c, tr in enumerate(traces):
+            fig_corp.add_trace(tr, row=1, col=c + 1)
+        fig_corp.update_xaxes(
+            showgrid=True, gridcolor="#eee",
+            zeroline=True, zerolinecolor="#bbb",
+            title_text="Mean IG score",
+            row=1, col=c + 1,
+        )
+
+    # Default: show only first model (labatt); hide others
+    n_models = len(traces_per_model)
+    for i, tr in enumerate(fig_corp.data):
+        tr.visible = (i < n_tr)   # first n_tr traces = labatt
+
+    layout_extra = {}
+    if HAS_BOTH:
+        vis_la = [True]  * n_tr + [False] * n_tr
+        vis_pl = [False] * n_tr + [True]  * n_tr
+        layout_extra = dict(
+            annotations=[dict(
+                text="<b>Model:</b>", x=0, xanchor="left", xref="paper",
+                y=1.18, yanchor="bottom", yref="paper",
+                showarrow=False, font=dict(size=12, color="#555"),
+            )],
+            updatemenus=[dict(
+                type="buttons", direction="right",
+                buttons=[
+                    dict(label="Label Attention", method="restyle",
+                         args=[{"visible": vis_la}]),
+                    dict(label="Mean Pooling",    method="restyle",
+                         args=[{"visible": vis_pl}]),
+                ],
+                x=0.12, xanchor="left", y=1.15, yanchor="top",
+                showactive=True, bgcolor="#f0f0f0",
+                bordercolor="#ccc", borderwidth=1,
+                font=dict(size=12, color="#222"),
+                pad=dict(l=4, r=4, t=4, b=4),
+            )],
+        )
+
+    fig_corp.update_layout(
+        height=440, margin=dict(t=100 if HAS_BOTH else 50, b=20, l=10, r=10),
+        paper_bgcolor="white", plot_bgcolor="white",
+        **layout_extra,
+    )
+    fig_corp.show()
+```
+
+### Per-example token attribution
+
+```{python}
+#| label: fig-captum-example
+#| fig-cap: "Captum IG attributions for individual reviews. Each row = one star class. Blue = pushes toward the class; red = pushes away. Navigate with the numbered buttons."
+
+if not HAS_LA:
+    print("Artifacts not yet available.")
+else:
+    MAX_WORDS = 30
+    N_EX_SHOW = 10
+    N_COLS    = 2 if HAS_BOTH else 1
+    col_titles = ["Label Attention", "Mean Pooling"] if HAS_BOTH else ["Label Attention"]
+
+    y_true_la = cap_la["y_true"].astype(int)
+    y_pred_la = cap_la["y_pred"].astype(int)
+    rng       = np.random.default_rng(42)
+
+    ex_indices: list = []
+    for c in range(N_CLS):
+        mask = np.where((y_true_la == c) & (y_pred_la == c))[0]
+        if len(mask):
+            ex_indices.append(int(rng.choice(mask)))
+    remaining = [i for i in np.where(y_pred_la == y_true_la)[0] if i not in ex_indices]
+    rng.shuffle(remaining)
+    ex_indices += list(remaining[: N_EX_SHOW - len(ex_indices)])
+    ex_indices  = ex_indices[:N_EX_SHOW]
+
+    def _ex_arrays(cap, i: int):
+        wds  = list(cap["words"][i])[:MAX_WORDS]
+        mat  = _class_sorted(cap, i)[:, :len(wds)]
+        amax = float(np.abs(mat).max()) or 1.0
+        return wds, mat, amax
+
+    payloads = []
+    for ei in ex_indices:
+        wds_la, mat_la, amax_la = _ex_arrays(cap_la, ei)
+        entry = {
+            "title": (
+                f"y_true={STARS[y_true_la[ei]]}  —  "
+                f"\"{str(cap_la['texts'][ei])[:100]}…\""
+            ),
+            "wds_la": wds_la, "mat_la": mat_la, "amax_la": amax_la,
+        }
+        if HAS_BOTH:
+            wds_pl, mat_pl, amax_pl = _ex_arrays(cap_pl, ei)
+            entry.update({"wds_pl": wds_pl, "mat_pl": mat_pl, "amax_pl": amax_pl})
+        payloads.append(entry)
+
+    fig = make_subplots(
+        rows=N_CLS, cols=N_COLS,
+        column_titles=col_titles,
+        vertical_spacing=0.05,
+        horizontal_spacing=0.06,
+    )
+
+    col_specs = [("wds_la", "mat_la", "amax_la")]
+    if HAS_BOTH:
+        col_specs.append(("wds_pl", "mat_pl", "amax_pl"))
+
+    init = payloads[0]
+    for c in range(N_CLS):
+        for col_idx, (wds_key, mat_key, amax_key) in enumerate(col_specs):
+            wds  = init[wds_key]
+            sc   = init[mat_key][c].tolist()
+            amax = init[amax_key]
+            fig.add_trace(
+                go.Bar(
+                    x=list(range(len(wds))), y=sc,
+                    marker=dict(
+                        color=sc, colorscale="RdBu", cmid=0,
+                        cmin=-amax, cmax=amax, showscale=False,
+                    ),
+                    text=wds, textposition="outside",
+                    hovertemplate="%{text}: %{y:.3f}<extra></extra>",
+                    showlegend=False,
+                ),
+                row=c + 1, col=col_idx + 1,
+            )
+            fig.update_xaxes(showticklabels=False, row=c + 1, col=col_idx + 1)
+            fig.update_yaxes(
+                zeroline=True, zerolinecolor="#bbb",
+                title_text=STARS[c] if col_idx == 0 else "",
+                row=c + 1, col=col_idx + 1,
+            )
+
+    n_traces = N_COLS * N_CLS
+    nav_buttons = []
+    for ei_idx, payload in enumerate(payloads):
+        new_x, new_y, new_text = [], [], []
+        for c in range(N_CLS):
+            for wds_key, mat_key, _amax_key in col_specs:
+                wds = payload[wds_key]
+                sc  = payload[mat_key][c].tolist()
+                new_x.append(list(range(len(wds))))
+                new_y.append(sc)
+                new_text.append(wds)
+        nav_buttons.append(dict(
+            label=str(ei_idx + 1),
+            method="update",
+            args=[
+                {"x": new_x, "y": new_y, "text": new_text},
+                {"title.text": payload["title"]},
+            ],
+        ))
+
+    fig.update_layout(
+        height=150 * N_CLS,
+        title_text=init["title"],
+        title_font_size=11,
+        margin=dict(t=110, b=20, l=60, r=20),
+        paper_bgcolor="white", plot_bgcolor="white",
+        annotations=[dict(
+            text="<b>Example:</b>", x=0, xanchor="left", xref="paper",
+            y=1.09, yanchor="bottom", yref="paper",
+            showarrow=False, font=dict(size=12, color="#555"),
+        )],
+        updatemenus=[dict(
+            type="buttons", direction="right",
+            buttons=nav_buttons,
+            x=0.10, xanchor="left", y=1.06, yanchor="top",
+            showactive=True, bgcolor="#f0f0f0",
+            bordercolor="#ccc", borderwidth=1,
+            font=dict(size=12, color="#222"),
+            pad=dict(l=4, r=4, t=4, b=4),
+        )],
+    )
+    fig.show()
+```
