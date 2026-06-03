@@ -1,9 +1,9 @@
 """
 How to use:
 
-    uv run run.py dataset=ag_news
-    uv run run.py dataset=ag_news model.embedding_dim=128 model.n_layers=2
-    uv run run.py dataset=ag_news tokenizer=wordpiece training.lr=0.001
+    uv run python -m benchmark.train dataset=ag_news
+    uv run python -m benchmark.train dataset=ag_news model.embedding_dim=128 model.n_layers=2
+    uv run python -m benchmark.train dataset=ag_news tokenizer=wordpiece training.lr=0.001
 
 Override any config value from the CLI. Config groups:
     dataset:   ag_news | sst2 | imdb | amazon | 20newsgroups | subj | clinc150
@@ -184,9 +184,6 @@ def main(cfg: DictConfig):
     # 1 MLflow experiment per dataset — all hyperparameter runs for a dataset are grouped together
     experiment_name = cfg.get("experiment_name") or dataset_name
     mlflow.set_experiment(experiment_name)
-
-    if m.n_layers == 0 and m.n_heads_label_attention is not None:
-        raise ValueError("n_heads_label_attention requires n_layers > 0")
 
     train_fraction = cfg.get("train_fraction", 1.0)
     dataset_cfg["train_fraction"] = train_fraction
