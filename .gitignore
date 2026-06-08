@@ -31,8 +31,11 @@ models/
 # Report (generated files only — report.qmd is tracked)
 index_files/
 /.quarto/
-**/*.quarto_ipynb
+**/*.quarto_ipynb*
 index.html
 
 # Schemas
 schemas/
+
+# Predictions
+/benchmark/results/*npz
