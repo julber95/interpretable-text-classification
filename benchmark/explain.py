@@ -65,7 +65,6 @@ from omegaconf import DictConfig, OmegaConf
 
 from torchTextClassifiers import torchTextClassifiers
 from torchTextClassifiers.model.components.attention import apply_rotary_emb
-from torchTextClassifiers.utilities.plot_explainability import map_attributions_to_word
 from benchmark.train import load_data
 
 log = logging.getLogger(__name__)
@@ -236,14 +235,26 @@ def _run_label_attention(
                 attn_b    = attn_matrix[b]          # (n_heads, n_classes, seq_len)
                 attn_mean = attn_b.mean(axis=0)     # (n_classes, seq_len) — averaged over heads
 
-                # Token → word mapping: sub-tokens belonging to the same word are aggregated
-                words_b, word_attn_b = map_attributions_to_word(
-                    attributions=torch.tensor(attn_mean),
-                    text=text,
-                    word_ids=word_ids_all[b],
-                    offsets=offsets[b],
-                )
-                all_words.append(list(words_b.values()))
+                # Token → word mapping: sum token-level weights per word.
+                # map_attributions_to_word applies an extra softmax on top of already-
+                # normalised attention weights, collapsing variance to ≈ 0. We aggregate
+                # directly to preserve the actual distribution.
+                ids       = np.array([x if x is not None else -1 for x in word_ids_all[b]], dtype=int)
+                valid     = ids >= 0
+                ids_v     = ids[valid]
+                attn_v    = attn_mean[:, valid]           # (n_classes, n_real_tokens)
+                unique_w  = np.unique(ids_v)
+                word_attn_b = np.zeros((attn_mean.shape[0], len(unique_w)), dtype=np.float32)
+                for j, wid in enumerate(unique_w):
+                    word_attn_b[:, j] = attn_v[:, ids_v == wid].sum(axis=1)
+
+                word_strs: dict[int, str] = {}
+                for pos, wid in enumerate(ids):
+                    if wid >= 0 and wid not in word_strs:
+                        s, e = offsets[b][pos]
+                        word_strs[wid] = text[s:e]
+
+                all_words.append([word_strs[wid] for wid in unique_w])
                 all_word_attn.append(word_attn_b)   # (n_classes, n_words)
                 all_head_attn.append(attn_b)        # (n_heads, n_classes, seq_len)
 
@@ -304,7 +315,7 @@ def _extract_self_attn(clf: torchTextClassifiers, texts: list) -> list:
         h.remove()
 
     # ── Recompute attention scores from Q and K ───────────────────────────────
-    layer_attn = []
+    layer_attn, layer_attn_per_head = [], []
     for i in range(n_layers):
         q = q_cache[i].view(B, T, n_head,    head_dim)  # (B, T, H, D) — before transpose
         k = k_cache[i].view(B, T, n_kv_head, head_dim)  # (B, T, Hkv, D)
@@ -327,19 +338,26 @@ def _extract_self_attn(clf: torchTextClassifiers, texts: list) -> list:
         scores = torch.matmul(q, k.transpose(-2, -1)) / (head_dim ** 0.5)
         pad_mask = (attn_mask == 0).unsqueeze(1).unsqueeze(2)  # (B, 1, 1, T)
         scores   = scores.masked_fill(pad_mask, float("-inf"))
-        attn     = torch.softmax(scores, dim=-1).mean(dim=1)   # (B, T, T) avg over heads
+        attn_per_head = torch.softmax(scores, dim=-1)          # (B, H, T, T)
+        attn          = attn_per_head.mean(dim=1)              # (B, T, T) avg over heads
 
         layer_attn.append(attn.cpu().numpy())
+        layer_attn_per_head.append(attn_per_head.cpu().numpy())
 
     # ── Crop to real seq length per example ───────────────────────────────────
-    real_lengths = attn_mask.sum(dim=1).tolist()
-    result = []
+    real_lengths  = attn_mask.sum(dim=1).tolist()
+    all_token_ids = input_ids.cpu().tolist()
+    result, result_per_head, tokens_result = [], [], []
     for b in range(B):
         L = int(real_lengths[b])
         result.append(np.stack([layer_attn[i][b, :L, :L] for i in range(n_layers)]))
         # shape per example: (n_layers, L, L)
+        result_per_head.append(np.stack([layer_attn_per_head[i][b, :, :L, :L] for i in range(n_layers)]))
+        # shape per example: (n_layers, n_heads, L, L)
+        tok_strs = clf.tokenizer.tokenizer.convert_ids_to_tokens(all_token_ids[b][:L])
+        tokens_result.append(np.array(tok_strs, dtype=object))
 
-    return result
+    return result, result_per_head, tokens_result
 
 
 def _run_self_attn(
@@ -354,16 +372,21 @@ def _run_self_attn(
     """Run _extract_self_attn over a subsample; returns a dict ready for np.savez."""
     n_self_attn = min(n_self_attn, len(texts))
 
-    matrices  = []
+    matrices, matrices_per_head, all_tokens = [], [], []
     n_batches = (n_self_attn + batch_sz - 1) // batch_sz
     with _progress(f"Self-attention  [{label}]", "magenta") as progress:
         task = progress.add_task("", total=n_batches)
         for start in range(0, n_self_attn, batch_sz):
-            matrices.extend(_extract_self_attn(clf, texts[start : min(start + batch_sz, n_self_attn)]))
+            mats, mats_ph, toks = _extract_self_attn(clf, texts[start : min(start + batch_sz, n_self_attn)])
+            matrices.extend(mats)
+            matrices_per_head.extend(mats_ph)
+            all_tokens.extend(toks)
             progress.advance(task)
 
     return {
-        "self_attn": _ragged(matrices),
+        "self_attn":          _ragged(matrices),
+        "self_attn_per_head": _ragged(matrices_per_head),
+        "tokens":             _ragged(all_tokens),
         "texts":     np.array(texts[:n_self_attn], dtype=object),
         "y_true":    y_sample[:n_self_attn],
         "y_pred":    y_pred[:n_self_attn],
