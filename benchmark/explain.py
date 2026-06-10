@@ -13,9 +13,10 @@ Artifacts logged to each MLflow run under explainability/:
                        class_order[i]: (n_classes,) mapping row k → actual class.
   - label_attn.npz     word-level label-attention weights (Label Attention model only —
                        Mean Pooling has no such mechanism).
-                       Keys: texts, words, word_attn, head_attn, y_true.
+                       Keys: texts, words, word_attn, head_attn, head_word_attn, y_true.
                        word_attn[i]: (n_classes, n_words), averaged over heads, softmax-
                        normalised over words. head_attn[i]: (n_heads, n_classes, seq_len), raw.
+                       head_word_attn[i]: (n_heads, n_classes, n_words), per-head word level.
   - class_vectors.npz  per-class direction vectors used at the classification step —
                        comparable across architectures despite different mechanisms:
                          * Label Attention → label_embeds: learned query vectors of the
@@ -150,6 +151,7 @@ def _run_captum(
                 np.array(batch_texts),
                 explain_with_captum=True,
                 top_k=n_classes,
+                device=clf.device,
             )
 
             captum_attn  = result["captum_attributions"]   # (B, n_classes, seq_len) — signed
@@ -206,15 +208,17 @@ def _run_label_attention(
     so each class gets its own view of "which words mattered for this rating".
 
     Returns a dict with arrays ready to be saved via np.savez:
-        texts, words, word_attn, head_attn, y_true
-    word_attn[i]: (n_classes, n_words) — averaged over heads, softmax-normalised over words.
-    head_attn[i]: (n_heads, n_classes, seq_len) — raw, per head, token level (head specialisation).
+        texts, words, word_attn, head_attn, head_word_attn, y_true
+    word_attn[i]:      (n_classes, n_words) — averaged over heads, softmax-normalised over words.
+    head_attn[i]:      (n_heads, n_classes, seq_len) — raw, per head, token level (head specialisation).
+    head_word_attn[i]: (n_heads, n_classes, n_words) — per head, word level (token weights summed per word).
     """
     n_ex = min(n_ex, len(texts))
 
-    all_words     = []
-    all_word_attn = []
-    all_head_attn = []
+    all_words          = []
+    all_word_attn      = []
+    all_head_attn      = []
+    all_head_word_attn = []
 
     n_batches = (n_ex + batch_sz - 1) // batch_sz
     with _progress(f"Label attention  [{label}]", "green") as progress:
@@ -222,7 +226,7 @@ def _run_label_attention(
         for start in range(0, n_ex, batch_sz):
             batch_texts = texts[start : start + batch_sz]
 
-            result = clf.predict(np.array(batch_texts), explain_with_label_attention=True)
+            result = clf.predict(np.array(batch_texts), explain_with_label_attention=True, device=clf.device)
 
             attn_matrix  = result["label_attention_attributions"]   # (B, n_heads, n_classes, seq_len)
             offsets      = result["offset_mapping"]
@@ -243,10 +247,13 @@ def _run_label_attention(
                 valid     = ids >= 0
                 ids_v     = ids[valid]
                 attn_v    = attn_mean[:, valid]           # (n_classes, n_real_tokens)
+                attn_bv   = attn_b[:, :, valid]           # (n_heads, n_classes, n_real_tokens)
                 unique_w  = np.unique(ids_v)
                 word_attn_b = np.zeros((attn_mean.shape[0], len(unique_w)), dtype=np.float32)
+                head_word_attn_b = np.zeros((attn_b.shape[0], attn_mean.shape[0], len(unique_w)), dtype=np.float32)
                 for j, wid in enumerate(unique_w):
                     word_attn_b[:, j] = attn_v[:, ids_v == wid].sum(axis=1)
+                    head_word_attn_b[:, :, j] = attn_bv[:, :, ids_v == wid].sum(axis=2)
 
                 word_strs: dict[int, str] = {}
                 for pos, wid in enumerate(ids):
@@ -255,17 +262,19 @@ def _run_label_attention(
                         word_strs[wid] = text[s:e]
 
                 all_words.append([word_strs[wid] for wid in unique_w])
-                all_word_attn.append(word_attn_b)   # (n_classes, n_words)
-                all_head_attn.append(attn_b)        # (n_heads, n_classes, seq_len)
+                all_word_attn.append(word_attn_b)             # (n_classes, n_words)
+                all_head_attn.append(attn_b)                  # (n_heads, n_classes, seq_len)
+                all_head_word_attn.append(head_word_attn_b)   # (n_heads, n_classes, n_words)
 
             progress.advance(task)
 
     return {
-        "texts":     np.array(texts[:n_ex], dtype=object),
-        "words":     _ragged(all_words),
-        "word_attn": _ragged(all_word_attn),
-        "head_attn": _ragged(all_head_attn),
-        "y_true":    y_sample[:n_ex],
+        "texts":          np.array(texts[:n_ex], dtype=object),
+        "words":          _ragged(all_words),
+        "word_attn":      _ragged(all_word_attn),
+        "head_attn":      _ragged(all_head_attn),
+        "head_word_attn": _ragged(all_head_word_attn),
+        "y_true":         y_sample[:n_ex],
     }
 
 
