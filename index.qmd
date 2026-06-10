@@ -2274,11 +2274,11 @@ else:
 
 ### Are per-class explanations distinctive?
 
-A genuinely useful per-class explanation should look *different* depending on which class it explains — otherwise the model (or Captum) is essentially saying "this word is generically important", which is far less actionable than "this word specifically signals a 5★ review".
+A genuinely useful per-class explanation should look *different* depending on which class it explains, otherwise the model (or Captum) is essentially saying "this word is generically important", which is far less actionable than "this word specifically signals a 5★ review".
 
 To measure this, we compute a 5×5 **Pearson correlation matrix** between the classes' word-attribution profiles. The construction is:
 
-1. Reuse the per-class mean IG scores from the previous section. For each word seen ≥ 5 times in the 200 reviews, we already have its **mean signed IG score for each of the 5 classes** — call this a vocabulary profile per class.
+1. Reuse the per-class mean IG scores from the previous section. For each word seen ≥ 5 times in the 200 reviews, we already have its **mean signed IG score for each of the 5 classes** : call this a vocabulary profile per class.
 2. This gives 5 vectors of length |vocabulary|, one per star rating, where entry $j$ reads *"how much does word $j$ push toward class $c$ on average?"*
 3. `np.corrcoef` computes the Pearson $r$ between every pair of these class vectors, yielding the 5×5 symmetric matrix shown below.
 
@@ -2319,196 +2319,126 @@ else:
 
 ### Self-attention: how the transformer reads the sentence, layer by layer
 
-Both architectures are built on the **same transformer backbone** :they only differ in how its token-level outputs get turned into a single classification decision. So before looking at how each model aggregates information, it's worth checking whether they end up encoding the sentence **the same way internally**: we extract the head-averaged self-attention matrices from every layer, for the very same sample of reviews, for both models.
+Both architectures are built on the **same transformer backbone** : they only differ in how its token-level outputs get turned into a single classification decision. So before looking at how each model aggregates information, it's worth checking whether they end up encoding the sentence **the same way internally**: for the same short review, we extract every layer's **per-head self-attention matrices**, for both models, so individual heads can be compared side by side.
 
 **Reading an attention heatmap**: each cell `(i, j)` shows how much token `i` attends to token `j` when building its contextual representation (rows sum to 1). A **strong diagonal** means tokens mostly look at themselves and their immediate neighbours (local, syntax-like processing); **vertical stripes** : a column lighting up across many rows mean many tokens converge onto a few "hub" tokens, often punctuation or the very first token, a well-documented **attention-sink** phenomenon; a **diffuse, low-contrast** matrix means attention is spread thinly across the whole sentence (more global, semantic mixing).
 
 ```{python}
 #| label: fig-explain-selfattn-example
-#| fig-cap: "Self-attention matrices (averaged over heads) for the same review, layer by layer, for both models. Row = query token, column = key token; brighter = more attention weight."
+#| fig-cap: "Self-attention matrices per head and per layer, for the same short review. One column per model; rows are grouped by layer (braced on the left), one head per row."
 
-HAS_SA = HAS_LA and all(SELF_ATTN.get(k) is not None for k in MODEL_KEYS)
+HAS_SA       = HAS_LA and all(SELF_ATTN.get(k) is not None for k in MODEL_KEYS)
+HAS_PER_HEAD = HAS_SA and all("self_attn_per_head" in SELF_ATTN[k].files for k in MODEL_KEYS)
 
-if not HAS_SA:
-    print("Self-attention artifacts not yet available.")
-else:
-    n_align  = min(len(SELF_ATTN[k]["texts"]) for k in MODEL_KEYS)
-    lengths  = [SELF_ATTN[MODEL_KEYS[0]]["self_attn"][i].shape[-1] for i in range(n_align)]
-    decent   = [i for i, L in enumerate(lengths) if 25 <= L <= 55]
-    ex_idx   = decent[0] if decent else int(np.argmax(lengths))
-    n_layers = SELF_ATTN[MODEL_KEYS[0]]["self_attn"][ex_idx].shape[0]
-
-    fig_sa = make_subplots(
-        rows=len(MODEL_KEYS), cols=n_layers,
-        row_titles=[MODEL_LABELS[k] for k in MODEL_KEYS],
-        column_titles=[f"Layer {l + 1}" for l in range(n_layers)],
-        horizontal_spacing=0.05, vertical_spacing=0.10,
-    )
-    for ri, key in enumerate(MODEL_KEYS):
-        m = SELF_ATTN[key]["self_attn"][ex_idx]
-        for l in range(n_layers):
-            fig_sa.add_trace(go.Heatmap(
-                z=m[l], colorscale="Viridis", zmin=0, showscale=(ri == 0 and l == n_layers - 1),
-                colorbar=dict(title="weight", len=0.5),
-            ), row=ri + 1, col=l + 1)
-            xref = "x" if (ri == 0 and l == 0) else f"x{ri * n_layers + l + 1}"
-            fig_sa.update_yaxes(
-                showticklabels=False, autorange="reversed",
-                scaleanchor=xref, scaleratio=1,
-                row=ri + 1, col=l + 1,
-            )
-    fig_sa.update_xaxes(showticklabels=False)
-    fig_sa.update_layout(
-        height=320 * len(MODEL_KEYS), paper_bgcolor="white", plot_bgcolor="white",
-        margin=dict(t=70, b=10, l=10, r=10), title_font_size=12,
-        title_text=f"Review #{ex_idx} — \"{str(SELF_ATTN[MODEL_KEYS[0]]['texts'][ex_idx])[:90]}...\"",
-    )
-    fig_sa.show()
-```
-
-The grid above gives an overall picture across both models and layers. Below is a single zoomed-in example: a short review shown one layer at a time for one model, with the tokens on both axes so you can read exactly which words attend to which.
-
-```{python}
-#| label: fig-explain-selfattn-labeled
-#| fig-cap: "Self-attention matrix (averaged over heads) for a short review, with tokens on both axes. Row = query token (what is looking), column = key token (what is being looked at)."
-
-if not HAS_SA:
-    print("Self-attention artifacts not yet available.")
+if not HAS_PER_HEAD:
+    print("Per-head self-attention artifacts not yet available — re-run benchmark/explain.py with per-head export enabled.")
 else:
     HAS_TOKENS = "tokens" in SELF_ATTN[MODEL_KEYS[0]].files
 
-    # Pick a medium-length example (30–50 tokens)
-    n_align   = min(len(SELF_ATTN[k]["texts"]) for k in MODEL_KEYS)
-    lengths   = [SELF_ATTN[MODEL_KEYS[0]]["self_attn"][i].shape[-1] for i in range(n_align)]
-    mid_idx   = [i for i, L in enumerate(lengths) if 15 <= L <= 22]
-    lbl_idx   = mid_idx[0] if mid_idx else ex_idx
+    # Pick a short example (15–22 tokens) so the per-head grid stays readable
+    n_align  = min(len(SELF_ATTN[k]["texts"]) for k in MODEL_KEYS)
+    lengths  = [SELF_ATTN[MODEL_KEYS[0]]["self_attn"][i].shape[-1] for i in range(n_align)]
+    mid_idx  = [i for i, L in enumerate(lengths) if 15 <= L <= 22]
+    lbl_idx  = mid_idx[0] if mid_idx else int(np.argmax(lengths))
 
-    key_lbl  = MODEL_KEYS[0]
-    m_lbl    = SELF_ATTN[key_lbl]["self_attn"][lbl_idx]   # (n_layers, L, L)
-    n_layers = m_lbl.shape[0]
-    L        = m_lbl.shape[-1]
+    # self_attn_per_head[i] : (n_layers, n_heads, L, L)
+    per_head    = {k: SELF_ATTN[k]["self_attn_per_head"][lbl_idx] for k in MODEL_KEYS}
+    n_layers_ph = per_head[MODEL_KEYS[0]].shape[0]
+    n_heads_ph  = per_head[MODEL_KEYS[0]].shape[1]
+    L_ph        = per_head[MODEL_KEYS[0]].shape[-1]
 
     if HAS_TOKENS:
-        tok_labels = list(SELF_ATTN[key_lbl]["tokens"][lbl_idx])
+        tok_ph = list(SELF_ATTN[MODEL_KEYS[0]]["tokens"][lbl_idx])[:L_ph]
     else:
-        raw_words  = str(SELF_ATTN[key_lbl]["texts"][lbl_idx]).split()
-        tok_labels = (raw_words + [""] * L)[:L]
+        raw_ph = str(SELF_ATTN[MODEL_KEYS[0]]["texts"][lbl_idx]).split()
+        tok_ph = (raw_ph + [""] * L_ph)[:L_ph]
 
-    cell_px  = 17                        # pixels per cell → square cells
-    plot_sz  = L * cell_px
-    margin_l = 10                        # room for y-axis labels
+    n_cols = len(MODEL_KEYS)            # one column per model
+    n_rows = n_layers_ph * n_heads_ph   # rows grouped by layer, one head per row
 
-    fig_lbl = make_subplots(
-        rows=1, cols=n_layers,
-        column_titles=[f"Layer {l + 1}" for l in range(n_layers)],
-        horizontal_spacing=0.06,
+    vspace = 0.025
+    row_h  = (1 - vspace * (n_rows - 1)) / n_rows
+
+    def row_domain(r):  # r is 1-indexed, row 1 is at the top
+        top = 1 - (r - 1) * (row_h + vspace)
+        return top, top - row_h
+
+    fig_ph = make_subplots(
+        rows=n_rows, cols=n_cols,
+        column_titles=[MODEL_LABELS[k] for k in MODEL_KEYS],
+        horizontal_spacing=0.05, vertical_spacing=vspace,
     )
-    for l in range(n_layers):
-        fig_lbl.add_trace(go.Heatmap(
-            z=m_lbl[l],
-            x=tok_labels,
-            y=tok_labels,
-            colorscale="Viridis",
-            zmin=0,
-            showscale=(l == n_layers - 1),
-            colorbar=dict(title="weight", len=0.85, thickness=14),
-        ), row=1, col=l + 1)
-        # scaleanchor forces square cells
-        xref = "x" if l == 0 else f"x{l + 1}"
-        yref = "y" if l == 0 else f"y{l + 1}"
-        fig_lbl.update_xaxes(tickangle=-90, tickfont=dict(size=10), row=1, col=l + 1)
-        fig_lbl.update_yaxes(
-            autorange="reversed", tickfont=dict(size=10),
-            showticklabels=(l == 0),
-            scaleanchor=xref, scaleratio=1,
-            row=1, col=l + 1,
+
+    for ri in range(n_rows):
+        l, h  = divmod(ri, n_heads_ph)
+        row    = ri + 1
+        show_x = (row == n_rows)
+
+        for ci, key in enumerate(MODEL_KEYS):
+            col  = ci + 1
+            idx  = (row - 1) * n_cols + col
+            xref = "x" if idx == 1 else f"x{idx}"
+            fig_ph.add_trace(go.Heatmap(
+                z=per_head[key][l, h],
+                x=tok_ph,
+                y=tok_ph,
+                coloraxis="coloraxis",
+                hovertemplate="key=%{x}<br>query=%{y}<br>weight=%{z:.3f}"
+                              + f"<extra>{MODEL_LABELS[key]} L{l + 1} H{h + 1}</extra>",
+            ), row=row, col=col)
+            fig_ph.update_xaxes(
+                tickangle=-90, tickfont=dict(size=8),
+                showticklabels=show_x,
+                row=row, col=col,
+            )
+            fig_ph.update_yaxes(
+                autorange="reversed", showticklabels=False,
+                scaleanchor=xref, scaleratio=1,
+                row=row, col=col,
+            )
+
+        # "Head N" label, just left of the plot
+        top, bottom = row_domain(row)
+        fig_ph.add_annotation(
+            xref="paper", yref="paper",
+            x=-0.04, y=(top + bottom) / 2,
+            text=f"Head {h + 1}", showarrow=False,
+            font=dict(size=10), xanchor="right", yanchor="middle",
         )
 
-    review_snippet = str(SELF_ATTN[key_lbl]["texts"][lbl_idx])[:80]
-    fig_lbl.update_layout(
-        width=plot_sz * n_layers + 160,
-        height=plot_sz + 160,
+        # "Layer N" brace, spanning the n_heads_ph rows of this layer
+        if h == n_heads_ph - 1:
+            top1, _ = row_domain(ri - n_heads_ph + 2)
+            _, bot2 = row_domain(row)
+            x_tick, x_bar = -0.10, -0.13
+            fig_ph.add_shape(
+                type="path",
+                path=f"M {x_tick},{top1} L {x_bar},{top1} L {x_bar},{bot2} L {x_tick},{bot2}",
+                xref="paper", yref="paper",
+                line=dict(color="black", width=1),
+            )
+            fig_ph.add_annotation(
+                xref="paper", yref="paper",
+                x=-0.18, y=(top1 + bot2) / 2,
+                text=f"<b>Layer {l + 1}</b>", showarrow=False,
+                font=dict(size=11), textangle=-90,
+                xanchor="center", yanchor="middle",
+            )
+
+    cell_px = 16
+    plot_sz = L_ph * cell_px
+
+    snippet = str(SELF_ATTN[MODEL_KEYS[0]]["texts"][lbl_idx])
+    fig_ph.update_layout(
+        width=plot_sz * n_cols + 260,
+        height=plot_sz * n_rows + 160,
         paper_bgcolor="white", plot_bgcolor="white",
-        margin=dict(t=60, b=130, l=margin_l, r=40),
-        title_text=f"{MODEL_LABELS[key_lbl]} — \"{review_snippet}...\"",
+        margin=dict(t=110, b=110, l=160, r=90),
+        coloraxis=dict(colorscale="Viridis", cmin=0, colorbar=dict(title="weight", x=1.18, len=0.8)),
+        title_text=f"Per-head self-attention — \"{snippet}\"",
         title_font_size=12,
     )
-    fig_lbl.show()
-```
-
-The averaged view above summarises the overall attention pattern per layer, but it hides whether the individual heads specialise differently. The figure below breaks each layer into its constituent heads, using the same review, so both levels of granularity can be compared side by side.
-
-```{python}
-#| label: fig-explain-selfattn-perhead
-#| fig-cap: "Self-attention matrices per head for the same review. Each column is one transformer layer, each row one attention head. Only the first model is shown."
-
-if not HAS_SA:
-    print("Self-attention artifacts not yet available.")
-else:
-    HAS_PER_HEAD = "self_attn_per_head" in SELF_ATTN[MODEL_KEYS[0]].files
-
-    if not HAS_PER_HEAD:
-        print("Per-head self-attention data not yet available — re-run benchmark/explain.py with per-head export enabled.")
-    else:
-        key_ph  = MODEL_KEYS[0]
-        # self_attn_per_head[i] : (n_layers, n_heads, L, L)
-        m_ph     = SELF_ATTN[key_ph]["self_attn_per_head"][lbl_idx]
-        n_layers_ph = m_ph.shape[0]
-        n_heads_ph  = m_ph.shape[1]
-        L_ph        = m_ph.shape[-1]
-
-        if HAS_TOKENS:
-            tok_ph = list(SELF_ATTN[key_ph]["tokens"][lbl_idx])[:L_ph]
-        else:
-            raw_ph = str(SELF_ATTN[key_ph]["texts"][lbl_idx]).split()
-            tok_ph = (raw_ph + [""] * L_ph)[:L_ph]
-
-        cell_px = 13
-        plot_sz = L_ph * cell_px
-
-        fig_ph = make_subplots(
-            rows=n_heads_ph, cols=n_layers_ph,
-            row_titles=[f"Head {h + 1}" for h in range(n_heads_ph)],
-            column_titles=[f"Layer {l + 1}" for l in range(n_layers_ph)],
-            horizontal_spacing=0.06, vertical_spacing=0.06,
-        )
-
-        for h in range(n_heads_ph):
-            for l in range(n_layers_ph):
-                show_x = (h == n_heads_ph - 1)
-                show_y = (l == 0)
-                fig_ph.add_trace(go.Heatmap(
-                    z=m_ph[l, h],
-                    x=tok_ph if show_x else None,
-                    y=tok_ph if show_y else None,
-                    colorscale="Viridis",
-                    zmin=0,
-                    showscale=(h == 0 and l == n_layers_ph - 1),
-                    colorbar=dict(title="weight", len=0.45, thickness=12),
-                    hovertemplate="key=%{x}<br>query=%{y}<br>weight=%{z:.3f}"
-                                  + f"<extra>L{l + 1} H{h + 1}</extra>",
-                ), row=h + 1, col=l + 1)
-                fig_ph.update_xaxes(
-                    tickangle=-90, tickfont=dict(size=9),
-                    showticklabels=show_x,
-                    row=h + 1, col=l + 1,
-                )
-                fig_ph.update_yaxes(
-                    autorange="reversed", tickfont=dict(size=9),
-                    showticklabels=show_y,
-                    row=h + 1, col=l + 1,
-                )
-
-        snippet = str(SELF_ATTN[key_ph]["texts"][lbl_idx])[:70]
-        fig_ph.update_layout(
-            width=plot_sz * n_layers_ph + 200,
-            height=plot_sz * n_heads_ph + 200,
-            paper_bgcolor="white", plot_bgcolor="white",
-            margin=dict(t=60, b=130, l=10, r=60),
-            title_text=f"{MODEL_LABELS[key_ph]} — per-head — \"{snippet}…\"",
-            title_font_size=12,
-        )
-        fig_ph.show()
+    fig_ph.show()
 ```
 
 ### Class representations: label queries vs. linear-head directions
@@ -2625,6 +2555,216 @@ else:
         fig_agree.show()
 ```
 
+The histogram above summarises agreement at the (review, class) level via a single correlation number. The two views below disaggregate this same comparison down to the **word level**: a scatter plot of every (Captum, label-attention) pair, and a side-by-side highlighted-text view for individual reviews.
+
+```{python}
+#| label: fig-explain-labatt-scatter
+#| fig-cap: "Word-level scatter of Label Attention's softmax weight against |Captum IG|, one point per (review, class, word), faceted by star rating. r = Pearson correlation within each facet — the same pairs underlying the histogram above, shown disaggregated."
+
+if not HAS_LAT:
+    print("Label-attention artifacts not yet available (Mean Pooling has no label-attention mechanism).")
+else:
+    def _labatt_captum_points():
+        n  = min(len(cap_la["words"]), len(lat_la["words"]))
+        xs = [[] for _ in range(N_CLS)]
+        ys = [[] for _ in range(N_CLS)]
+        for i in range(n):
+            cap_mat = _class_sorted(cap_la, i)
+            lat_mat = lat_la["word_attn"][i]
+            nw = min(cap_mat.shape[1], lat_mat.shape[1])
+            if nw < 3:
+                continue
+            for c in range(N_CLS):
+                xs[c].extend(np.abs(cap_mat[c, :nw]).tolist())
+                ys[c].extend(lat_mat[c, :nw].tolist())
+        return [np.array(x) for x in xs], [np.array(y) for y in ys]
+
+    xs, ys = _labatt_captum_points()
+    all_y  = np.concatenate(ys) if any(len(y) for y in ys) else np.array([])
+
+    if all_y.size == 0 or all_y.std() < 1e-9:
+        print("Label-attention word weights are uniform (std ≈ 0) — artifact label_attn.npz needs to be regenerated via explain.py.")
+    else:
+        fig_scatter = make_subplots(rows=1, cols=N_CLS, subplot_titles=STARS,
+                                     shared_yaxes=True, horizontal_spacing=0.03)
+        for c in range(N_CLS):
+            x, y = xs[c], ys[c]
+            if len(x) > 1 and x.std() > 1e-9 and y.std() > 1e-9:
+                r = float(np.corrcoef(x, y)[0, 1])
+            else:
+                r = float("nan")
+
+            fig_scatter.add_trace(go.Scattergl(
+                x=x, y=y, mode="markers",
+                marker=dict(size=3, color=PALETTE[c], opacity=0.12),
+                showlegend=False,
+            ), row=1, col=c + 1)
+
+            ref_suffix = "" if c == 0 else str(c + 1)
+            fig_scatter.add_annotation(
+                text=f"r = {r:.2f}" if not np.isnan(r) else "r = n/a",
+                xref=f"x{ref_suffix} domain", yref=f"y{ref_suffix} domain",
+                x=0.95, y=0.97, showarrow=False,
+                font=dict(size=12, color="#333"), bgcolor="rgba(255,255,255,0.7)",
+            )
+            fig_scatter.update_xaxes(row=1, col=c + 1,
+                                      title_text="|Captum IG|" if c == N_CLS // 2 else None)
+
+        fig_scatter.update_yaxes(title_text="Label-attention weight", row=1, col=1)
+        fig_scatter.update_layout(
+            height=340, paper_bgcolor="white", plot_bgcolor="white",
+            margin=dict(t=40, b=40, l=10, r=10),
+        )
+        fig_scatter.show()
+```
+
+```{python}
+#| label: fig-explain-labatt-highlight
+#| fig-cap: "Side-by-side highlighted-text view for the Label Attention model: the top row shades each word by its |Captum IG| score (green = for / red = against the selected class), the bottom row shades the same words by the architecture's own label-attention weight (blue intensity = share of attention received). Use the star buttons to switch class."
+
+if not HAS_LAT:
+    print("Label-attention artifacts not yet available (Mean Pooling has no label-attention mechanism).")
+else:
+    _sample = np.concatenate([lat_la["word_attn"][i].ravel()
+                               for i in range(min(len(lat_la["word_attn"]), 100))])
+    if _sample.std() < 1e-9:
+        print("Label-attention word weights are uniform (std ≈ 0) — artifact label_attn.npz needs to be regenerated via explain.py.")
+    else:
+        y_true_lat = cap_la["y_true"].astype(int)
+        y_pred_lat = cap_la["y_pred"].astype(int)
+        rng2 = np.random.default_rng(7)
+
+        n_pairs   = min(len(cap_la["words"]), len(lat_la["words"]))
+        ok_lat    = np.where(y_pred_lat[:n_pairs] == y_true_lat[:n_pairs])[0]
+        rng2.shuffle(ok_lat)
+        picks_lat = ok_lat[:5].tolist()
+
+        examples_lat = []
+        for i in picks_lat:
+            i = int(i)
+            cap_mat = _class_sorted(cap_la, i)
+            lat_mat = lat_la["word_attn"][i]
+            nw = min(cap_mat.shape[1], lat_mat.shape[1], 40)
+            words = [str(w) for w in list(cap_la["words"][i])[:nw]]
+            examples_lat.append({
+                "y_true": int(cap_la["y_true"][i]),
+                "pred":   int(cap_la["y_pred"][i]),
+                "text":   str(cap_la["texts"][i])[:200],
+                "words":  words,
+                "captum_scores": [cap_mat[c][:nw].tolist() for c in range(N_CLS)],
+                "labatt_scores": [lat_mat[c][:nw].tolist() for c in range(N_CLS)],
+            })
+
+        hl2_html = f"""
+<style>
+  .hl2-wrap   {{ font-family:sans-serif; font-size:14px; }}
+  .hl2-nav    {{ display:flex; align-items:center; gap:12px; justify-content:center; margin-bottom:12px; }}
+  .hl2-btn    {{ padding:6px 18px; background:#f0f0f0; border:1px solid #ccc;
+                 border-radius:5px; cursor:pointer; font-size:13px; }}
+  .hl2-btn:hover {{ background:#e0e0e0; }}
+  .hl2-count  {{ font-size:12px; color:#999; }}
+  .hl2-card   {{ border:1px solid #e2e2e2; border-radius:8px; padding:14px 16px; background:#fcfcfc; }}
+  .hl2-meta   {{ font-size:13px; color:#444; margin-bottom:10px; }}
+  .hl2-row    {{ margin:6px 0 14px 0; }}
+  .hl2-rlbl   {{ font-size:12.5px; color:#555; margin-bottom:4px; }}
+  .hl2-words  {{ line-height:2.5; }}
+  .hl2-cls-btn {{ padding:2px 9px; font-size:11px; border-radius:12px; cursor:pointer;
+                  border:1.5px solid #555; margin:0 2px; transition:all .15s; font-weight:600; }}
+</style>
+
+<div class="hl2-wrap">
+  <div class="hl2-nav">
+    <button class="hl2-btn" onclick="hl2Nav(-1)">← Prev</button>
+    <span class="hl2-count" id="hl2-count"></span>
+    <button class="hl2-btn" onclick="hl2Nav(1)">Next →</button>
+  </div>
+  <div class="hl2-card">
+    <div class="hl2-meta" id="hl2-meta"></div>
+    <div id="hl2-rows"></div>
+  </div>
+</div>
+
+<script>
+(function() {{
+  const EX = {json.dumps(examples_lat)};
+  const ST = {json.dumps(STARS)};
+  let cur = 0;
+  let selC = {{}};
+
+  function esc(s) {{
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }}
+
+  function spansSigned(words, scores) {{
+    const amax = Math.max.apply(null, scores.map(function(x){{ return Math.abs(x); }})) || 1;
+    return words.map(function(w, j) {{
+      const s     = j < scores.length ? scores[j] : 0;
+      const t     = Math.abs(s) / amax;
+      const rgb   = s >= 0 ? '57,255,20' : '255,30,30';
+      const alpha = (0.10 + 0.65 * t).toFixed(2);
+      return '<span style="background-color:rgba(' + rgb + ',' + alpha + ');'
+           + 'padding:1px 3px;margin:0 1px;line-height:2.3;">'
+           + esc(w) + '</span>';
+    }}).join(' ');
+  }}
+
+  function spansUnsigned(words, scores) {{
+    const amax = Math.max.apply(null, scores.map(function(x){{ return Math.abs(x); }})) || 1;
+    return words.map(function(w, j) {{
+      const s     = j < scores.length ? scores[j] : 0;
+      const t     = Math.abs(s) / amax;
+      const alpha = (0.10 + 0.65 * t).toFixed(2);
+      return '<span style="background-color:rgba(21,101,192,' + alpha + ');'
+           + 'padding:1px 3px;margin:0 1px;line-height:2.3;">'
+           + esc(w) + '</span>';
+    }}).join(' ');
+  }}
+
+  function render(i) {{
+    const e  = EX[i];
+    document.getElementById('hl2-count').textContent = (i + 1) + ' / ' + EX.length;
+    const ok = e.pred === e.y_true;
+    const bc = ok ? '#2E7D32' : '#B71C1C';
+    document.getElementById('hl2-meta').innerHTML =
+      '<b>Review #' + i + '</b> &mdash; true rating: '
+      + '<span style="color:#222;font-weight:700;">' + ST[e.y_true] + '</span>'
+      + ' &mdash; predicted: <span style="color:' + bc + ';font-weight:700;">' + ST[e.pred] + '</span>'
+      + ' &mdash; <i>&ldquo;' + esc(e.text).slice(0, 170) + '&hellip;&rdquo;</i>';
+
+    const c     = selC[i] !== undefined ? selC[i] : e.pred;
+    const btns  = ST.map(function(star, k) {{
+      const active = k === c;
+      const isPred = k === e.pred;
+      const col    = isPred ? bc : '#333';
+      return '<button class="hl2-cls-btn" onclick="hl2SelClass(' + i + ',' + k + ')"'
+           + ' style="border-color:' + col + ';color:' + (active ? '#fff' : col) + ';background:' + (active ? col : '#fff') + ';">'
+           + star + '</button>';
+    }}).join('');
+
+    let h = '<div style="margin-bottom:8px;"><span style="font-size:11px;color:#888;">attributions for:</span> ' + btns + '</div>';
+    h += '<div class="hl2-row">'
+       + '<div class="hl2-rlbl"><b>Captum IG</b> <span style="font-size:11px;color:#888;">(green = for / red = against, gradient-based)</span></div>'
+       + '<div class="hl2-words">' + spansSigned(e.words, e.captum_scores[c]) + '</div>'
+       + '</div>';
+    h += '<div class="hl2-row">'
+       + '<div class="hl2-rlbl"><b>Label Attention</b> <span style="font-size:11px;color:#888;">(blue = attention received, architecture-native)</span></div>'
+       + '<div class="hl2-words">' + spansUnsigned(e.words, e.labatt_scores[c]) + '</div>'
+       + '</div>';
+    document.getElementById('hl2-rows').innerHTML = h;
+  }}
+
+  window.hl2SelClass = function(exIdx, classIdx) {{
+    selC[exIdx] = classIdx;
+    render(cur);
+  }};
+  window.hl2Nav = function(d) {{ cur = (cur + d + EX.length) % EX.length; render(cur); }};
+  render(0);
+}})();
+</script>
+"""
+        display(HTML(hl2_html))
+```
+
 ```{python}
 #| label: fig-explain-labatt-heads
 #| fig-cap: "Head specialisation in the Label Attention module: for each head, 1 − mean pairwise cosine similarity between its five class-conditioned (token-level) attention vectors, averaged over reviews (error bars = ±1 std). Higher = the head reshapes its focus more from one star rating to the next."
@@ -2671,12 +2811,12 @@ Together, these two views tell a coherent story about *how much you can trust th
 
 ### Are these explanations faithful? A word-deletion stress test
 
-All the analyses so far take attribution scores at face value — but a high attribution score is only meaningful if the model would *actually* change its mind were that word removed. This is the **faithfulness** question, and the standard way to test it — the "comprehensiveness" test from the ERASER benchmark — is refreshingly direct: progressively delete the words Captum ranked as most important for the predicted class, and watch how fast that class's predicted probability collapses. As a control, we also delete the *same number* of **randomly chosen** words, averaged over 3 draws — isolating the effect of *which* words are removed from the trivial effect of mutilating the sentence at all.
+All the analyses so far take attribution scores at face value but a high attribution score is only meaningful if the model would *actually* change its mind were that word removed. This is the **faithfulness** question, and the standard way to test it the "comprehensiveness" test from the ERASER benchmark : progressively delete the words Captum ranked as most important for the predicted class, and watch how fast that class's predicted probability collapses. As a control, we also delete the *same number* of **randomly chosen** words, averaged over 3 draws, isolating the effect of *which* words are removed from the trivial effect of mutilating the sentence at all.
 
 How to read it:
 
-- The **solid lines** (guided removal) should drop *faster* than the **dotted lines** (random removal) of the same colour — the larger that gap, the more the explanation reflects words the model genuinely depends on, rather than scores that merely *correlate* with importance without *causing* it.
-- If a model's guided and random curves are nearly **superimposed**, its Captum attributions are not very faithful: deleting the words it called "important" hurts the prediction no more than deleting random ones — the explanation is, in a meaningful sense, decorative.
+- The **solid lines** (guided removal) should drop *faster* than the **dotted lines** (random removal) of the same colour : the larger that gap, the more the explanation reflects words the model genuinely depends on, rather than scores that merely *correlate* with importance without *causing* it.
+- If a model's guided and random curves are nearly **superimposed**, its Captum attributions are not very faithful: deleting the words it called "important" hurts the prediction no more than deleting random ones  the explanation is, in a meaningful sense, decorative.
 - Comparing the **gap** between the two curves across architectures tells you which one's attributions are more trustworthy *as a debugging/auditing tool* — a property that matters in production independently of raw accuracy.
 
 ```{python}
@@ -2721,69 +2861,3 @@ else:
         print(f"  {MODEL_LABELS[key]:<16} {gap:+.4f}")
 ```
 
-### Hunting for shortcuts: do trivial tokens dominate the vocabulary?
-
-A model can reach good accuracy for the wrong reasons — by latching onto **superficial correlations** in the training data (a punctuation mark, a brand name, a digit that happens to co-occur with certain ratings) rather than genuine sentiment signal. Untangling "real" sentiment vocabulary from such **shortcuts** is exactly what corpus-level attributions are useful for: we revisit the top-15 most-attributed words per class (computed earlier) and tag each one as a **content word**, a **stopword** (function words such as "the", "and", "very" — via scikit-learn's English stopword list), or **punctuation / a number**.
-
-How to read it: a healthy model should lean overwhelmingly on **content words** that a human would recognise as sentiment-bearing. A non-trivial share of stopwords or punctuation in the top ranks is not necessarily wrong — "!", "not", or "very" can be genuine amplifiers or negators of sentiment — but it *is* worth a manual look: is the model picking up on "!!!" because excited reviewers genuinely tend to leave more extreme ratings, or because of some quirk in how this particular dataset was scraped and labelled? The first is a real, if shallow, signal; the second is a shortcut that won't generalise.
-
-```{python}
-#| label: fig-explain-shortcuts
-#| fig-cap: "Composition of the top-15 most-attributed words per star rating (5 classes × 15 ranks = 75 slots per model), broken down into content words, stopwords, and punctuation/numbers."
-
-import re
-from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
-
-_NON_ALPHA_RE = re.compile(r"^[^a-zA-Z]+$")
-
-def _word_kind(w: str) -> str:
-    wl = w.lower().strip()
-    if wl == "" or _NON_ALPHA_RE.match(wl):
-        return "punctuation / number"
-    if wl in ENGLISH_STOP_WORDS:
-        return "stopword"
-    return "content word"
-
-if not HAS_LA:
-    print("Artifacts not yet available.")
-else:
-    KINDS       = ["content word", "stopword", "punctuation / number"]
-    KIND_COLORS = {"content word": "#2E7D32", "stopword": "#F57F17", "punctuation / number": "#B71C1C"}
-
-    breakdown, flagged = {}, {}
-    for key in MODEL_KEYS:
-        counts = {k: 0 for k in KINDS}
-        flags  = []
-        for c in range(N_CLS):
-            for w, s in _corpus_top(accs[key], c, k=15):
-                kind = _word_kind(w)
-                counts[kind] += 1
-                if kind != "content word":
-                    flags.append((STARS[c], w, s, kind))
-        breakdown[key] = counts
-        flagged[key]   = flags
-
-    fig_sc = go.Figure()
-    for kind in KINDS:
-        fig_sc.add_trace(go.Bar(
-            x=[MODEL_LABELS[k] for k in MODEL_KEYS],
-            y=[breakdown[k][kind] for k in MODEL_KEYS],
-            name=kind, marker_color=KIND_COLORS[kind],
-        ))
-    fig_sc.update_layout(
-        barmode="stack", yaxis_title="# of (class, rank) slots in the top-15  (max 75)",
-        paper_bgcolor="white", plot_bgcolor="white", height=420,
-        margin=dict(t=30, b=20, l=10, r=10),
-        legend=dict(x=0.5, y=1.12, orientation="h", xanchor="center"),
-    )
-    fig_sc.show()
-
-    print("\nNon-content words appearing in a top-15 list (candidates worth a manual look):\n")
-    for key in MODEL_KEYS:
-        print(f"{MODEL_LABELS[key]}:")
-        if not flagged[key]:
-            print("  (none — every top-15 slot is a content word)")
-        for star, w, s, kind in flagged[key]:
-            print(f"  {star}  {w!r:<18} mean IG = {s:+.4f}   [{kind}]")
-        print()
-```
