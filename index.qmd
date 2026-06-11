@@ -1854,10 +1854,8 @@ Five complementary instruments are used throughout:
 - **Layer Integrated Gradients (Captum)** : a gradient-based, post-hoc attribution method that assigns every input word a *signed* score for every class: positive = pushes the prediction toward that star rating, negative = pushes away. It only needs a forward+backward pass through the model, so it can be computed identically for both architectures which is exactly what makes the comparison fair.
 - **Label-attention weights** : for the Label Attention model only: the *raw cross-attention weights* between each class query and the sentence's tokens. An explanation that's *built into* the architecture, rather than reconstructed after the fact.
 - **Self-attention matrices** : both models are built on the same transformer backbone, so we can also peek at how the encoder itself distributes attention across the sentence, layer by layer, before any classification happens.
-- **Class direction vectors** : the per-class reference vectors the final classification step actually compares the sentence representation to: the label-attention queries (`label_embeds`) for one model, the rows of the linear classification head (`linear_weight`) for the other. Different mechanisms, same role. Comparing their geometry tells us how each architecture *organises* the five star ratings internally.
+- **Class direction vectors** : we compare two 5×256 matrices, one per model: the label-attention queries from the Label Attention model, and the weight matrix of the linear classification head from the Mean Pooling model. Each contains one vector per star rating (1★ to 5★), but the two sit at very different points in the network. `linear_weight` is the final decision rule : each row is dotted directly with the sentence embedding to produce that class's logit. `label_embeds` is used earlier in the pipeline, before classification: it's the attention query that shapes the per-class representation, which is only afterwards passed through a separate (shared) classification layer to produce the logit. We compare how the five class vectors are arranged relative to each other in each matrix, to see what this reveals about how each architecture organises the five star ratings internally.
 - **A faithfulness (word-deletion) stress test** : attribution scores are only useful if they reflect what the model *actually* relies on, so we test this directly: delete the highest-scoring words and watch the predicted probability collapse (or not).
-
-Throughout, **blue tones denote evidence *for* a class and red tones evidence *against* it**, and the same five-colour palette (dark blue → green → amber → purple → dark red) consistently encodes 1★ through 5★ in every figure that breaks results down by star rating. Each subsection below states the analysis' goal, shows the figure, and closes with concrete pointers on how to read it.
 
 ```{python}
 #| label: load-explain-artifacts
@@ -1932,13 +1930,13 @@ else:
 
 ### Word attributions
 
-Aggregate statistics are useful, but the fastest way to *trust* or distrust an explanation is to look at it on a real sentence. The figure below renders a handful of test reviews as **highlighted text**: each word's background is shaded in proportion to its Captum attribution score for the **selected class** : use the star buttons to switch class. **Green = pushes toward the selected rating, red = pushes away from it**, with colour intensity proportional to `|score| / max|score|` within that review. By default the selected class is the model's predicted one, but you can inspect any class, including those not predicted, to see what evidence the model associates with each star rating. Both architectures see the *same* review, so you can directly compare which words each one leans on.
+The fastest way to *trust* or distrust an explanation is to look at it on a real sentence. The figure below renders a handful of test reviews as **highlighted text**: each word's background is shaded in proportion to its Captum attribution score for the **selected class** : use the star buttons to switch class. **Green = pushes toward the selected rating, red = pushes away from it**, with colour intensity proportional to `|score| / max|score|` within that review. By default the selected class is the model's predicted one, but you can inspect any class, including those not predicted, to see what evidence the model associates with each star rating. Both architectures see the *same* review, so you can directly compare which words each one leans on.
 
 The selection below covers four informative cases: reviews where the two architectures **disagree** on the predicted rating (the richest source of qualitative insight: *what* did one model see that the other didn't?); a couple where they **agree and are correct** (a sanity check on what a "good" explanation looks like); cases where **both are wrong** (what misleads them?); and cases where **Mean Pooling is correct but Label Attention is not** (when does the simpler architecture do better?).
 
 ```{python}
 #| label: fig-explain-highlight
-#| fig-cap: "Highlighted-text view of Captum attributions. Green = pushes toward the selected class, red = pushes away from it. Use the star buttons to switch class."
+#| fig-cap: "Highlighted-text view of Captum attributions. Use the star buttons to switch class."
 import json
 from IPython.display import HTML, display
 
@@ -2094,7 +2092,7 @@ display(out)
 
 ### Corpus-level word importance
 
-Zooming out from individual reviews: which words does each architecture rely on *in general* to recognise a 1★ vs. a 5★ review? For every one of the 200 sampled reviews, Captum produces a signed attribution for each word and each class; here we average these scores across all occurrences of each word, keeping only words seen at least 5 times, to avoid one-off noise and display the twelve most positively-attributed words per star rating.
+Zooming out from individual reviews : which words does each architecture rely on *in general* to recognise a 1★ vs. a 5★ review? For every one of the 200 sampled reviews, Captum produces a signed attribution for each word and each class; here we average these scores across all occurrences of each word, keeping only words seen at least 5 times, to avoid one-off noise and display the twelve most positively-attributed words per star rating.
 
 ```{python}
 #| label: fig-explain-corpus
@@ -2221,58 +2219,7 @@ else:
     fig_corp.show()
 ```
 
-### How focused are the explanations?
-
-A model can be "right for the right reasons" in (at least) two different styles: by **concentrating** its evidence on a handful of decisive words, or by **distributing** it thinly across the whole sentence. Neither is inherently better but the two architectures might default to different styles, and that has practical consequences (concentrated explanations are easier for a human reviewer to audit at a glance).
-
-For each review, we take the predicted class's row of |Captum scores|, normalise it into a probability distribution over the sentence's words, and compute its **Shannon entropy**, itself normalised by `log(n_words)` so that sentences of different lengths remain comparable. The result lives in *[0, 1]*:
-
-- **Close to 0** → almost all the "credit" sits on one or two words, a peaked, easy-to-audit explanation.
-- **Close to 1** → the explanation spreads its weight near-uniformly across the sentence : every word "matters a little", which in practice often means *no* word clearly stands out.
-
-```{python}
-#| label: fig-explain-entropy
-#| fig-cap: "Distribution of the normalised entropy of |Captum IG| scores for the predicted class, one point per review (200 reviews). Lower = concentrated / peaked explanations; higher = diffuse explanations."
-
-def _focus_entropy(cap) -> np.ndarray:
-    vals = []
-    for i in range(len(cap["words"])):
-        nw = len(cap["words"][i])
-        if nw < 2:
-            continue
-        s = np.abs(cap["word_attn"][i][0][:nw])   # row 0 = top-1 predicted class (confidence order)
-        tot = s.sum()
-        if tot <= 0:
-            continue
-        p = s / tot
-        h = -np.sum(p * np.log(p + 1e-12))
-        vals.append(h / np.log(nw))
-    return np.array(vals)
-
-if not HAS_LA:
-    print("Artifacts not yet available.")
-else:
-    fig_ent = go.Figure()
-    for key in MODEL_KEYS:
-        vals  = _focus_entropy(CAPTUM[key])
-        color = PALETTE[0] if key == "labatt" else PALETTE[4]
-        fig_ent.add_trace(go.Violin(
-            y=vals, name=MODEL_LABELS[key],
-            line_color=color, fillcolor=color, opacity=0.40,
-            box=dict(visible=True, fillcolor="rgba(255,255,255,0.85)",
-                     line=dict(color=color, width=1.5)),
-            meanline=dict(visible=True, color="white", width=3),
-            points="all", pointpos=0, jitter=0.35, marker=dict(size=3, opacity=0.35),
-        ))
-    fig_ent.update_layout(
-        yaxis_title="Normalised entropy of |attribution|  (0 = peaked, 1 = diffuse)",
-        yaxis_range=[0, 1.02], paper_bgcolor="white", plot_bgcolor="white",
-        height=440, margin=dict(t=30, b=20, l=10, r=10), showlegend=False,
-    )
-    fig_ent.show()
-```
-
-### Are per-class explanations distinctive?
+### Distinctiveness of per-class explanations
 
 A genuinely useful per-class explanation should look *different* depending on which class it explains, otherwise the model (or Captum) is essentially saying "this word is generically important", which is far less actionable than "this word specifically signals a 5★ review".
 
@@ -2280,15 +2227,15 @@ To measure this, we compute a 5×5 **Pearson correlation matrix** between the cl
 
 1. Reuse the per-class mean IG scores from the previous section. For each word seen ≥ 5 times in the 200 reviews, we already have its **mean signed IG score for each of the 5 classes** : call this a vocabulary profile per class.
 2. This gives 5 vectors of length |vocabulary|, one per star rating, where entry $j$ reads *"how much does word $j$ push toward class $c$ on average?"*
-3. `np.corrcoef` computes the Pearson $r$ between every pair of these class vectors, yielding the 5×5 symmetric matrix shown below.
+3. We compute the Pearson $r$ between every pair of these class vectors, yielding the 5×5 symmetric matrix shown below.
 
-**How to read it:** the diagonal is always 1 by construction. **Off-diagonal cells near +1** mean two classes share the same signed vocabulary — e.g. a strong positive correlation between 4★ and 5★ means the model tells them apart by *degree* rather than by *different words* (plausible: they are semantically adjacent). **Cells near −1** mean mirror-image vocabularies: what pushes strongly toward 1★ pushes equally strongly *away* from 5★. **Cells near 0** mean the two classes draw on largely unrelated evidence.
+**How to read it:** the diagonal is 1 by construction. **Near +1** means two classes share the same vocabulary, e.g. 4★ and 5★ are told apart by *degree*, not by *different words*. **Near −1** means mirror-image vocabularies: what pushes toward 1★ pushes away from 5★. **Near 0** means the two classes rely on unrelated evidence.
 
 ```{python}
 #| label: fig-explain-class-correlation
-#| fig-cap: "Pearson correlation between classes' corpus-level word-attribution profiles, per model. Values near +1: two ratings rely on a very similar (signed) vocabulary; near -1: mirror-image vocabularies; near 0: unrelated vocabularies."
+#| fig-cap: "Pearson correlation between classes' corpus-level word-attribution profiles, per model."
 
-def _class_corpus_matrix(acc, min_count: int = 5) -> np.ndarray:
+def _class_corpus_matrix(acc, min_count: int = 5, return_vocab: bool = False):
     vocab = sorted({w for c in acc for w, v in c.items() if len(v) >= min_count})
     mat = np.zeros((N_CLS, len(vocab)))
     for c in range(N_CLS):
@@ -2296,7 +2243,7 @@ def _class_corpus_matrix(acc, min_count: int = 5) -> np.ndarray:
             v = acc[c].get(w)
             if v and len(v) >= min_count:
                 mat[c, j] = float(np.mean(v))
-    return mat
+    return (mat, vocab) if return_vocab else mat
 
 if not HAS_LA:
     print("Artifacts not yet available.")
@@ -2316,6 +2263,65 @@ else:
     fig_corr.show()
 ```
 
+As a visual complement to the correlation matrix, we can look directly at the *individual words* behind it: each word's 5-dimensional class-attribution profile (the same vectors used above) is projected to 2D with **UMAP** and coloured by the class it is most associated with (the `argmax` of its profile). If per-class explanations are genuinely distinctive, words should form fairly separated colour clusters; if classes mostly diverge by *degree* rather than *vocabulary* (as the high 4★/5★ correlation suggests), expect overlapping clusters with smooth gradients between adjacent ratings rather than a hard partition.
+
+```{python}
+#| label: fig-explain-word-umap
+#| fig-cap: "UMAP projection of each word's 5-dimensional class-attribution profile (mean signed Captum IG score per star rating, words seen ≥ 5 times), coloured by the class it is most associated with."
+
+import umap
+
+def _word_umap(acc, min_count: int = 5, random_state: int = 42):
+    mat, vocab = _class_corpus_matrix(acc, min_count=min_count, return_vocab=True)
+    profiles = mat.T  # (|vocab|, N_CLS)
+    n_neighbors = min(15, len(vocab) - 1)
+    reducer = umap.UMAP(n_neighbors=n_neighbors, n_components=2, random_state=random_state, n_jobs=1)
+    xy = reducer.fit_transform(profiles)
+    dominant = profiles.argmax(axis=1)
+    return xy, dominant, vocab
+
+if not HAS_LA:
+    print("Artifacts not yet available.")
+else:
+    fig_umap = go.Figure()
+    for ki, key in enumerate(MODEL_KEYS):
+        xy, dominant, vocab = _word_umap(accs[key])
+        for c in range(N_CLS):
+            mask = dominant == c
+            fig_umap.add_trace(go.Scatter(
+                x=xy[mask, 0], y=xy[mask, 1], mode="markers",
+                name=STARS[c],
+                marker=dict(size=6, color=PALETTE[c], opacity=0.7, line=dict(width=0)),
+                text=[vocab[i] for i in np.where(mask)[0]],
+                hovertemplate="<b>%{text}</b><extra>%{fullData.name}</extra>",
+                visible=(ki == 0),
+                showlegend=(ki == 0),
+            ))
+
+    if HAS_BOTH:
+        vis = {key: [j // N_CLS == ki for j in range(N_CLS * len(MODEL_KEYS))]
+               for ki, key in enumerate(MODEL_KEYS)}
+        fig_umap.update_layout(updatemenus=[dict(
+            type="buttons", direction="right", active=0,
+            buttons=[dict(label=MODEL_LABELS[key], method="update",
+                          args=[{"visible": vis[key], "showlegend": vis[key]}])
+                     for key in MODEL_KEYS],
+            x=0.5, xanchor="center", y=1.08, yanchor="bottom",
+            showactive=True,
+            bgcolor="#f5f5f5", bordercolor="#ddd", borderwidth=1,
+            font=dict(size=12, color="#222"),
+            pad=dict(l=8, r=8, t=4, b=4),
+        )])
+
+    fig_umap.update_xaxes(title_text="UMAP-1", showgrid=True, gridcolor="#f0f0f0", zeroline=False)
+    fig_umap.update_yaxes(title_text="UMAP-2", showgrid=True, gridcolor="#f0f0f0", zeroline=False)
+    fig_umap.update_layout(
+        height=520, paper_bgcolor="white", plot_bgcolor="white",
+        margin=dict(t=70 if HAS_BOTH else 30, b=40, l=40, r=20),
+        legend=dict(title="Most-associated class"),
+    )
+    fig_umap.show()
+```
 
 ### Self-attention: how the transformer reads the sentence, layer by layer
 
@@ -2325,7 +2331,7 @@ Both architectures are built on the **same transformer backbone** : they only di
 
 ```{python}
 #| label: fig-explain-selfattn-example
-#| fig-cap: "Self-attention matrices per head and per layer, for the same short review. One column per model; rows are grouped by layer (braced on the left), one head per row."
+#| fig-cap: "Self-attention matrices per head and per layer, for the same short review. One column per model."
 
 HAS_SA       = HAS_LA and all(SELF_ATTN.get(k) is not None for k in MODEL_KEYS)
 HAS_PER_HEAD = HAS_SA and all("self_attn_per_head" in SELF_ATTN[k].files for k in MODEL_KEYS)
@@ -2441,6 +2447,8 @@ else:
     fig_ph.show()
 ```
 
+In Layer 1, both architectures show similarly diffuse, low-contrast attention on both heads, suggesting that early-layer processing is largely independent of how the sentence will later be aggregated. The two models diverge in Layer 2: Label Attention develops a strong diagonal (tokens attend mostly to themselves and their neighbours, a local, syntax-like pattern), whereas Mean Pooling develops pronounced vertical stripes on both heads, an attention-sink pattern where most tokens funnel their attention onto the second token of the sentence. A plausible explanation is that Mean Pooling has to pre-aggregate the sentence's information into a handful of "hub" tokens before the unweighted average is taken, whereas Label Attention can leave that selection to its dedicated cross-attention step and instead use its transformer layers for more local, contextual refinement.
+
 ### Class representations: label queries vs. linear-head directions
 
 At the very last step, both architectures reduce a review to a decision by comparing some representation of the sentence against **one reference vector per star rating**:
@@ -2448,11 +2456,16 @@ At the very last step, both architectures reduce a review to a decision by compa
 - Label Attention learns five **query embeddings** (`label_embeds`, one per class) that directly drive the cross-attention : they *are* the model's notion of "what a 1★ review looks like", "what a 5★ review looks like", and so on.
 - Mean Pooling instead learns a plain **linear classification head**; each of its five weight rows (`linear_weight`) plays the same role : the direction in embedding space onto which the pooled sentence vector is projected for that class.
 
-Despite coming from entirely different mechanisms, both sets of vectors answer the same question — "how does this architecture represent the five star ratings internally?" — so comparing their **geometry** is a fair, mechanism-agnostic probe.
+`label_embeds` and `linear_weight` happen to be matrices of the **exact same shape** (5 classes × 256-dim embedding), which makes a side-by-side comparison tempting. But same shape does not mean same role, and it's worth being explicit about how different these two objects are before reading anything into their geometry:
 
-**(a) Cosine similarity matrix** — how aligned are the five class vectors with one another, within each model? **Absolute cosine values are not comparable across the two models** (the two embedding spaces are unrelated and have different dimensionalities of meaning) — what matters is the *pattern*: are adjacent ratings (1★–2★, 4★–5★) closer to each other than distant ones (1★–5★)? A model whose class vectors trace out the **ordinal structure of star ratings** has, in some sense, "discovered" that this is a regression-like problem dressed up as classification.
+- `linear_weight` rows are **decision-boundary normals**: the predicted class is `argmax_c (w_c · x)`, so the five rows live in a *competitive* space: pushing the sentence representation toward one row's direction mechanically pushes it away from the others. Geometric relationships between rows (e.g. opposite directions for opposite ratings) directly shape the decision boundary.
+- `label_embeds` rows are **attention queries**: each is projected through `W_Q`, dotted with the *token* keys (not with each other), and softmax-normalised independently per class. Class *c*'s query never directly competes with class *c′*'s query: only their attention outputs do, several steps downstream, after going through their own value projections and the post-attention RMSNorm. The raw embedding directions are free to take whatever shape is convenient for *retrieval*, with no pressure to encode inter-class geometry.
 
-**(b) 2D PCA projection** — a visual complement to (a): we project the five 256-dimensional vectors onto their first two principal components and connect them in rating order (1★→2★→…→5★). Again, **only the shape matters, not the absolute coordinates**: a smooth arc or line suggests an ordinal layout; a tight, undifferentiated cluster suggests the model leans more on *magnitude* (how far the sentence representation sits from a boundary) than on *direction* to separate ratings; an erratic zig-zag would be the most surprising — and most interesting — finding of all.
+So while comparing their geometry is a legitimate, mechanism-agnostic probe of "how does this architecture represent the five star ratings internally?", a difference in pattern between the two should not be read as one architecture being more or less "structured" in some absolute sense: it mostly reflects that one matrix's geometry *is* the decision rule, while the other's geometry is several non-linear steps removed from it.
+
+**(a) Cosine similarity matrix**: how aligned are the five class vectors with one another, within each model? **Absolute cosine values are not comparable across the two models** (the two embedding spaces are unrelated and have different dimensionalities of meaning), what matters is the *pattern*: are adjacent ratings (1★–2★, 4★–5★) closer to each other than distant ones (1★–5★)? A model whose class vectors trace out the **ordinal structure of star ratings** has, in some sense, "discovered" that this is a regression-like problem dressed up as classification.
+
+**(b) 2D PCA projection**: a visual complement to (a). We project the five 256-dimensional vectors onto their first two principal components and connect them in rating order (1★→2★→…→5★). Again, **only the shape matters, not the absolute coordinates**: a smooth arc or line suggests an ordinal layout; a tight, undifferentiated cluster suggests the model leans more on *magnitude* (how far the sentence representation sits from a boundary) than on *direction* to separate ratings; an erratic zig-zag would be the most surprising and most interesting finding of all.
 
 ```{python}
 #| label: fig-explain-class-vectors
@@ -2509,118 +2522,62 @@ Label Attention is special: it doesn't *need* a post-hoc method like Captum to e
 
 (Mean Pooling has no such mechanism — by construction, this analysis only concerns the Label Attention model.)
 
-**(a) Agreement with Captum.** For each review and each class, we compute the **Pearson correlation** between the (softmax-normalised) label-attention weights and the |Captum scores|, both at the word level. Values close to **+1** mean the two methods broadly agree on which words matter for that class; values near **0** mean they're unrelated; negative values (rare, but possible) would mean they actively disagree.
-
-**(b) Head specialisation.** The label-attention module uses several heads per class. Are they redundant copies of each other, or does each develop its own point of view? For each head we compute how much its attention pattern *changes* depending on which class it serves: `1 − mean pairwise cosine similarity` between the head's five class-conditioned attention vectors. A score near **0** means the head looks at the same words regardless of the target class (a generic, class-agnostic feature detector); a score near **1** means the head reorganises its focus dramatically from one class to the next (a class-specialised head).
+Before comparing to Captum, it helps to look directly at what label attention is doing. The label-attention module has 4 heads, each producing its own (class × word) attention matrix; these are then averaged into the single aggregated matrix used as the architecture's built-in explanation elsewhere in this report. For one example review, the figure below shows all 4 heads' matrices alongside this aggregated, mean-over-heads matrix.
 
 ```{python}
-#| label: fig-explain-labatt-agreement
-#| fig-cap: "Per-(review, class) Pearson correlation between Label Attention's own softmax weights and |Captum IG| scores, at the word level. Mass concentrated toward +1 means the architecture's built-in explanation agrees with the post-hoc gradient-based one."
+#| label: fig-explain-labatt-heads
+#| fig-cap: "Label-attention weights for one example review: each of the 4 heads' (class × word) attention matrix, and the aggregated matrix (mean over heads, bottom row) used as the architecture's built-in explanation."
 
 HAS_LAT = HAS_LA and lat_la is not None
 
-if not HAS_LAT:
-    print("Label-attention artifacts not yet available (Mean Pooling has no label-attention mechanism).")
+if not HAS_LAT or "head_word_attn" not in lat_la.files:
+    print("Per-head label-attention artifacts not yet available.")
 else:
-    def _labatt_captum_agreement() -> np.ndarray:
-        n = min(len(cap_la["words"]), len(lat_la["words"]))
-        rhos = []
-        for i in range(n):
-            cap_mat = _class_sorted(cap_la, i)
-            lat_mat = lat_la["word_attn"][i]
-            nw = min(cap_mat.shape[1], lat_mat.shape[1])
-            if nw < 3:
-                continue
-            for c in range(N_CLS):
-                a = np.abs(cap_mat[c, :nw])
-                b = lat_mat[c, :nw]
-                if a.std() > 1e-9 and b.std() > 1e-9:
-                    rhos.append(float(np.corrcoef(a, b)[0, 1]))
-        return np.array(rhos)
+    lengths = [len(w) for w in lat_la["words"]]
+    mid_idx = [i for i, n in enumerate(lengths) if 12 <= n <= 20]
+    idx     = mid_idx[0] if mid_idx else int(np.argmin(lengths))
 
-    rhos = _labatt_captum_agreement()
-    if len(rhos) == 0:
-        print("Label-attention word weights are uniform (std ≈ 0) — artifact label_attn.npz needs to be regenerated via explain.py.")
-    else:
-        fig_agree = go.Figure(go.Histogram(x=rhos, nbinsx=30, marker_color=PALETTE[0], opacity=0.85))
-        med = float(np.median(rhos))
-        fig_agree.add_vline(x=med, line_dash="dash", line_color="#B71C1C",
-                            annotation_text=f"median = {med:.2f}", annotation_position="top right")
-        fig_agree.update_layout(
-            xaxis_title="Pearson correlation (label-attention weights vs. |Captum IG|)",
-            yaxis_title="Count over (review × class) pairs",
-            paper_bgcolor="white", plot_bgcolor="white", height=420,
-            margin=dict(t=30, b=20, l=10, r=10),
-        )
-        fig_agree.show()
+    words     = [str(w) for w in lat_la["words"][idx]]
+    head_attn = lat_la["head_word_attn"][idx]   # (n_heads, N_CLS, n_words)
+    agg_attn  = lat_la["word_attn"][idx]        # (N_CLS, n_words)
+    n_heads   = head_attn.shape[0]
+    n_rows    = n_heads + 1
+
+    fig_lah = make_subplots(
+        rows=n_rows, cols=1, shared_xaxes=True,
+        row_titles=[f"Head {h + 1}" for h in range(n_heads)] + ["Mean over heads"],
+        vertical_spacing=0.04,
+    )
+    for h in range(n_heads):
+        fig_lah.add_trace(go.Heatmap(
+            z=head_attn[h], x=words, y=STARS, coloraxis="coloraxis",
+            hovertemplate="word=%{x}<br>class=%{y}<br>weight=%{z:.3f}<extra></extra>",
+        ), row=h + 1, col=1)
+    fig_lah.add_trace(go.Heatmap(
+        z=agg_attn, x=words, y=STARS, coloraxis="coloraxis",
+        hovertemplate="word=%{x}<br>class=%{y}<br>weight=%{z:.3f}<extra></extra>",
+    ), row=n_rows, col=1)
+
+    fig_lah.update_xaxes(tickangle=-45, tickfont=dict(size=10), showticklabels=False)
+    fig_lah.update_xaxes(showticklabels=True, row=n_rows, col=1)
+    fig_lah.update_layout(
+        height=110 * n_rows + 60,
+        coloraxis=dict(colorscale="Viridis", colorbar=dict(title="weight", x=1.15)),
+        paper_bgcolor="white", plot_bgcolor="white",
+        margin=dict(t=30, b=80, l=10, r=110),
+        title_text=f"Label attention — \"{str(lat_la['texts'][idx])[:120]}\"",
+        title_font_size=12,
+    )
+    fig_lah.show()
 ```
 
-The histogram above summarises agreement at the (review, class) level via a single correlation number. The two views below disaggregate this same comparison down to the **word level**: a scatter plot of every (Captum, label-attention) pair, and a side-by-side highlighted-text view for individual reviews.
-
-```{python}
-#| label: fig-explain-labatt-scatter
-#| fig-cap: "Word-level scatter of Label Attention's softmax weight against |Captum IG|, one point per (review, class, word), faceted by star rating. r = Pearson correlation within each facet — the same pairs underlying the histogram above, shown disaggregated."
-
-if not HAS_LAT:
-    print("Label-attention artifacts not yet available (Mean Pooling has no label-attention mechanism).")
-else:
-    def _labatt_captum_points():
-        n  = min(len(cap_la["words"]), len(lat_la["words"]))
-        xs = [[] for _ in range(N_CLS)]
-        ys = [[] for _ in range(N_CLS)]
-        for i in range(n):
-            cap_mat = _class_sorted(cap_la, i)
-            lat_mat = lat_la["word_attn"][i]
-            nw = min(cap_mat.shape[1], lat_mat.shape[1])
-            if nw < 3:
-                continue
-            for c in range(N_CLS):
-                xs[c].extend(np.abs(cap_mat[c, :nw]).tolist())
-                ys[c].extend(lat_mat[c, :nw].tolist())
-        return [np.array(x) for x in xs], [np.array(y) for y in ys]
-
-    xs, ys = _labatt_captum_points()
-    all_y  = np.concatenate(ys) if any(len(y) for y in ys) else np.array([])
-
-    if all_y.size == 0 or all_y.std() < 1e-9:
-        print("Label-attention word weights are uniform (std ≈ 0) — artifact label_attn.npz needs to be regenerated via explain.py.")
-    else:
-        fig_scatter = make_subplots(rows=1, cols=N_CLS, subplot_titles=STARS,
-                                     shared_yaxes=True, horizontal_spacing=0.03)
-        for c in range(N_CLS):
-            x, y = xs[c], ys[c]
-            if len(x) > 1 and x.std() > 1e-9 and y.std() > 1e-9:
-                r = float(np.corrcoef(x, y)[0, 1])
-            else:
-                r = float("nan")
-
-            fig_scatter.add_trace(go.Scattergl(
-                x=x, y=y, mode="markers",
-                marker=dict(size=3, color=PALETTE[c], opacity=0.12),
-                showlegend=False,
-            ), row=1, col=c + 1)
-
-            ref_suffix = "" if c == 0 else str(c + 1)
-            fig_scatter.add_annotation(
-                text=f"r = {r:.2f}" if not np.isnan(r) else "r = n/a",
-                xref=f"x{ref_suffix} domain", yref=f"y{ref_suffix} domain",
-                x=0.95, y=0.97, showarrow=False,
-                font=dict(size=12, color="#333"), bgcolor="rgba(255,255,255,0.7)",
-            )
-            fig_scatter.update_xaxes(row=1, col=c + 1,
-                                      title_text="|Captum IG|" if c == N_CLS // 2 else None)
-
-        fig_scatter.update_yaxes(title_text="Label-attention weight", row=1, col=1)
-        fig_scatter.update_layout(
-            height=340, paper_bgcolor="white", plot_bgcolor="white",
-            margin=dict(t=40, b=40, l=10, r=10),
-        )
-        fig_scatter.show()
-```
+**(a) Agreement with Captum.** For each review and each class, we compute the **Pearson correlation** between the (softmax-normalised) label-attention weights and the |Captum scores|, both at the word level. Values close to **+1** mean the two methods broadly agree on which words matter for that class; values near **0** mean they're unrelated; negative values (rare, but possible) would mean they actively disagree.
 
 ```{python}
 #| label: fig-explain-labatt-highlight
 #| fig-cap: "Side-by-side highlighted-text view for the Label Attention model: the top row shades each word by its |Captum IG| score (green = for / red = against the selected class), the bottom row shades the same words by the architecture's own label-attention weight (blue intensity = share of attention received). Use the star buttons to switch class."
+
+HAS_LAT = HAS_LA and lat_la is not None
 
 if not HAS_LAT:
     print("Label-attention artifacts not yet available (Mean Pooling has no label-attention mechanism).")
@@ -2765,50 +2722,6 @@ else:
         display(HTML(hl2_html))
 ```
 
-```{python}
-#| label: fig-explain-labatt-heads
-#| fig-cap: "Head specialisation in the Label Attention module: for each head, 1 − mean pairwise cosine similarity between its five class-conditioned (token-level) attention vectors, averaged over reviews (error bars = ±1 std). Higher = the head reshapes its focus more from one star rating to the next."
-
-if not HAS_LAT:
-    print("Label-attention artifacts not yet available.")
-else:
-    def _head_specialisation(lat) -> np.ndarray:
-        n       = len(lat["head_attn"])
-        n_heads = lat["head_attn"][0].shape[0]
-        iu      = np.triu_indices(N_CLS, k=1)
-        spec    = np.zeros((n, n_heads))
-        for i in range(n):
-            a  = lat["head_attn"][i]                                  # (n_heads, n_classes, seq_len)
-            if a.shape[-1] == 0:
-                continue
-            an = a / (np.linalg.norm(a, axis=-1, keepdims=True) + 1e-12)
-            for h in range(n_heads):
-                sim = an[h] @ an[h].T
-                vals = sim[iu]
-                spec[i, h] = 1.0 - vals.mean() if len(vals) > 0 else 0.0
-        return spec
-
-    spec    = _head_specialisation(lat_la)
-    n_heads = spec.shape[1]
-    if n_heads == 0 or spec.shape[0] == 0:
-        print("Head specialisation data unavailable.")
-    else:
-        fig_heads = go.Figure(go.Bar(
-            x=[f"Head {h + 1}" for h in range(n_heads)],
-            y=spec.mean(axis=0),
-            error_y=dict(type="data", array=spec.std(axis=0), visible=True),
-            marker_color=[PALETTE[h % len(PALETTE)] for h in range(n_heads)],
-        ))
-        fig_heads.update_layout(
-            yaxis_title="Class-specialisation score  (0 = generic head, 1 = fully class-specific)",
-            yaxis_range=[0, 1.0], paper_bgcolor="white", plot_bgcolor="white",
-            height=400, margin=dict(t=30, b=20, l=10, r=10),
-        )
-        fig_heads.show()
-```
-
-Together, these two views tell a coherent story about *how much you can trust the architecture's self-reported reasoning*: strong agreement with Captum (a) combined with clearly differentiated heads (b) would mean the label-attention weights are a faithful, fine-grained, "for free" explanation — arguably Label Attention's strongest practical advantage over Mean Pooling, which offers no such built-in introspection.
-
 ### Are these explanations faithful? A word-deletion stress test
 
 All the analyses so far take attribution scores at face value but a high attribution score is only meaningful if the model would *actually* change its mind were that word removed. This is the **faithfulness** question, and the standard way to test it the "comprehensiveness" test from the ERASER benchmark : progressively delete the words Captum ranked as most important for the predicted class, and watch how fast that class's predicted probability collapses. As a control, we also delete the *same number* of **randomly chosen** words, averaged over 3 draws, isolating the effect of *which* words are removed from the trivial effect of mutilating the sentence at all.
@@ -2860,4 +2773,3 @@ else:
         gap = float(np.trapezoid(np.nanmean(fai["random_probs"], 0) - np.nanmean(fai["guided_probs"], 0), fai["fractions"]))
         print(f"  {MODEL_LABELS[key]:<16} {gap:+.4f}")
 ```
-
