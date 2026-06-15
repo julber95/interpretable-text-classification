@@ -30,12 +30,17 @@ models/
 
 # Report (generated files only — report.qmd is tracked)
 index_files/
+amazon_files/
+imdb_files/
+naf_files/
 /.quarto/
 **/*.quarto_ipynb*
 index.html
+/_site/
 
 # Schemas
 schemas/
 
 # Predictions
 /benchmark/results/preds/*npz
+**/*.quarto_ipynb

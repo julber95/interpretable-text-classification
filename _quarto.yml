@@ -1,0 +1,33 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "Benchmarking TorchTextClassifiers at INSEE"
+  navbar:
+    left:
+      - href: index.qmd
+        text: "Intro & Setup"
+      - href: amazon.qmd
+        text: "Amazon"
+      - href: imdb.qmd
+        text: "IMDb"
+      - href: naf.qmd
+        text: "NAF"
+
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    number-sections: true
+    theme: cosmo
+    embed-resources: false
+    css: styles.css
+
+lang: en
+
+execute:
+  python: .venv/bin/python
+  echo: false
+
+keep-ipynb: false
