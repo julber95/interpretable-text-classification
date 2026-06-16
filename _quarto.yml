@@ -3,8 +3,9 @@ project:
   output-dir: _site
 
 website:
-  title: "Benchmarking TorchTextClassifiers at INSEE"
+  title: "Interpretable Text Classification at INSEE"
   navbar:
+    logo: assets/light_insee_logo.png
     left:
       - href: index.qmd
         text: "Intro & Setup"
@@ -14,6 +15,8 @@ website:
         text: "IMDb"
       - href: naf.qmd
         text: "NAF"
+      - href: concepts.qmd
+        text: "Concepts"
 
 format:
   html:

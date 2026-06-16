@@ -9,7 +9,7 @@ from pathlib import Path
 import mlflow
 import pandas as pd
 
-CACHE_PATH = Path("benchmark/results/amazon_runs.csv")
+CACHE_PATH = Path("results/amazon/runs.csv")
 CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 if CACHE_PATH.exists():
@@ -60,7 +60,7 @@ else:
 
 ## Hyperparameter sweep
 
-This section reports the results of the full grid search described above (672 configurations), grouped into five complementary views: model capacity, data efficiency and robustness; the effect of vocabulary size and embedding dimension; the effect of the number of attention heads; training time; and the interaction between embedding dimension and vocabulary size.
+This section explores the results across five complementary angles: model capacity, data efficiency and robustness; the effect of vocabulary size and embedding dimension; the effect of the number of attention heads; training time; and the interaction between embedding dimension and vocabulary size.
 
 ### Capacity, data efficiency & robustness
 
@@ -150,7 +150,7 @@ Each curve shows the best validation loss (over `n_head` and `lr`) for a given a
 
 from pathlib import Path
 
-CACHE_PATH_EFF = Path("benchmark/results/amazon_train_eff_cache.csv")
+CACHE_PATH_EFF = Path("results/amazon/train_eff.csv")
 
 if CACHE_PATH_EFF.exists():
     df_eff = pd.read_csv(CACHE_PATH_EFF)
@@ -582,15 +582,15 @@ STAR_LABELS  = ["1★", "2★", "3★", "4★", "5★"]
 # Public MinIO links — no MLflow credentials needed, so the report renders for anyone
 PRED_BUCKET  = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions"
 ARCH_FILES   = {
-    "FastText":                          "amz_fasttext_preds.npz",
-    "FastText + Label Attention":        "amz_fasttext_labatt_preds.npz",
-    "FATE (L=1)":                        "amz_fateL1_preds.npz",
-    "FATE (L=1) + Label Attention":      "amz_fateL1_labatt_preds.npz",
-    "FATE (L=2)":                        "amz_fateL2_preds.npz",
-    "FATE (L=2) + Label Attention":      "amz_fateL2_labatt_preds.npz",
+    "FastText":                          "fasttext.npz",
+    "FastText + Label Attention":        "fasttext_labatt.npz",
+    "FATE (L=1)":                        "fateL1.npz",
+    "FATE (L=1) + Label Attention":      "fateL1_labatt.npz",
+    "FATE (L=2)":                        "fateL2.npz",
+    "FATE (L=2) + Label Attention":      "fateL2_labatt.npz",
 }
 
-PREDS_DIR = Path("benchmark/results/preds")
+PREDS_DIR = Path("results/amazon/preds")
 PREDS_DIR.mkdir(parents=True, exist_ok=True)
 
 preds_by_arch = {}   # arch -> {"y_test": ..., "y_pred": ..., "X_test": ...}
@@ -994,7 +994,8 @@ def _load_artifact(run_id: str, name: str):
     """Download (and cache) one explainability artifact for run_id; None if unavailable."""
     if not run_id or run_id.startswith("?"):
         return None
-    cache_dir = Path(f"benchmark/results/explain_{run_id[:8]}")
+    _RUN_LABEL = {EXPLAIN_RUN_LABATT: "labatt", EXPLAIN_RUN_POOLING: "pooling"}
+    cache_dir = Path("results/amazon/explain") / _RUN_LABEL.get(run_id, run_id[:8])
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache = cache_dir / name
     sentinel = cache_dir / (name + ".missing")
@@ -1021,7 +1022,7 @@ HAS_PL   = cap_pl is not None
 HAS_BOTH = HAS_LA and HAS_PL
 
 if not HAS_LA:
-    print("Explainability artifacts not yet available — re-run benchmark/explain.py")
+    print("Explainability artifacts not yet available — re-run src/explain.py")
 else:
     N_CLS   = cap_la["word_attn"][0].shape[0]
     STARS   = [f"{i + 1}★" for i in range(N_CLS)]
@@ -1392,7 +1393,7 @@ HAS_SA       = HAS_LA and all(SELF_ATTN.get(k) is not None for k in MODEL_KEYS)
 HAS_PER_HEAD = HAS_SA and all("self_attn_per_head" in SELF_ATTN[k].files for k in MODEL_KEYS)
 
 if not HAS_PER_HEAD:
-    print("Per-head self-attention artifacts not yet available — re-run benchmark/explain.py with per-head export enabled.")
+    print("Per-head self-attention artifacts not yet available — re-run src/explain.py with per-head export enabled.")
 else:
     HAS_TOKENS = "tokens" in SELF_ATTN[MODEL_KEYS[0]].files
 
@@ -1935,6 +1936,94 @@ else:
 """
         display(HTML(hl2_html))
 ```
+
+**(b) Quantitative agreement: correlation distributions.** The side-by-side view above is qualitative. To measure agreement systematically, we compute for each review and each class the **Pearson correlation** between the label-attention weights and the absolute Captum scores at word level, then aggregate across the 200 examples. Two complementary cuts: the overall distribution of correlations (for the predicted class), and its breakdown by predicted star rating.
+
+```{python}
+#| label: fig-labatt-corr
+#| fig-cap: "Pearson correlation between label-attention weights and |Captum IG| scores at word level, for the predicted class. Left: overall distribution. Right: breakdown by predicted star rating."
+
+from scipy.stats import pearsonr
+import pandas as pd
+
+if not HAS_LAT:
+    print("Label-attention artifacts not yet available.")
+else:
+    rows = []
+    n_ex = min(len(cap_la["words"]), len(lat_la["words"]))
+    for i in range(n_ex):
+        cap_mat = _class_sorted(cap_la, i)
+        lat_mat = lat_la["word_attn"][i]
+        nw = min(cap_mat.shape[1], lat_mat.shape[1])
+        if nw < 3:
+            continue
+        y_pred_i = int(cap_la["y_pred"][i])
+        y_true_i = int(cap_la["y_true"][i])
+        for c in range(N_CLS):
+            ig = np.abs(cap_mat[c, :nw])
+            la = lat_mat[c, :nw]
+            if ig.std() < 1e-9 or la.std() < 1e-9:
+                continue
+            r, _ = pearsonr(la, ig)
+            rows.append({
+                "r": float(r),
+                "class": c,
+                "y_pred": y_pred_i,
+                "y_true": y_true_i,
+                "correct": y_pred_i == y_true_i,
+                "is_pred_class": c == y_pred_i,
+            })
+    df_corr = pd.DataFrame(rows)
+    pred_df  = df_corr[df_corr["is_pred_class"]]
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=["Overall distribution", "By predicted rating"],
+        horizontal_spacing=0.12,
+    )
+
+    # 1. Histogram + KDE
+    from scipy.stats import gaussian_kde
+    r_vals = pred_df["r"].dropna().values
+    kde    = gaussian_kde(r_vals, bw_method=0.25)
+    x_grid = np.linspace(r_vals.min() - 0.05, r_vals.max() + 0.05, 300)
+    kde_y  = kde(x_grid)
+    bin_width = (r_vals.max() - r_vals.min()) / 25
+    kde_scaled = kde_y * len(r_vals) * bin_width
+
+    fig.add_trace(go.Histogram(
+        x=r_vals,
+        nbinsx=25,
+        marker_color="#1565C0",
+        opacity=0.5,
+        showlegend=False,
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=x_grid, y=kde_scaled,
+        mode="lines",
+        line=dict(color="#1565C0", width=2.5),
+        showlegend=False,
+    ), row=1, col=1)
+    fig.add_vline(x=r_vals.mean(), line_dash="dash", line_color="#B71C1C",
+                  annotation_text=f"mean={r_vals.mean():.2f}",
+                  annotation_position="top right", row=1, col=1)
+
+    # 2. Box per predicted star rating
+    for c in range(N_CLS):
+        sub = pred_df[pred_df["y_pred"] == c]["r"]
+        fig.add_trace(go.Box(
+            y=sub, name=STARS[c], marker_color=PALETTE[c],
+            showlegend=False, boxpoints="outliers",
+        ), row=1, col=2)
+
+    fig.update_xaxes(title_text="Pearson r", row=1, col=1)
+    fig.update_yaxes(title_text="Count", row=1, col=1)
+    fig.update_yaxes(title_text="Pearson r", row=1, col=2)
+    fig.update_layout(height=400, template="plotly_white", margin=dict(t=50))
+    fig.show()
+```
+
+The overall distribution (left) is concentrated between 0.5 and 1.0, with a mean of 0.65, and almost no negative values. The two methods broadly agree: when label attention focuses on a word, Captum tends to assign it a high score too. The breakdown by predicted rating (right) reveals that **1★ reviews show the strongest and most consistent agreement** (high median, tight box): strongly negative reviews contain clear, unambiguous signals that both methods latch onto without hesitation. **2★ reviews show the most variability** (wide spread, lowest median): mildly negative texts are harder to read, and the two methods disagree more on which words are driving the prediction.
 
 ### Are these explanations faithful? A word-deletion stress test
 
