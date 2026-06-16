@@ -1,0 +1,410 @@
+---
+title: "Concepts & Methods"
+---
+
+This page provides in-depth explanations of the key mechanisms and explainability methods used throughout this report.
+
+## Label Attention {#sec-label-attention}
+
+### Motivation
+
+In a standard FastText or FATE model, once token embeddings are computed the sequence must be collapsed into a single fixed-size vector before the classification head. The default strategy is **masked mean pooling**: sum the embeddings of all real tokens and divide by their count.
+
+$$
+\mathbf{s} = \frac{1}{|\mathcal{T}|} \sum_{t \in \mathcal{T}} \mathbf{e}_t \in \mathbb{R}^{d}
+$$
+
+where $\mathcal{T}$ is the set of non-padding positions and $\mathbf{e}_t \in \mathbb{R}^d$ is the embedding of token $t$. This sentence vector $\mathbf{s}$ is then mapped to $n_\text{classes}$ logits by a single linear layer $W \in \mathbb{R}^{n_\text{classes} \times d}$:
+
+$$
+\hat{y}_c = W_c \cdot \mathbf{s} + b_c \quad \forall\, c \in \{1, \ldots, n_\text{classes}\}
+$$
+
+The key limitation: **all classes share the same sentence representation**. For a text like *"fast delivery but the screen cracked after a week"*, the word *fast* is highly relevant for a 5-star prediction but irrelevant for a 1-star one, yet both classes look at the same pooled vector.
+
+**Label Attention** replaces mean pooling with a cross-attention step that produces a **different sentence representation for each class**, by letting each class attend selectively to the tokens most relevant to it.
+
+### Mechanism
+
+Each class $c$ is assigned a **learned embedding** $\ell_c \in \mathbb{R}^d$. These embeddings are collected into a matrix $L \in \mathbb{R}^{n_\text{classes} \times d}$ that is trained jointly with the rest of the model.
+
+The mechanism is a standard multi-head cross-attention where the label embeddings act as queries and the token embeddings act as both keys and values:
+
+$$
+Q = L \, W_Q, \quad K = X \, W_K, \quad V = X \, W_V
+$$
+
+with $X \in \mathbb{R}^{T \times d}$ the token embedding matrix ($T$ = sequence length), and projection matrices $W_Q, W_K, W_V \in \mathbb{R}^{d \times d}$. For $n_h$ heads with $d_h = d / n_h$:
+
+$$
+\text{head}_i = \text{softmax}\!\left(\frac{Q_i K_i^\top}{\sqrt{d_h}}\right) V_i \quad \in \mathbb{R}^{n_\text{classes} \times d_h}
+$$
+
+Padding positions are masked to $-\infty$ before the softmax so they receive zero attention weight. The heads are concatenated and projected back:
+
+$$
+\text{LabelAttn}(L, X) = \left[\text{head}_1 \| \cdots \| \text{head}_{n_h}\right] W_O \quad \in \mathbb{R}^{n_\text{classes} \times d}
+$$
+
+Each row $c$ of this output is a class-specific sentence representation $\mathbf{s}_c \in \mathbb{R}^d$, a weighted summary of the tokens that class $c$ found most relevant. The classification head then applies a shared linear projection $W_\text{head} \in \mathbb{R}^{d \times 1}$ independently to each row:
+
+$$
+\hat{y}_c = W_\text{head} \cdot \mathbf{s}_c + b \quad \in \mathbb{R}
+$$
+
+```{=html}
+<div style="background:#f8f9fa;border:1px solid #dee2e6;border-radius:10px;padding:1.4rem 1.8rem;margin:1.5rem 0;font-family:sans-serif;">
+
+<div style="font-size:13px;font-weight:700;color:#495057;margin-bottom:1rem;letter-spacing:.3px;">Label Attention: attention weights for two hypothetical classes</div>
+
+<div style="display:flex;gap:12px;margin-bottom:8px;align-items:flex-end;">
+  <div style="font-size:11px;color:#888;font-weight:600;min-width:90px;text-align:right;">fast</div>
+  <div style="font-size:11px;color:#888;font-weight:600;min-width:90px;text-align:right;">delivery</div>
+  <div style="font-size:11px;color:#888;font-weight:600;min-width:90px;text-align:right;">but</div>
+  <div style="font-size:11px;color:#888;font-weight:600;min-width:90px;text-align:right;">screen</div>
+  <div style="font-size:11px;color:#888;font-weight:600;min-width:90px;text-align:right;">cracked</div>
+  <div style="font-size:11px;color:#888;font-weight:600;min-width:90px;text-align:right;">week</div>
+</div>
+
+<!-- Class 5 (positive) -->
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;">
+  <div style="font-size:11px;font-weight:700;color:#2e7d32;min-width:72px;text-align:right;flex-shrink:0;">★★★★★</div>
+  <div style="width:90px;background:rgba(46,125,50,.70);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;">.40</div>
+  <div style="width:90px;background:rgba(46,125,50,.45);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;">.25</div>
+  <div style="width:90px;background:rgba(46,125,50,.10);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#555;">.05</div>
+  <div style="width:90px;background:rgba(46,125,50,.08);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#555;">.04</div>
+  <div style="width:90px;background:rgba(46,125,50,.12);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#555;">.06</div>
+  <div style="width:90px;background:rgba(46,125,50,.32);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;">.20</div>
+</div>
+
+<!-- Class 1 (negative) -->
+<div style="display:flex;align-items:center;gap:12px;">
+  <div style="font-size:11px;font-weight:700;color:#c62828;min-width:72px;text-align:right;flex-shrink:0;">★☆☆☆☆</div>
+  <div style="width:90px;background:rgba(198,40,40,.05);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#555;">.03</div>
+  <div style="width:90px;background:rgba(198,40,40,.07);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#555;">.04</div>
+  <div style="width:90px;background:rgba(198,40,40,.10);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#555;">.06</div>
+  <div style="width:90px;background:rgba(198,40,40,.65);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;">.37</div>
+  <div style="width:90px;background:rgba(198,40,40,.80);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;">.46</div>
+  <div style="width:90px;background:rgba(198,40,40,.08);border-radius:4px;height:28px;display:flex;align-items:center;justify-content:center;font-size:10px;color:#555;">.04</div>
+</div>
+
+<div style="font-size:10.5px;color:#888;margin-top:.9rem;line-height:1.6;">
+  Illustrative attention weights A[c, :] for two classes over the input <em>"fast delivery but screen cracked week"</em>.
+  The 5-star class focuses on positive signals (<em>fast</em>, <em>delivery</em>); the 1-star class on the defect (<em>screen cracked</em>).
+  Each row sums to 1 (softmax). These weights are directly interpretable as token relevance per class.
+</div>
+</div>
+```
+
+### Interpretability angle
+
+The attention weight matrix $A \in \mathbb{R}^{n_\text{classes} \times T}$ is a natural by-product of Label Attention: row $c$ tells us, for the predicted class $c^*$, how much each token contributed to the class-specific representation. Unlike post-hoc explanation methods, these weights are **intrinsic**: they are directly computed by the model at inference time, with no additional forward passes.
+
+::: {.callout-note}
+**Attention weights as explanations: a word of caution.** The debate on whether attention weights constitute faithful explanations is live in the literature. Weights quantify how much each token was *used to build the representation*, but the downstream linear layer may assign different importance to the resulting dimensions. The weights are nonetheless a useful lightweight signal, especially when combined with gradient-based methods.
+:::
+
+---
+
+## Integrated Gradients {#sec-ig}
+
+### The attribution problem
+
+Given a trained classifier $F: \mathbb{R}^d \to \mathbb{R}^{n_\text{classes}}$ and an input $\mathbf{x}$, **feature attribution** asks: how much did each input dimension contribute to the score $F_c(\mathbf{x})$ for the predicted class $c$?
+
+The naive approach is to look at the gradient $\nabla_\mathbf{x} F_c(\mathbf{x})$: a large partial derivative $\partial F_c / \partial x_i$ suggests that dimension $i$ is locally important. The problem is **saturation**.
+
+#### Saturation in detail
+
+Many functions used in neural networks (sigmoid, tanh, softmax, squared ReLU for negative inputs) have a characteristic shape: they grow rapidly in the middle range, then flatten out at both ends. The gradient measures the *local slope* at a single point. When the model has been driven to a very confident prediction, the output sits in one of these flat regions, and the local slope is nearly zero, even if the feature that pushed the model there was crucial.
+
+A concrete example with a **sigmoid output** $\sigma(z) = \frac{1}{1+e^{-z}}$, where $z = \mathbf{w} \cdot \mathbf{x} + b$ is the logit produced by the linear layer. A feature $x_i$ with a large positive weight $w_i$ drives $z$ upward when $x_i$ is large: the feature is important, the model knows it, and becomes confident. The columns below vary $z$ to show what happens to the gradient as confidence increases:
+
+| Logit $z$ | Output $\sigma(z)$ | Gradient $\sigma'(z)$ | Gradient × logit |
+|---|---|---|---|
+| 0.5 (uncertain) | 0.62 | **0.24** | 0.12 |
+| 2 (moderately confident) | 0.88 | **0.10** | 0.21 |
+| **10 (very confident)** | **0.9999** | **0.0001** | **0.001** |
+
+When the logit reaches 10, $\sigma$ is deep in its flat region: moving from the baseline $z = 0$ to $z = 10$ pushed the output from 0.50 to 0.9999 (a contribution of $\approx 0.50$), yet the local gradient at $z = 10$ is $0.0001$, making the naive attribution 500 times smaller than the actual contribution.
+
+```{=html}
+<div style="background:#f8f9fa;border:1px solid #dee2e6;border-radius:10px;padding:1.4rem 1.8rem;margin:1.5rem 0;font-family:sans-serif;">
+<div style="font-size:13px;font-weight:700;color:#495057;margin-bottom:.9rem;letter-spacing:.3px;">Sigmoid σ(x): gradient vs. actual contribution</div>
+
+<div style="position:relative;height:160px;margin-bottom:8px;">
+  <!-- y-axis labels -->
+  <div style="position:absolute;left:0;top:0;font-size:9px;color:#aaa;font-weight:600;">1.0</div>
+  <div style="position:absolute;left:0;top:68px;font-size:9px;color:#aaa;font-weight:600;">0.5</div>
+  <div style="position:absolute;left:0;bottom:0;font-size:9px;color:#aaa;font-weight:600;">0.0</div>
+
+  <!-- Sigmoid curve (SVG) -->
+  <svg viewBox="0 0 500 160" style="width:100%;height:160px;overflow:visible;">
+    <!-- Grid lines -->
+    <line x1="30" y1="10"  x2="480" y2="10"  stroke="#eee" stroke-width="1"/>
+    <line x1="30" y1="80"  x2="480" y2="80"  stroke="#ddd" stroke-dasharray="4,3" stroke-width="1"/>
+    <line x1="30" y1="150" x2="480" y2="150" stroke="#eee" stroke-width="1"/>
+
+    <!-- x-axis labels -->
+    <text x="35"  y="158" font-size="9" fill="#aaa" text-anchor="middle">-5</text>
+    <text x="113" y="158" font-size="9" fill="#aaa" text-anchor="middle">-3</text>
+    <text x="191" y="158" font-size="9" fill="#aaa" text-anchor="middle">-1</text>
+    <text x="255" y="158" font-size="9" fill="#aaa" text-anchor="middle">0</text>
+    <text x="333" y="158" font-size="9" fill="#aaa" text-anchor="middle">2</text>
+    <text x="411" y="158" font-size="9" fill="#aaa" text-anchor="middle">4</text>
+    <text x="475" y="158" font-size="9" fill="#aaa" text-anchor="middle">6+</text>
+
+    <!-- Sigmoid path: x from -5 to 7, mapped to pixel x 35..480, σ(x) mapped to pixel y 150..10 -->
+    <path d="M35,149 C60,148 80,146 100,140 C120,134 140,122 160,110 C180,95 200,78 220,65 C240,52 255,44 270,38 C290,32 310,22 340,16 C370,13 400,11 480,10"
+          fill="none" stroke="#1976d2" stroke-width="2.5" stroke-linejoin="round"/>
+
+    <!-- Highlight: flat region (x > 4) -->
+    <rect x="410" y="8" width="70" height="20" fill="rgba(198,40,40,.08)" rx="3"/>
+    <text x="445" y="22" font-size="8" fill="#c62828" font-weight="700" text-anchor="middle">flat / saturated</text>
+
+    <!-- Highlight: steep region -->
+    <rect x="190" y="55" width="130" height="65" fill="rgba(46,125,50,.07)" rx="3"/>
+    <text x="255" y="132" font-size="8" fill="#2e7d32" font-weight="700" text-anchor="middle">large gradient</text>
+
+    <!-- Point at x=10 (clamped to x=480) -->
+    <circle cx="475" cy="11" r="5" fill="#c62828"/>
+    <text x="470" y="8" font-size="8" fill="#c62828" font-weight="700" text-anchor="end">x=10, σ'≈0</text>
+
+    <!-- Baseline at x=0 -->
+    <line x1="255" y1="10" x2="255" y2="150" stroke="#888" stroke-width="1" stroke-dasharray="3,3"/>
+    <text x="258" y="45" font-size="8" fill="#888">x′=0</text>
+
+    <!-- Shaded area under the path = contribution -->
+    <path d="M255,80 C270,38 310,22 340,16 C370,13 400,11 475,11 L475,150 L255,150 Z"
+          fill="rgba(25,118,210,.12)"/>
+    <text x="370" y="105" font-size="8.5" fill="#1565c0" font-weight="700" text-anchor="middle">contribution ≈ 0.50</text>
+    <text x="370" y="116" font-size="8" fill="#1565c0" text-anchor="middle">(area under σ from 0 to 10)</text>
+  </svg>
+</div>
+
+<div style="font-size:10.5px;color:#666;line-height:1.7;">
+  The sigmoid is steep around 0 (large gradient) and flat for large inputs (near-zero gradient).
+  A feature at <strong>x = 10</strong> sits deep in the saturated zone: the <em>local</em> gradient is negligible, even though the feature drove the output from 0.5 to 0.9999.
+  Integrated Gradients recover this contribution by integrating the gradient along the path from x′ = 0 to x = 10, summing up all the slope the function accumulated on the way.
+</div>
+</div>
+```
+
+The same issue arises with the **softmax** at the output of a classifier: once the model assigns probability > 0.99 to a class, the gradient of that probability with respect to any input is tiny, regardless of which tokens actually drove the decision.
+
+**Integrated Gradients** (Sundararajan et al., 2017) addresses this by accumulating gradients along a straight-line path from a neutral **baseline** $\mathbf{x}'$ to the actual input $\mathbf{x}$, rather than evaluating the gradient at a single point. The path passes through the steep intermediate region where gradients are informative, even if the endpoint is saturated.
+
+### The baseline
+
+The baseline $\mathbf{x}' \in \mathbb{R}^d$ represents a *neutral*, *uninformative* input: a reference point from which the actual input deviates. Choosing the right baseline is problem-dependent:
+
+| Setting | Common baseline |
+|---|---|
+| Images | All-zero (black) or all-grey image |
+| Text (token ids) | Sequence of `[PAD]` tokens |
+| Text (embeddings) | Zero embedding matrix |
+
+In our models, inputs pass through an embedding layer before any computation. Integrated Gradients are computed **in embedding space**: $\mathbf{x} \in \mathbb{R}^{T \times d}$ is the embedding matrix of the input text, and $\mathbf{x}' = \mathbf{0}$ is the zero matrix (equivalent to using a learned PAD-token embedding whose contribution is factored out).
+
+### The integral
+
+The attribution of dimension $(t, j)$ (token $t$, embedding component $j$) is:
+
+$$
+\text{IG}_{t,j}(\mathbf{x}) = (x_{t,j} - x'_{t,j}) \times \int_0^1 \frac{\partial F_c\!\left(\mathbf{x}' + \alpha\,(\mathbf{x} - \mathbf{x}')\right)}{\partial x_{t,j}} \, d\alpha
+$$
+
+Intuitively: we move from $\mathbf{x}'$ to $\mathbf{x}$ in small steps $\alpha \in [0,1]$, evaluate the gradient at each interpolated point $\mathbf{x}' + \alpha(\mathbf{x} - \mathbf{x}')$, and average those gradients. The factor $(x_{t,j} - x'_{t,j})$ converts gradient units into *contribution* units (how much did moving from baseline to actual value matter?).
+
+```{=html}
+<div style="background:#f8f9fa;border:1px solid #dee2e6;border-radius:10px;padding:1.4rem 1.8rem;margin:1.5rem 0;font-family:sans-serif;">
+<div style="font-size:13px;font-weight:700;color:#495057;margin-bottom:.9rem;letter-spacing:.3px;">Interpolation path from baseline to input (m = 6 steps)</div>
+
+<div style="display:flex;align-items:center;gap:0;overflow-x:auto;">
+
+  <!-- baseline -->
+  <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
+    <div style="width:52px;height:52px;background:#f0f0f0;border:2px solid #bbb;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#777;">x′ = 0</div>
+    <div style="font-size:9px;color:#aaa;margin-top:4px;">α = 0</div>
+  </div>
+
+  <div style="font-size:18px;color:#bbb;padding:0 4px;margin-bottom:14px;">→</div>
+
+  <!-- step 1 -->
+  <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
+    <div style="width:52px;height:52px;border:2px solid #1976d2;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#1565c0;background:rgba(25,118,210,.12);">⅕ x</div>
+    <div style="font-size:9px;color:#aaa;margin-top:4px;">α = 0.2</div>
+  </div>
+
+  <div style="font-size:18px;color:#bbb;padding:0 4px;margin-bottom:14px;">→</div>
+
+  <!-- step 2 -->
+  <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
+    <div style="width:52px;height:52px;border:2px solid #1976d2;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#1565c0;background:rgba(25,118,210,.24);">⅖ x</div>
+    <div style="font-size:9px;color:#aaa;margin-top:4px;">α = 0.4</div>
+  </div>
+
+  <div style="font-size:18px;color:#bbb;padding:0 4px;margin-bottom:14px;">→</div>
+
+  <!-- step 3 -->
+  <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
+    <div style="width:52px;height:52px;border:2px solid #1976d2;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#1565c0;background:rgba(25,118,210,.36);">⅗ x</div>
+    <div style="font-size:9px;color:#aaa;margin-top:4px;">α = 0.6</div>
+  </div>
+
+  <div style="font-size:18px;color:#bbb;padding:0 4px;margin-bottom:14px;">→</div>
+
+  <!-- step 4 -->
+  <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
+    <div style="width:52px;height:52px;border:2px solid #1976d2;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#1565c0;background:rgba(25,118,210,.50);">⅘ x</div>
+    <div style="font-size:9px;color:#aaa;margin-top:4px;">α = 0.8</div>
+  </div>
+
+  <div style="font-size:18px;color:#bbb;padding:0 4px;margin-bottom:14px;">→</div>
+
+  <!-- actual input -->
+  <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
+    <div style="width:52px;height:52px;background:rgba(25,118,210,.80);border:2px solid #1565c0;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;">x</div>
+    <div style="font-size:9px;color:#aaa;margin-top:4px;">α = 1</div>
+  </div>
+
+</div>
+
+<div style="margin-top:1rem;display:flex;align-items:flex-start;gap:10px;">
+  <div style="font-size:19px;color:#888;margin-top:2px;">∇</div>
+  <div style="font-size:11px;color:#666;line-height:1.7;">
+    At each interpolated input, a backward pass computes the gradient of F<sub>c</sub> with respect to the embedding matrix.
+    These <strong>m gradients are averaged</strong> and multiplied element-wise by <strong>(x − x′)</strong> to obtain the attributions.
+    With m = 300 steps, the Riemann approximation error is typically negligible.
+  </div>
+</div>
+</div>
+```
+
+### Completeness: a key axiom
+
+Integrated Gradients satisfy the **completeness** axiom: the attributions sum exactly to the difference in model output between the input and the baseline.
+
+$$
+\sum_{t=1}^{T} \sum_{j=1}^{d} \text{IG}_{t,j}(\mathbf{x}) = F_c(\mathbf{x}) - F_c(\mathbf{x}')
+$$
+
+This is a conservation law: no contribution is lost or invented. If the model scores the actual input 3.2 points higher than the baseline for class $c$, the sum of all attributions equals exactly 3.2.
+
+Simple gradient × input does *not* satisfy completeness in general; Integrated Gradients are the unique path method that does (along the straight-line path).
+
+### Riemann approximation
+
+In practice, the integral is approximated as a Riemann sum with $m$ steps:
+
+$$
+\text{IG}_{t,j}(\mathbf{x}) \approx (x_{t,j} - x'_{t,j}) \times \frac{1}{m} \sum_{k=1}^{m} \frac{\partial F_c\!\left(\mathbf{x}' + \tfrac{k}{m}(\mathbf{x} - \mathbf{x}')\right)}{\partial x_{t,j}}
+$$
+
+This requires $m$ forward+backward passes. In practice $m \in [20, 300]$ is sufficient; larger values reduce approximation error at the cost of compute.
+
+::: {.callout-tip}
+**Practical tip: batching interpolated inputs.** The $m$ interpolated inputs can be stacked into a single batch of shape $(m, T)$ and processed in one call, exploiting GPU parallelism. Memory is the binding constraint: for $m = 300$ and $T = 128$, the embedding batch is $300 \times 128 \times d$ floats.
+:::
+
+### Token attribution in text
+
+#### Step 1: embedding dimension → token score
+
+The output of Integrated Gradients is a matrix $\text{IG} \in \mathbb{R}^{T \times d}$, with one attribution value per token-embedding dimension. To obtain a single **token-level importance score**, the $d$ values for token $t$ must be collapsed to a scalar. Common choices are the $\ell_1$ norm, the $\ell_2$ norm, or the signed sum:
+
+$$
+\text{score}_{\ell_1}(t) = \sum_{j=1}^{d} |\text{IG}_{t,j}|, \qquad
+\text{score}_\text{signed}(t) = \sum_{j=1}^{d} \text{IG}_{t,j}
+$$
+
+The $\ell_1$ norm treats positive and negative contributions symmetrically; the signed sum preserves direction (a negative score means the token pushed the model *away* from the predicted class). **In our implementation**, Captum's `LayerIntegratedGradients` already sums over the embedding dimension internally before returning, so we use the **signed sum**.
+
+#### Step 2: sub-word tokens → words
+
+WordPiece splits text into sub-word tokens: *"cracking"* may become *["crack", "##ing"]*. IG produces one score per token, but we want one score per word for readability. The tokenizer returns a `word_ids` list that maps each token position to its original word index (special tokens such as `[PAD]` map to `None`).
+
+The aggregation method we use does the following for each word $w$:
+
+$$
+\text{score}(w) = \sum_{t\,:\,\text{word\_id}(t) = w} \text{score}(t)
+$$
+
+Sub-token scores are **summed** (signed sum preserved). This means a word split into $k$ sub-tokens receives the sum of all $k$ scores, which slightly inflates the magnitude of rare or long words compared to common ones that tokenize to a single piece.
+
+```{=html}
+<div style="background:#f8f9fa;border:1px solid #dee2e6;border-radius:10px;padding:1.4rem 1.8rem;margin:1.5rem 0;font-family:sans-serif;">
+<div style="font-size:13px;font-weight:700;color:#495057;margin-bottom:.9rem;letter-spacing:.3px;">Sub-word to word aggregation</div>
+
+<div style="font-size:12px;color:#555;margin-bottom:.8rem;">Input: <em>"uncrackable screen"</em> &nbsp;|&nbsp; WordPiece tokens and their IG scores (signed sum)</div>
+
+<div style="display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;margin-bottom:1rem;">
+
+  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+    <div style="font-size:10px;font-weight:700;color:#2e7d32;">+0.04</div>
+    <div style="width:60px;height:16px;background:rgba(46,125,50,.30);border-radius:3px;"></div>
+    <div style="font-size:10px;color:#555;">un</div>
+    <div style="font-size:9px;color:#aaa;">word 0</div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+    <div style="font-size:10px;font-weight:700;color:#2e7d32;">+0.09</div>
+    <div style="width:60px;height:30px;background:rgba(46,125,50,.45);border-radius:3px;"></div>
+    <div style="font-size:10px;color:#555;">##crack</div>
+    <div style="font-size:9px;color:#aaa;">word 0</div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+    <div style="font-size:10px;font-weight:700;color:#c62828;">-0.03</div>
+    <div style="width:60px;height:12px;background:rgba(198,40,40,.25);border-radius:3px;"></div>
+    <div style="font-size:10px;color:#555;">##able</div>
+    <div style="font-size:9px;color:#aaa;">word 0</div>
+  </div>
+
+  <div style="font-size:20px;color:#bbb;align-self:center;padding:0 4px;margin-bottom:20px;">→</div>
+
+  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+    <div style="font-size:10px;font-weight:700;color:#2e7d32;">+0.10</div>
+    <div style="width:80px;height:36px;background:rgba(46,125,50,.45);border-radius:3px;border:2px solid rgba(46,125,50,.6);"></div>
+    <div style="font-size:11px;color:#333;font-weight:700;">uncrackable</div>
+    <div style="font-size:9px;color:#aaa;">0.04 + 0.09 − 0.03</div>
+  </div>
+
+  <div style="width:64px;"></div>
+
+  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+    <div style="font-size:10px;font-weight:700;color:#2e7d32;">+0.04</div>
+    <div style="width:60px;height:16px;background:rgba(46,125,50,.30);border-radius:3px;"></div>
+    <div style="font-size:10px;color:#555;">screen</div>
+    <div style="font-size:9px;color:#aaa;">word 1</div>
+  </div>
+
+  <div style="font-size:20px;color:#bbb;align-self:center;padding:0 4px;margin-bottom:20px;">→</div>
+
+  <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+    <div style="font-size:10px;font-weight:700;color:#2e7d32;">+0.04</div>
+    <div style="width:80px;height:16px;background:rgba(46,125,50,.30);border-radius:3px;border:2px solid rgba(46,125,50,.5);"></div>
+    <div style="font-size:11px;color:#333;font-weight:700;">screen</div>
+    <div style="font-size:9px;color:#aaa;">single token</div>
+  </div>
+
+</div>
+
+<div style="font-size:10.5px;color:#888;line-height:1.6;">
+  <em>"uncrackable"</em> splits into 3 sub-tokens; their signed scores are summed to give the word score.
+  <em>"screen"</em> maps to a single token, so its score passes through unchanged.
+  The <code>word_ids</code> list from the tokenizer tracks which token belongs to which word.
+</div>
+</div>
+```
+
+### Comparison: Label Attention vs. Integrated Gradients
+
+| | Label Attention | Integrated Gradients |
+|---|---|---|
+| **Type** | Intrinsic (built into the model) | Post-hoc (applied after training) |
+| **Cost** | Zero (weights are a free by-product) | $m$ forward+backward passes |
+| **Scope** | Only for label-attention architectures | Any differentiable model |
+| **Completeness** | No formal guarantee | Yes (by construction) |
+| **Directionality** | Positive only (softmax weights) | Signed (positive & negative) |
+| **Token granularity** | One score per token per class | One score per embedding dim, aggregated to token |
