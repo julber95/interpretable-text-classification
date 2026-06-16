@@ -1,0 +1,8 @@
+name: clinc150
+hf_path: DeepPavlov/clinc150
+text_col: utterance
+label_col: label
+train_split: train
+val_split: validation
+test_split: test
+oos_label: 150

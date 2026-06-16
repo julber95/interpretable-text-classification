@@ -1,0 +1,10 @@
+embedding_dim: 64
+aggregation_method: mean
+# Transformer attention block — n_layers=0 means no attention (fasttext-style)
+n_layers: 0
+n_head: 4
+n_kv_head: 4
+positional_encoding: true
+sequence_len: 256
+# Label attention — null means disabled
+n_heads_label_attention: null

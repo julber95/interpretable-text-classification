@@ -1,0 +1,5 @@
+num_epochs: 20
+batch_size: 128
+lr: 0.0001
+patience_early_stopping: 3
+num_workers: 0

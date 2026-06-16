@@ -1,0 +1,3 @@
+type: wordpiece
+vocab_size: 10000
+output_dim: 128

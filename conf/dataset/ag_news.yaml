@@ -1,0 +1,7 @@
+name: ag_news
+hf_path: fancyzhx/ag_news
+text_col: text
+label_col: label
+train_split: train
+test_split: test
+val_size: 2000

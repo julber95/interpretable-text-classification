@@ -1,7 +1,0 @@
-name: sst2
-hf_path: stanfordnlp/sst2
-text_col: sentence
-label_col: label
-train_split: train
-test_split: validation
-val_size: 2000

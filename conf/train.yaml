@@ -1,0 +1,18 @@
+defaults:
+  - dataset: ag_news
+  - tokenizer: ngram
+  - model: default
+  - training: default
+  - _self_
+
+seed: 42
+experiment_name: null   # override to use a custom MLflow experiment name (default: dataset name)
+train_fraction: 1.0     # fraction of training data to use (e.g. 0.1 = 10%)
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    root:
+      level: WARNING

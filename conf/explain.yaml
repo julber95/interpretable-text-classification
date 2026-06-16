@@ -1,0 +1,32 @@
+defaults:
+  - dataset: amazon
+  - _self_
+
+run_id_labatt:  "8286dc715ad54791bbb1407d840d528b"   # best Label Attention model
+run_id_pooling: "???"                                  # best Transformer (mean pooling, same capacity)
+
+n_captum: 200          # examples for Captum IG (slow: ~n_steps × batch forward passes)
+captum_batch_size: 4   # smaller batch: Captum multiplies by n_steps internally
+batch_size: 32         # plain forward passes: label attention, self-attention, faithfulness
+
+n_self_attn: 50        # examples for seq_len × seq_len self-attention matrices
+
+n_faithfulness: 50               # examples for the deletion-curve faithfulness test
+faithfulness_fractions:          # word-removal levels (fraction of the sentence's words)
+  - 0.0
+  - 0.1
+  - 0.25
+  - 0.5
+  - 0.75
+  - 1.0
+faithfulness_n_random: 3         # random-removal draws averaged per level (control curve)
+
+seed: 42
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    root:
+      level: INFO

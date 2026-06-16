@@ -1,0 +1,104 @@
+mais apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  # clinc150-sweep-xxxxx
+  generateName: clinc150-sweep-
+spec:
+  entrypoint: main-dag
+  serviceAccountName: argo-workflows
+  templates:
+
+    # ── DAG: 2 GPUs in parallel, split by embedding dimension ─────────────────
+    - name: main-dag
+      dag:
+        tasks:
+          - name: train-gpu-1
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dims
+                  value: "64 128"
+
+          - name: train-gpu-2
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dims
+                  value: "256 512"
+
+    # ── GPU Trainer template ──────────────────────────────────────────────────
+    # Each GPU receives a list of emb_dims and sweeps:
+    #   n_layers=0 : emb × vocab × lr × la           → 48 runs per GPU
+    #   n_layers=1 : emb × vocab × n_head × lr × la  → 144 runs per GPU
+    - name: trainer-gpu
+      inputs:
+        parameters:
+          - name: emb_dims
+      script:
+        image: "inseefrlab/onyxia-vscode-pytorch:py3.13.12-gpu"
+        imagePullPolicy: Always
+        command: ["/bin/bash"]
+        source: |
+          set -e
+          git clone -b main https://github.com/julber95/insee_internship.git
+          cd insee_internship
+
+          for emb_dim in {{inputs.parameters.emb_dims}}; do
+
+            # ── n_layers=0 (FastText-style, no transformer block) ──────────────
+            for vocab in 2000 5000 10000 20000; do
+              for la in null 4; do
+                uv run python -m src.train \
+                  dataset=clinc150 \
+                  tokenizer=wordpiece \
+                  model.n_layers=0 \
+                  model.embedding_dim=$emb_dim \
+                  model.n_heads_label_attention=$la \
+                  tokenizer.vocab_size=$vocab \
+                  tokenizer.output_dim=$emb_dim \
+                  training.lr=0.0001,0.0005,0.001 \
+                  -m
+              done
+            done
+
+            # ── n_layers=1 ─────────────────────────────────────────────────────
+            for vocab in 2000 5000 10000 20000; do
+              for n_head in 2 4 8; do
+                for la in null 4; do
+                  uv run python -m src.train \
+                    dataset=clinc150 \
+                    tokenizer=wordpiece \
+                    model.n_layers=1 \
+                    model.embedding_dim=$emb_dim \
+                    model.n_head=$n_head \
+                    model.n_kv_head=$n_head \
+                    model.n_heads_label_attention=$la \
+                    tokenizer.vocab_size=$vocab \
+                    tokenizer.output_dim=$emb_dim \
+                    training.lr=0.0001,0.0005,0.001 \
+                    -m
+                done
+              done
+            done
+
+          done
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            cpu: "4000m"
+            memory: "72Gi"
+          requests:
+            nvidia.com/gpu: "1"
+            cpu: "2000m"
+            memory: "36Gi"
+        env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_TRACKING_URI } }
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_TRACKING_USERNAME } }
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_TRACKING_PASSWORD } }
+          - name: MLFLOW_S3_ENDPOINT_URL
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_S3_ENDPOINT_URL } }
+          - name: MLFLOW_HTTP_REQUEST_TIMEOUT
+            value: "1800"
