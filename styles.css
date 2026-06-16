@@ -1,1 +1,3 @@
 figcaption, .figure-caption { margin-top: 14px; }
+
+.navbar-brand img { mix-blend-mode: multiply; height: 64px !important; max-height: 64px !important; }

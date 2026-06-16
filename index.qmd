@@ -1,6 +1,13 @@
 ---
-title: "Introduction & Setup"
+title: "Towards Interpretable Text Classification for Administrative Coding: A Study at INSEE"
+subtitle: "Internship Report · June 2026"
 ---
+
+```{=html}
+<div style="display:flex;justify-content:flex-end;margin-bottom:2rem;">
+  <img src="assets/insee_logo.svg" alt="INSEE" style="width:180px;object-fit:contain;">
+</div>
+```
 
 ## Introduction
 
@@ -8,31 +15,33 @@ This report presents the work carried out during an internship at **INSEE** (Ins
 
 The internship focuses on **text classification**, a core natural language processing (NLP) task that consists in assigning a predefined category to a piece of text. At INSEE, a concrete use case is the automatic coding of business creation declarations: when a company is founded, its activity is described in free text by the declarant and must be assigned a code from the NAF (*Nomenclature des Activités Françaises*), a hierarchical classification of economic activities. A model has recently been deployed to automate this coding process, making it a concrete reference point for evaluating the lightweight architectures studied in this internship.
 
-Large language models (LLMs) achieve strong performance on text classification, but they come with significant computational costs. In a production environment processing millions of records, lighter and faster alternatives are desirable. This internship investigates whether **lightweight neural architectures** — such as FastText-style mean-pooling models and small transformer encoders — can reach competitive accuracy at a fraction of the cost. All experiments are built on top of [**`torchTextClassifiers`**](https://github.com/InseeFrLab/torchTextClassifiers), a Python package developed at INSEE that provides a unified interface for training and evaluating these architectures.
+Large language models (LLMs) achieve strong performance on text classification, but they come with significant computational costs. In a production envonment processing millions of records, lighter and faster alternatives are desirable. This internship investigates whether **lightweight neural architectures** such as FastText-style mean-pooling models and small transformer encoders can reach competitive accuracy at a fraction of the cost. A secondary focus is **explainability**: in high-uncertainty settings, decision-makers need more than a bare prediction, and post-hoc explanations can provide the additional information required to act with confidence. All experiments are built on top of [**`torchTextClassifiers`**](https://github.com/InseeFrLab/torchTextClassifiers), a Python package developed at INSEE that provides a unified interface for training and evaluating these architectures.
 
 The main objectives are:
 
-1. Benchmark lightweight text classification models across several datasets.
-2. Study the impact of key hyperparameters: embedding dimension, number of transformer layers, number of attention heads, vocabulary size, and learning rate.
-3. Evaluate the trade-off between model size (number of parameters) and classification accuracy, through systematic validation loss curves.
-4. Compare several architectures — from FastText to attention-based models — across different sequence aggregation strategies (mean pooling, label attention) to understand when the added complexity pays off.
+1. Benchmark lightweight text classification architectures (FastText, small transformer encoders) across several datasets of increasing difficulty.
+2. Study the impact of key hyperparameters (embedding dimension, vocabulary size, number of encoder layers, attention heads, learning rate) on accuracy and data efficiency.
+3. Investigate explainability methods to understand what these models rely on, and assess whether their predictions can be trusted enough to support human decision-making in uncertain cases.
 
 ## Benchmark Setup
 
 ### Datasets
 
-The benchmark covers two publicly available sentiment analysis datasets of increasing difficulty.
+The benchmark covers three datasets of increasing number of classes, designed as a progression towards the target application: automatic NAF coding, which involves more than 700 classes.
 
-**IMDb** (`stanfordnlp/imdb`) is the Large Movie Review Dataset [@maas2011]. It contains 25,000 training and 25,000 test English movie reviews, each labelled as positive or negative (reviews with a score ≥ 7/10 or ≤ 4/10 on IMDb). The binary nature of the task and the length of the reviews make it a standard NLP benchmark. SOTA accuracy reaches ~97% with large transformer ensembles; RoBERTa alone achieves ~95%.
+**Amazon Reviews** (`amazon_reviews_multi`, English) is the Multilingual Amazon Reviews Corpus (MARC). The English split contains 200,000 training and 5,000 test product reviews, each rated from 1 to 5 stars. The input combines the review title and body. The 5-class ordinal nature of the task makes it harder than binary sentiment.
 
-**Amazon Reviews** (`amazon_reviews_multi`, English) is the Multilingual Amazon Reviews Corpus (MARC) introduced by @keung2020. The English split contains 200,000 training and 5,000 test product reviews, each rated from 1 to 5 stars. The input combines the review title and body. The 5-class ordinal nature of the task makes it harder than binary sentiment: the mBERT baseline from the original paper reaches 63.3% accuracy.
+**CLINC150** (`clinc_oos`) is an intent detection dataset. It contains 150 intent classes covering everyday conversational domains (banking, travel, home automation, etc.), with 100 training examples per class. The large number of classes and the short, colloquial nature of utterances make it a natural intermediate step between Amazon and NAF.
 
-In our experiments, 2,000 (IMDb) and 5,000 (Amazon) training examples are held out as a validation set, leaving 23,000 and 195,000 examples for training respectively.
+**NAF** is the target application: automatic coding of business creation declarations against the *Nomenclature des Activités Françaises*, with more than 700 classes. Results on this dataset constitute the core deliverable of the internship.
+
+In our experiments, 5,000 (Amazon) and 1,500 (CLINC150) training examples are held out as a validation set.
 
 | Dataset | Classes | Train | Val | Test | SOTA (acc.) |
 |---|---|---|---|---|---|
-| IMDb | 2 | 23,000 | 2,000 | 5,000 | ~97% (ensemble) |
-| Amazon reviews | 5 | 195,000 | 5,000 | 5,000 | 63.3% (mBERT) |
+| Amazon Reviews | 5 | 195,000 | 5,000 | 5,000 | 63.3% (mBERT) |
+| CLINC150 | 150 | 13,500 | 1,500 | 4,500 | ~97% (large LMs) |
+| NAF | ~750 | — | — | — | — |
 
 ### Models
 
