@@ -1,0 +1,7 @@
+name: banking77
+hf_path: mteb/banking77
+text_col: text
+label_col: label
+train_split: train
+test_split: test
+val_from_test: true  # first half of test split → val, second half → test

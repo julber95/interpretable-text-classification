@@ -1,0 +1,7 @@
+name: naf
+data_files:
+  train: ${oc.env:NAF_PARQUET_PATH}
+text_col: libelle_cleaned
+label_col: nace2025
+val_size: 50000
+test_size: 100000
