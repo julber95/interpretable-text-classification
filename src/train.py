@@ -59,70 +59,109 @@ def _make_y(labels, label_offset, oos_label=None):
     return np.array([oos_label if v is None else int(v) + label_offset for v in labels])
 
 
+def _resolve_n_train(n_train, total, subtract, fraction):
+    if n_train is None:
+        n_train = total - subtract
+    if fraction < 1.0:
+        n_train = max(1, int(n_train * fraction))
+    return n_train
+
+
 def load_data(dataset_cfg: dict, seed: int):
-    text_col     = dataset_cfg["text_col"]
-    title_col    = dataset_cfg.get("title_col")
-    label_col    = dataset_cfg["label_col"]
-    label_offset = dataset_cfg.get("label_offset", 0)
-    oos_label    = dataset_cfg.get("oos_label")
-    cat_cols_cfg = dataset_cfg.get("categorical_cols", {})
-    cat_cols     = list(cat_cols_cfg.keys())
-    n_train      = dataset_cfg.get("train_size")  # None = take all available data
-    n_val        = dataset_cfg.get("val_size")    # ignored when val_split is set
-    val_split    = dataset_cfg.get("val_split")   # official HF val split name, if any
-    hf_config    = dataset_cfg.get("hf_config")
+    text_col      = dataset_cfg["text_col"]
+    title_col     = dataset_cfg.get("title_col")
+    label_col     = dataset_cfg["label_col"]
+    label_offset  = dataset_cfg.get("label_offset", 0)
+    oos_label     = dataset_cfg.get("oos_label")
+    cat_cols_cfg  = dataset_cfg.get("categorical_cols", {})
+    cat_cols      = list(cat_cols_cfg.keys())
+    n_train       = dataset_cfg.get("train_size")
+    n_val         = dataset_cfg.get("val_size")
+    val_split     = dataset_cfg.get("val_split")
+    val_from_test = dataset_cfg.get("val_from_test", False)
+    hf_config     = dataset_cfg.get("hf_config")
+    data_files    = dataset_cfg.get("data_files")
+    fraction      = dataset_cfg.get("train_fraction", 1.0)
+
+    if data_files:
+        from datasets import Dataset
+        import pandas as pd
+        path = data_files["train"]
+        opts = None if path.startswith("http") else dataset_cfg.get("storage_options")
+        all_data = pd.read_parquet(path, storage_options=opts)
+        all_data = all_data.dropna(subset=[label_col, text_col]).reset_index(drop=True)
+        label_enc = SKLabelEncoder().fit(all_data[label_col].astype(str))
+        all_data[label_col] = label_enc.transform(all_data[label_col].astype(str))
+        all_data = all_data.sample(frac=1, random_state=seed).reset_index(drop=True)
+        ds_full = Dataset.from_pandas(all_data, preserve_index=False)
+        n_test  = dataset_cfg.get("test_size", max(1000, int(0.1 * len(ds_full))))
+        n_val   = n_val or max(1000, int(0.1 * len(ds_full)))
+        n       = len(ds_full)
+        test_data  = ds_full.select(range(n - n_test, n))
+        remainder  = ds_full.select(range(n - n_test))
+        r          = len(remainder)
+        val_data_p = remainder.select(range(r - n_val, r))
+        train_data = remainder.select(range(r - n_val))
+        if n_train is not None:
+            train_data = train_data.select(range(min(n_train, len(train_data))))
+        if fraction < 1.0:
+            train_data = train_data.select(range(max(1, int(len(train_data) * fraction))))
+
+        def from_parquet(data):
+            return _make_X(data[text_col], data[title_col] if title_col else None,
+                           [data[c] for c in cat_cols]), \
+                   _make_y(data[label_col], label_offset, oos_label)
+
+        X_train, y_train = from_parquet(train_data)
+        X_val,   y_val   = from_parquet(val_data_p)
+        X_test,  y_test  = from_parquet(test_data)
+        print(f"Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
+        return X_train, y_train, X_val, y_val, X_test, y_test, \
+               ValueEncoder(label_encoder=label_enc, categorical_encoders=None)
 
     ds = load_dataset(dataset_cfg["hf_path"], hf_config) if hf_config else load_dataset(dataset_cfg["hf_path"])
-
     train_split = dataset_cfg.get("train_split", "train")
     test_split  = dataset_cfg.get("test_split", "test")
     train_data  = ds[train_split].shuffle(seed=seed)
+    test_data   = ds[test_split].shuffle(seed=seed)
 
     def from_split(data, start, end):
-        """Extract a slice [start:end] from a HuggingFace Dataset split and return (X, y)."""
-        texts  = data[text_col][start:end]
-        titles = data[title_col][start:end] if title_col else None
-        labels = _make_y(data[label_col][start:end], label_offset, oos_label)
-        cats   = [data[col][start:end] for col in cat_cols]
-        return _make_X(texts, titles, cats), labels
+        return _make_X(data[text_col][start:end],
+                       data[title_col][start:end] if title_col else None,
+                       [data[c][start:end] for c in cat_cols]), \
+               _make_y(data[label_col][start:end], label_offset, oos_label)
 
-    train_fraction = dataset_cfg.get("train_fraction", 1.0)
+    n_test = dataset_cfg.get("test_size", len(test_data))
 
-    if val_split:
-        # Use the official validation split — do not carve val out of train
-        if n_train is None:
-            n_train = len(train_data)
-        if train_fraction < 1.0:
-            n_train = max(1, int(n_train * train_fraction))
+    if val_from_test:
+        n_train = _resolve_n_train(n_train, len(train_data), 0, fraction)
+        n_val   = n_val or len(test_data) // 2
         X_train, y_train = from_split(train_data, 0, n_train)
+        X_val,   y_val   = from_split(test_data, 0, n_val)
+        X_test,  y_test  = from_split(test_data, n_val, None)
+    elif val_split:
+        n_train  = _resolve_n_train(n_train, len(train_data), 0, fraction)
         val_data = ds[val_split].shuffle(seed=seed)
-        n_val = n_val or len(val_data)
-        X_val, y_val = from_split(val_data, 0, n_val)
-    else:
-        # Carve val from the train split (default behavior)
-        if n_train is None:
-            n_train = len(train_data) - n_val
-        if train_fraction < 1.0:
-            n_train = max(1, int(n_train * train_fraction))
+        n_val    = n_val or len(val_data)
         X_train, y_train = from_split(train_data, 0, n_train)
-        X_val, y_val     = from_split(train_data, n_train, n_train + n_val)
-
-    test_data = ds[test_split].shuffle(seed=seed)
-    n_test    = dataset_cfg.get("test_size", len(test_data))
-    X_test, y_test = from_split(test_data, 0, n_test)
+        X_val,   y_val   = from_split(val_data, 0, n_val)
+        X_test,  y_test  = from_split(test_data, 0, n_test)
+    else:
+        n_train = _resolve_n_train(n_train, len(train_data), n_val, fraction)
+        X_train, y_train = from_split(train_data, 0, n_train)
+        X_val,   y_val   = from_split(train_data, n_train, n_train + n_val)
+        X_test,  y_test  = from_split(test_data, 0, n_test)
 
     value_encoder = None
     if cat_cols:
         cat_train = X_train[:, 1:] if X_train.ndim > 1 else None
-        categorical_encoders = {}
-        for i, col in enumerate(cat_cols):
-            if cat_cols_cfg[col] is None:
-                unique_vals = sorted(set(cat_train[:, i].tolist()))
-                categorical_encoders[str(i)] = DictEncoder({v: idx for idx, v in enumerate(unique_vals)})
-        label_enc = SKLabelEncoder().fit(y_train)
+        categorical_encoders = {
+            str(i): DictEncoder({v: idx for idx, v in enumerate(sorted(set(cat_train[:, i].tolist())))})
+            for i, col in enumerate(cat_cols) if cat_cols_cfg[col] is None
+        }
         value_encoder = ValueEncoder(
-            label_encoder=label_enc,
-            categorical_encoders=categorical_encoders if categorical_encoders else None,
+            label_encoder=SKLabelEncoder().fit(y_train),
+            categorical_encoders=categorical_encoders or None,
         )
 
     print(f"Train: {len(X_train)} | Val: {len(X_val)} | Test: {len(X_test)}")
@@ -157,9 +196,6 @@ def build_tokenizer(tok_cfg: dict, X_train: np.ndarray):
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
-# Hydra assembles the config from conf/config.yaml (which pulls in conf/dataset/, conf/model/, etc.)
-# and passes it as `cfg`. CLI overrides like `model.embedding_dim=128` are applied on top.
-# Example: uv run run.py dataset=sst2 model.embedding_dim=128 model.n_layers=2
 def _resolve_accelerator() -> str:
     """Test actual CUDA init — is_available() can return True even when init fails."""
     if torch.cuda.is_available():
@@ -175,13 +211,9 @@ def _resolve_accelerator() -> str:
 def main(cfg: DictConfig):
     accelerator = _resolve_accelerator()
 
-    # cfg.dataset and cfg.tokenizer are DictConfig objects — convert to plain dicts
-    # so they work with load_data() and build_tokenizer() which expect dict.get(), etc.
     dataset_cfg = OmegaConf.to_container(cfg.dataset, resolve=True)
     tok_cfg     = OmegaConf.to_container(cfg.tokenizer, resolve=True)
-    # cfg.model and cfg.training stay as DictConfig — accessed via dot notation (m.embedding_dim)
-    m           = cfg.model
-    t           = cfg.training
+    m, t        = cfg.model, cfg.training
 
     dataset_name = dataset_cfg["name"]
 
@@ -205,17 +237,9 @@ def main(cfg: DictConfig):
 
     tokenizer = build_tokenizer(tok_cfg, X_train)
 
-    # attention_config=None means no transformer block (fasttext-style mean pooling)
-    # n_layers > 0 enables the transformer encoder on top of the embeddings
-    attention_config = None
-    if m.n_layers > 0:
-        attention_config = {
-            "n_layers": m.n_layers,
-            "n_head": m.n_head,
-            "n_kv_head": m.n_kv_head,
-            "positional_encoding": m.positional_encoding,
-            "sequence_len": m.sequence_len,
-        }
+    attention_config = {"n_layers": m.n_layers, "n_head": m.n_head, "n_kv_head": m.n_kv_head,
+                        "positional_encoding": m.positional_encoding, "sequence_len": m.sequence_len,
+                        } if m.n_layers > 0 else None
 
     model_config = ModelConfig(
         embedding_dim=m.embedding_dim,
@@ -265,14 +289,11 @@ def main(cfg: DictConfig):
             "n_test": len(X_test),
         })
 
-        # Pass the active MLflow run_id to Lightning's MLFlowLogger so training metrics
-        # (loss, val_loss per epoch) are logged into the same run as our params/metrics
         mlf_logger = MLFlowLogger(
             experiment_name=dataset_name,
             tracking_uri=tracking_uri or "mlruns",
             run_id=mlflow.active_run().info.run_id,
         )
-        # log_every_n_steps=steps_per_epoch → log once per epoch, not every step (avoids slow HTTP calls)
         steps_per_epoch = max(1, len(X_train) // t.batch_size)
         training_config.trainer_params = {"logger": mlf_logger, "log_every_n_steps": steps_per_epoch}
 
