@@ -31,9 +31,7 @@ else:
         "metrics.test_f1_macro":           "test_f1_macro",
         "metrics.train_time_s":            "train_time_s",
     })
-
-    df = df[~df["tags.mlflow.runName"].str.startswith("perso", na=False)]
-    df = df[df["n_layers"].astype(float) <= 2].copy()
+    
 
     client = mlflow.MlflowClient()
     def get_min_val_loss(run_id):
@@ -71,7 +69,7 @@ This section examines three complementary dimensions of the hyperparameter sweep
 
 A key observation is that **`n_head` and `lr` do not affect `num_params`**. In a standard transformer, the total size of the attention matrices is $4 \times d^2$ regardless of how many heads are used, since $d_{\text{head}} = d / n_{\text{head}}$. Similarly, `lr` is a training hyperparameter with no effect on architecture. As a result, for any fixed combination of `(emb_dim, n_layers, vocab_size)`, FATE architectures have exactly $3 \times 3 = 9$ runs sharing the same `num_params` (3 values of `n_head` × 3 values of `lr`), while FastText has only $3$ runs (3 values of `lr`, since `n_head` does not apply). This motivates two complementary views:
 
-- **Scatter plot**: all 672 runs, showing the full spread of achievable val_loss for a given parameter budget.
+- **Scatter plot**: all 960 runs, showing the full spread of achievable val_loss for a given parameter budget.
 - **Curve plot**: for each `(architecture, emb_dim, vocab_size)` group, take the `min(val_loss)` over `n_head` and `lr`, collapsing the 9 (FATE) or 3 (FastText) runs into a single best-case point, tracing the performance frontier as model capacity grows.
 
 ```{python}
@@ -87,6 +85,8 @@ COLORS = {
     "FATE (L=1) + Label Attention":      "#FF8C00",
     "FATE (L=2)":                        "#CC0000",
     "FATE (L=2) + Label Attention":      "#880E4F",
+    "FATE (L=4)":                        "#6A1B9A",
+    "FATE (L=4) + Label Attention":      "#311B92",
 }
 
 df_curves = (
@@ -260,7 +260,8 @@ The violin plot shows the **distribution of validation loss across all runs** fo
 
 arch_order = ["FastText", "FastText + Label Attention",
               "FATE (L=1)", "FATE (L=1) + Label Attention",
-              "FATE (L=2)", "FATE (L=2) + Label Attention"]
+              "FATE (L=2)", "FATE (L=2) + Label Attention",
+              "FATE (L=4)", "FATE (L=4) + Label Attention"]
 arch_order = [a for a in arch_order if a in df["architecture"].unique()]
 
 fig = go.Figure()
@@ -304,11 +305,11 @@ fig.show()
 
 :::
 
-**Val loss vs. parameters.** Both FastText variants plateau regardless of model size — FastText around 0.93–0.94 and FastText + Label Attention slightly lower at ~0.92 — confirming that the mean-pooling bottleneck sets a hard performance ceiling that extra parameters cannot overcome. FATE architectures, by contrast, improve steadily with capacity: FATE (L=2) reaches the lowest validation loss (~0.856) and dominates across all parameter budgets, closely followed by FATE (L=2) + Label Attention. FATE (L=1) sits in between at ~0.88–0.90. Adding label attention to FATE does not systematically change the frontier, suggesting that the transformer blocks already capture most of the relevant context.
+**Val loss vs. parameters.** Both FastText variants plateau regardless of model size — FastText around 0.93–0.94 and FastText + Label Attention slightly lower at ~0.92 confirming that the mean-pooling bottleneck sets a hard performance ceiling that extra parameters cannot overcome (for this architecture). FATE architectures improve steadily with capacity: FATE (L=4) reaches the lowest validation loss (~0.845) and dominates across all parameter budgets, followed by FATE (L=2) and then FATE (L=1) at ~0.88–0.90. Adding label attention to FATE does not systematically change the frontier, suggesting that the transformer blocks already capture most of the relevant context.
 
 **Effect of training set size.** TODO
 
-**Stability.** The two FastText variants are by far the most stable: their violins are narrow and tightly concentrated (FastText ~0.94, FastText + Label Attention ~0.93), meaning hyperparameter choice has almost no impact on the outcome. FATE (L=1) and FATE (L=1) + Label Attention show a moderate spread centered around 0.90, while FATE (L=2) and FATE (L=2) + Label Attention exhibit the widest distributions (~0.86–0.92), with their label-attention counterparts reaching the lowest tails (~0.84). The trade-off is clear: the most capable architectures achieve the best performance but require more careful tuning.
+**Stability.** The two FastText variants are by far the most stable: their violins are narrow and tightly concentrated (FastText ~0.94, FastText + Label Attention ~0.93), meaning hyperparameter choice has almost no impact on the outcome. FATE (L=1) shows a moderate spread centered around 0.90. FATE (L=2) exhibits wider distributions (~0.86–0.92). FATE (L=4) achieves the best median loss (~0.845) but also shows a spread, with the label-attention variant reaching the lowest tails. The trade-off is clear: the most capable architectures achieve the best performance but require more careful tuning.
 
 ### Effect of vocabulary size and embedding dimension
 
@@ -336,12 +337,14 @@ df_emb_mean = (
 )
 
 vocab_offsets = {
-    "FastText":                          -500,
-    "FastText + Label Attention":        -300,
-    "FATE (L=1)":                        -100,
-    "FATE (L=1) + Label Attention":      +100,
-    "FATE (L=2)":                        +300,
-    "FATE (L=2) + Label Attention":      +500,
+    "FastText":                          -1050,
+    "FastText + Label Attention":        -750,
+    "FATE (L=1)":                        -450,
+    "FATE (L=1) + Label Attention":      -150,
+    "FATE (L=2)":                        +150,
+    "FATE (L=2) + Label Attention":      +450,
+    "FATE (L=4)":                        +750,
+    "FATE (L=4) + Label Attention":      +1050,
 }
 
 fig = go.Figure()
@@ -356,7 +359,7 @@ for arch, group in df.groupby("architecture"):
     fig.add_trace(go.Scatter(
         x=group["vocab_size"] + offset, y=group["min_val_loss"],
         mode="markers", name=arch, legendgroup=arch, showlegend=False,
-        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.3),
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
         hovertemplate="vocab=%{customdata:,}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
         customdata=group["vocab_size"],
     ))
@@ -385,12 +388,14 @@ fig.show()
 #| fig-cap: "Effect of embedding dimension on validation loss"
 
 emb_offsets = {
-    "FastText":                          -15,
-    "FastText + Label Attention":        -9,
-    "FATE (L=1)":                        -3,
-    "FATE (L=1) + Label Attention":      +3,
-    "FATE (L=2)":                        +9,
-    "FATE (L=2) + Label Attention":      +15,
+    "FastText":                          -31,
+    "FastText + Label Attention":        -22,
+    "FATE (L=1)":                        -13,
+    "FATE (L=1) + Label Attention":      -4,
+    "FATE (L=2)":                        +4,
+    "FATE (L=2) + Label Attention":      +13,
+    "FATE (L=4)":                        +22,
+    "FATE (L=4) + Label Attention":      +31,
 }
 
 fig = go.Figure()
@@ -401,11 +406,11 @@ for arch in COLORS:
         marker=dict(color=COLORS[arch], size=8, opacity=1.0),
     ))
 for arch, group in df.groupby("architecture"):
-    offset = emb_offsets[arch]
+    offset = emb_offsets.get(arch, 0)
     fig.add_trace(go.Scatter(
         x=group["emb_dim"] + offset, y=group["min_val_loss"],
         mode="markers", name=arch, legendgroup=arch, showlegend=False,
-        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.3),
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
         hovertemplate="emb_dim=%{customdata}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
         customdata=group["emb_dim"],
     ))
@@ -429,9 +434,9 @@ fig.show()
 
 :::
 
-**Vocabulary size.** The main gains occur between 2,000 and 5,000 tokens; beyond that, all curves flatten. FastText and FastText + Label Attention are nearly insensitive across the full range (~0.950→0.940 and ~0.940→0.930 respectively). FATE architectures show a more noticeable drop from 2k to 5k, after which performance stabilises ; FATE (L=1) variants around 0.895–0.900 and FATE (L=2) variants around 0.880. This suggests that a vocabulary of 5,000 tokens already captures most of the useful subword coverage for this dataset.
+**Vocabulary size.** The main gains occur between 2,000 and 5,000 tokens; beyond that, all curves flatten. FATE architectures show a noticeable drop from 2k to 5k, after which performance stabilises: FATE (L=1) variants around 0.895–0.900, FATE (L=2) around 0.88, and FATE (L=4) around 0.863. This suggests that a vocabulary of 5,000 tokens already captures most of the useful subword coverage for this dataset.
 
-**Embedding dimension.** FastText variants are insensitive throughout, their curves remaining essentially flat from 64 to 512. FATE (L=1) architectures improve from 64 to 128–256 then plateau, with no clear degradation at 512. FATE (L=2) shows the sharpest pattern: validation loss decreases up to 256 and slightly increases at 512, making **256 the clear sweet spot** for deeper transformer architectures. Larger embeddings add parameters without improving and can marginally hurt the most expressive models.
+**Embedding dimension.** FastText variants are insensitive throughout, their curves remaining essentially flat from 64 to 512. FATE (L=1) architectures improve from 64 to 128–256 then plateau. FATE (L=2) and FATE (L=4) show a similar pattern with validation loss decreasing up to 256 and slightly increasing at 512, making **256 the clear sweet spot** for deeper transformer architectures. Larger embeddings add parameters without improving and can marginally hurt the most expressive models.
 
 ### Effect of number of attention heads
 
@@ -449,10 +454,12 @@ df_head_min = (
 )
 
 head_offsets = {
-    "FATE (L=1)":                        -0.15,
-    "FATE (L=1) + Label Attention":      -0.05,
-    "FATE (L=2)":                        +0.05,
-    "FATE (L=2) + Label Attention":      +0.15,
+    "FATE (L=1)":                        -0.26,
+    "FATE (L=1) + Label Attention":      -0.16,
+    "FATE (L=2)":                        -0.06,
+    "FATE (L=2) + Label Attention":      +0.06,
+    "FATE (L=4)":                        +0.16,
+    "FATE (L=4) + Label Attention":      +0.26,
 }
 
 fate_archs = [a for a in COLORS if a.startswith("FATE")]
@@ -468,7 +475,7 @@ for arch, group in df_attn.groupby("architecture"):
     fig.add_trace(go.Scatter(
         x=group["n_head"] + offset, y=group["min_val_loss"],
         mode="markers", name=arch, legendgroup=arch, showlegend=False,
-        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.3),
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
         hovertemplate="n_head=%{customdata}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
         customdata=group["n_head"],
     ))
@@ -490,7 +497,7 @@ fig.update_layout(
 fig.show()
 ```
 
-The number of attention heads has virtually no effect on validation loss across all four FATE variants. All mean curves are essentially flat from 2 to 8 heads, with FATE (L=2) showing a marginal dip at 4 heads before recovering at 8 but the amplitude is negligible. The ranking between architectures is fully preserved regardless of head count. This is consistent with the theoretical expectation: the total attention matrix size is fixed at $4 \times d^2$, so increasing the number of heads simply redistributes the same capacity into smaller per-head subspaces without adding parameters.
+The number of attention heads has virtually no effect on validation loss across all six FATE variants. All mean curves are essentially flat from 2 to 8 heads, and the ranking between architectures — FATE (L=4) best, then L=2, then L=1 — is fully preserved regardless of head count. This is consistent with the theoretical expectation: the total attention matrix size is fixed at $4 \times d^2$, so increasing the number of heads simply redistributes the same capacity into smaller per-head subspaces without adding parameters.
 
 ### Training time
 
@@ -515,11 +522,12 @@ for arch, group in df.groupby("architecture"):
 fig.update_layout(
     xaxis_title="Training time (s)", yaxis_title="Validation loss",
     legend_title="Architecture", height=430,
+    xaxis=dict(type="log", tickformat=".2s"),
 )
 fig.show()
 ```
 
-The graph shows the typical training time ranges per architecture, but no clear correlation between training time and validation loss within a given family. FastText variants cluster on the left (under 1,000 s) at high loss (~0.93–0.96); FATE (L=1) variants are scattered across 500–2,000 s with losses in the 0.88–0.92 range; FATE (L=2) architectures span the widest range (~500–3,500 s) and achieve the best losses (~0.86–0.90). Within each family, a longer training run does not reliably predict a lower validation loss ; the spread in both axes is driven by hyperparameter configurations (embedding size, vocabulary size, number of heads) rather than by a causal time–performance relationship.
+The graph shows the typical training time ranges per architecture, but no clear correlation between training time and validation loss within a given family. FastText variants cluster on the left (under 1,000 s) at high loss (~0.93–0.96); FATE (L=1) variants are scattered across 500–2,000 s with losses in the 0.88–0.92 range; FATE (L=2) architectures span ~500–3,500 s and reach ~0.86–0.90; FATE (L=4) is the most expensive (5,000–60,000 s) and achieves the lowest losses (~0.86). Within each family, a longer training run does not reliably predict a lower validation loss — the spread in both axes is driven by hyperparameter configurations (embedding size, vocabulary size) rather than a causal time–performance relationship.
 
 ### Interaction: embedding dimension × vocabulary size
 
@@ -537,11 +545,13 @@ vocab_vals  = sorted(df["vocab_size"].unique())
 vmin = df.groupby(["architecture", "emb_dim", "vocab_size"])["min_val_loss"].mean().min()
 vmax = df.groupby(["architecture", "emb_dim", "vocab_size"])["min_val_loss"].mean().max()
 
-fig = make_subplots(rows=2, cols=3, subplot_titles=arch_order,
-                    horizontal_spacing=0.07, vertical_spacing=0.24)
+n_cols_hm = 4
+n_rows_hm = (len(arch_order) + n_cols_hm - 1) // n_cols_hm
+fig = make_subplots(rows=n_rows_hm, cols=n_cols_hm, subplot_titles=arch_order,
+                    horizontal_spacing=0.06, vertical_spacing=0.28)
 
 for idx, arch in enumerate(arch_order):
-    row, col = divmod(idx, 3)
+    row, col = divmod(idx, n_cols_hm)
     pivot = (
         df[df["architecture"] == arch]
         .groupby(["emb_dim", "vocab_size"])["min_val_loss"].mean()
@@ -558,17 +568,22 @@ for idx, arch in enumerate(arch_order):
         texttemplate="%{text}",
         textfont=dict(color="#555555") if arch.startswith("FATE") else dict(color="#e8e8e8"),
         showscale=(idx == 0),
-        colorbar=dict(title="Mean val loss", orientation="h", x=0.5, xanchor="center", y=-0.15, yanchor="top", len=0.6, thickness=18, title_side="bottom") if idx == 0 else None,
+        colorbar=dict(title="Mean val loss", orientation="h", x=0.5, xanchor="center", y=-0.28, yanchor="top", len=0.6, thickness=18, title_side="bottom") if idx == 0 else None,
         hovertemplate="vocab=%{x}<br>emb_dim=%{y}<br>val_loss=%{z:.4f}<extra>" + arch + "</extra>",
     ), row=row + 1, col=col + 1)
-    fig.update_xaxes(title_text="Vocabulary size" if col == 1 else "", row=row + 1, col=col + 1)
     fig.update_yaxes(title_text="Embedding dim" if col == 0 else "", row=row + 1, col=col + 1)
 
-fig.update_layout(height=640, width=750, margin=dict(l=40, r=20, t=40, b=70))
+for ann in fig.layout.annotations:
+    ann.update(font=dict(size=12))
+fig.add_annotation(
+    text="Vocabulary size", xref="paper", yref="paper",
+    x=0.5, y=-0.22, showarrow=False, font=dict(size=15),
+)
+fig.update_layout(height=290 * n_rows_hm, autosize=True, margin=dict(l=50, r=20, t=40, b=80))
 fig.show()
 ```
 
-The heatmaps confirm that the two axes contribute **largely independently**: the vocabulary-size effect (dark left-to-right gradient easing off after 5k) and the embedding-dimension effect (darkest row around 256) combine additively rather than interacting strongly. **FastText** variants display near-uniform tiles across all cells, reinforcing that neither axis moves the needle for bag-of-words models. **FATE (L=1)** shows mild but consistent improvement as both dimensions grow, without a pronounced sweet spot. **FATE (L=2)** exhibits the clearest structure: the (emb_dim=256, vocab_size=5 000–10 000) region concentrates the best mean validation loss, while the (64, 2 000) corner is noticeably weaker. Adding label attention does not shift the optimal (emb_dim, vocab_size) corner - the same (256, 5 000) cell dominates - but it slightly deepens the darker region, suggesting a modest complementary benefit once the model already has sufficient capacity on both axes.
+Across most matrices, the top-right corner (high emb_dim, large vocab) is consistently lighter, indicating that both axes contribute to lower validation loss. The gradient is clearest for **FATE (L=1)**: the emb_dim=64 row stands out as noticeably darker, and loss decreases as vocabulary grows. For **FastText** the effect is subtler but still present. **FATE (L=2) and (L=4)** show flatter matrices overall, suggesting diminishing returns from these two hyperparameters as the architecture gains depth. Label attention shifts the entire color range slightly lighter without changing which corner performs best.
 
 ## Prediction analysis
 
@@ -588,6 +603,8 @@ ARCH_FILES   = {
     "FATE (L=1) + Label Attention":      "fateL1_labatt.npz",
     "FATE (L=2)":                        "fateL2.npz",
     "FATE (L=2) + Label Attention":      "fateL2_labatt.npz",
+    "FATE (L=4)":                        "fateL4.npz",
+    "FATE (L=4) + Label Attention":      "fateL4_labatt.npz",
 }
 
 PREDS_DIR = Path("results/amazon/preds")
@@ -596,17 +613,18 @@ PREDS_DIR.mkdir(parents=True, exist_ok=True)
 preds_by_arch = {}   # arch -> {"y_test": ..., "y_pred": ..., "X_test": ...}
 
 for arch, fname in ARCH_FILES.items():
-    if arch not in df["architecture"].values:
-        continue
     cache = PREDS_DIR / fname
-    if not cache.exists():
-        urllib.request.urlretrieve(f"{PRED_BUCKET}/{fname}", cache)
-    d = np.load(cache, allow_pickle=True)
-    preds_by_arch[arch] = {
-        "y_test": d["y_test"].astype(int),
-        "y_pred": d["y_pred"].astype(int),
-        "X_test": d["X_test"],
-    }
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{PRED_BUCKET}/{fname}", cache)
+        d = np.load(cache, allow_pickle=True)
+        preds_by_arch[arch] = {
+            "y_test": d["y_test"].astype(int),
+            "y_pred": d["y_pred"].astype(int),
+            "X_test": d["X_test"],
+        }
+    except Exception:
+        pass
 
 ARCHS_AVAIL = list(preds_by_arch.keys())
 
@@ -635,7 +653,9 @@ def arch_dropdown(args_fn, y=1.16):
 #| label: fig-confusion-amazon
 #| fig-cap: "Confusion matrix on the Amazon test set"
 
+import json
 from sklearn.metrics import confusion_matrix
+from IPython.display import HTML
 
 n_archs = len(ARCHS_AVAIL)
 fig = go.Figure()
@@ -655,17 +675,38 @@ for i, arch in enumerate(ARCHS_AVAIL):
 
 fig.update_layout(
     xaxis_title="Predicted", yaxis_title="True",
-    yaxis=dict(autorange="reversed"),
-    height=500, width=540,
-    margin=dict(t=125, r=20),
-    updatemenus=arch_dropdown(lambda i: {"visible": [j == i for j in range(n_archs)]}),
-    annotations=[dict(
-        text="<b>Choose the model:</b>", x=0.5, xanchor="center", xref="paper",
-        y=1.21, yanchor="bottom", yref="paper",
-        showarrow=False, font=dict(size=12, color="#555"),
-    )],
+    yaxis=dict(autorange="reversed", scaleanchor="x", scaleratio=1),
+    height=480, width=580,
+    margin=dict(t=10, r=100, b=50, l=60),
+    autosize=False,
 )
-fig.show()
+
+fig_html = fig.to_html(include_plotlyjs=False, div_id="cm-fig", full_html=False)
+
+options = "".join(f'<option value="{i}">{arch}</option>' for i, arch in enumerate(ARCHS_AVAIL))
+
+html = f"""
+<div style="display:flex;flex-direction:column;align-items:center;">
+  <div style="font-family:sans-serif;margin-bottom:0.75rem;">
+    <label for="cm-select" style="font-size:13px;font-weight:600;margin-right:8px;">Model:</label>
+    <select id="cm-select" onchange="cmChange(this.value)"
+      style="font-size:13px;padding:4px 8px;border:1px solid #ccc;border-radius:4px;background:#fff;">
+      {options}
+    </select>
+  </div>
+  {fig_html}
+</div>
+<script>
+(function(){{
+  var N={n_archs};
+  window.cmChange=function(val){{
+    var idx=parseInt(val), vis=Array(N).fill(false); vis[idx]=true;
+    Plotly.restyle("cm-fig",{{visible:vis}});
+  }};
+}})();
+</script>
+"""
+HTML(html)
 ```
 
 ### Error analysis
@@ -711,9 +752,9 @@ for i, arch in enumerate(ARCHS_AVAIL):
             x=[pct], y=[arch], orientation="h",
             name=seg, legendgroup=seg, showlegend=(i == 0),
             marker_color=SEG_COLORS[seg],
-            text=f"<b>{seg}</b><br>{pct:.1f}%",
+            text=f"{pct:.1f}%" if pct >= 4 else "",
             textposition="inside", insidetextanchor="middle",
-            textfont=dict(size=12, color="white" if seg != "Off by 1" else "#333"),
+            textfont=dict(size=11, color="white" if seg != "Off by 1" else "#333"),
             hovertemplate=f"<b>{seg}</b>: {pct:.1f}%<extra></extra>",
         ))
 
@@ -722,7 +763,8 @@ fig1.update_layout(
     template="simple_white",
     xaxis=dict(range=[0, 100], ticksuffix="%", showgrid=False, title_text="% of test examples"),
     yaxis=dict(autorange="reversed"),
-    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.22, yanchor="top", itemclick=False, itemdoubleclick=False),
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.22, yanchor="top",
+                itemclick=False, itemdoubleclick=False),
     height=360, margin=dict(t=20, b=80),
 )
 fig1.show()
@@ -730,75 +772,56 @@ fig1.show()
 
 ```{python}
 #| label: fig-error-bias-amazon
-#| fig-cap: "Directional bias per architecture"
+#| fig-cap: "Net directional bias per architecture. Each cell shows the difference (over-predicted% − under-predicted%) at a given star distance: positive values (red) indicate a tendency to predict too high, negative values (blue) too low."
 
-fig2 = go.Figure()
+dist_labels = ["±1 star", "±2 stars", "±3 stars", "±4 stars"]
+
+z    = []
+text = []
+for arch in ARCHS_AVAIL:
+    b    = arch_bias[arch]
+    row_ = [o - u for o, u in zip(b["over"], b["under"])]
+    z.append(row_)
+    text.append([f"{v:+.1f}%" for v in row_])
+
+absmax = max(abs(v) for row_ in z for v in row_)
+
+fig2 = go.Figure(go.Heatmap(
+    z=z,
+    x=dist_labels,
+    y=ARCHS_AVAIL,
+    colorscale="RdBu_r",
+    zmid=0, zmin=-absmax, zmax=absmax,
+    colorbar=dict(title="Net bias (%)", thickness=14, len=0.6,
+                  ticksuffix="%", tickformat="+d"),
+    hovertemplate="Architecture: %{y}<br>Distance: %{x}<br>Net bias: %{text}<extra></extra>",
+    text=text,
+))
+
 for i, arch in enumerate(ARCHS_AVAIL):
-    b = arch_bias[arch]
-    fig2.add_trace(go.Bar(
-        x=[-u for u in b["under"]], y=labels_d,
-        orientation="h", name="Under-predicted",
-        legendgroup="under", showlegend=False,
-        marker_color="#1565C0",
-        text=[f"{u:.1f}%" for u in b["under"]],
-        textposition="outside", textfont=dict(size=11, color="#333"), cliponaxis=False,
-        hovertemplate="%{y} — under: <b>%{customdata:.1f}%</b><extra></extra>",
-        customdata=b["under"],
-        visible=(i == 0),
-    ))
-    fig2.add_trace(go.Bar(
-        x=b["over"], y=labels_d,
-        orientation="h", name="Over-predicted",
-        legendgroup="over", showlegend=False,
-        marker_color="#E53935",
-        text=[f"{v:.1f}%" for v in b["over"]],
-        textposition="outside", textfont=dict(size=11, color="#333"), cliponaxis=False,
-        hovertemplate="%{y} — over: <b>%{x:.1f}%</b><extra></extra>",
-        visible=(i == 0),
-    ))
-
-# Traces fantômes permanents pour la légende (toujours visibles)
-fig2.add_trace(go.Bar(x=[None], y=[None], orientation="h",
-    name="Under-predicted", marker_color="#1565C0",
-    legendgroup="under", showlegend=True))
-fig2.add_trace(go.Bar(x=[None], y=[None], orientation="h",
-    name="Over-predicted", marker_color="#E53935",
-    legendgroup="over", showlegend=True))
-
-def make_vis2(k):
-    v = []
-    for i in range(n_archs):
-        v.extend([i == k, i == k])
-    v.extend([True, True])  # traces fantômes toujours visibles
-    return v
-
-fig2.update_xaxes(
-    tickvals=[-20, -15, -10, -5, 0, 5, 10, 15, 20],
-    ticktext=["20%", "15%", "10%", "5%", "0", "5%", "10%", "15%", "20%"],
-    range=[-22, 22],
-    title_text="% of test examples",
-)
-fig2.update_yaxes(autorange="reversed")
-fig2.add_vline(x=0, line_width=1.5, line_color="#333")
+    for j, dlabel in enumerate(dist_labels):
+        val = z[i][j]
+        font_color = "white" if val < -absmax * 0.4 else "#222"
+        fig2.add_annotation(
+            x=dlabel, y=arch,
+            text=text[i][j],
+            showarrow=False,
+            font=dict(size=12, color=font_color),
+        )
 
 fig2.update_layout(
-    barmode="relative",
     template="simple_white",
-    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.18, yanchor="top", itemclick=False, itemdoubleclick=False),
-    height=480, margin=dict(t=90, b=80),
-    annotations=[dict(
-        text="<b>Choose the model:</b>", x=0.5, xanchor="center", xref="paper",
-        y=1.22, yanchor="bottom", yref="paper",
-        showarrow=False, font=dict(size=12, color="#555"),
-    )],
-    updatemenus=arch_dropdown(lambda i: {"visible": make_vis2(i)}),
+    xaxis=dict(side="bottom", title="Prediction distance"),
+    yaxis=dict(autorange="reversed", title=""),
+    height=320,
+    margin=dict(t=20, b=50, l=200, r=20),
 )
 fig2.show()
 ```
 
 ### Model agreement
 
-Rather than asking *which* model is wrong, this view asks a deeper question: when the six architectures disagree, is that because some of them are simply weaker or because the example itself is ambiguous (e.g. a "mixed" review that a human would also struggle to rate)? For each test example, we count how many distinct star ratings the six models collectively predict, then look at (a) how often the **majority vote** is actually correct at each agreement level, and (b) which true ratings dominate the disagreement zone.
+Rather than asking *which* model is wrong, this view asks a deeper question: when the eight architectures disagree, is that because some of them are simply weaker or because the example itself is ambiguous (e.g. a "mixed" review that a human would also struggle to rate)? For each test example, we count how many distinct star ratings the eight models collectively predict, then look at (a) how often the **majority vote** is actually correct at each agreement level, and (b) which true ratings dominate the disagreement zone.
 
 ```{python}
 #| label: fig-agreement-correctness
@@ -812,8 +835,8 @@ n_distinct  = np.array([len(set(preds_matrix[:, i])) for i in range(n_test)])
 maj_pred    = np.array([np.bincount(preds_matrix[:, i], minlength=5).argmax() for i in range(n_test)])
 maj_correct = (maj_pred == y_true)
 
-levels  = sorted(np.unique(n_distinct).tolist())
-xlabels = ["All 6 agree" if k == 1 else f"{k} distinct labels" for k in levels]
+levels  = sorted(k for k in np.unique(n_distinct).tolist() if k < 5)
+xlabels = [f"All {len(ARCHS_AVAIL)} agree" if k == 1 else f"{k} distinct labels" for k in levels]
 
 share = [(n_distinct == k).mean() * 100 for k in levels]
 acc   = [maj_correct[n_distinct == k].mean() * 100 for k in levels]
@@ -855,7 +878,7 @@ fig.update_layout(
 fig.show()
 ```
 
-**Reading the rendered chart**: the six architectures agree unanimously on 53% of the test set, and there the majority vote is right 76.7% of the time. Agreement collapses quickly past that point, once predictions split into 2 distinct labels (37% of examples), majority-vote accuracy drops to ~48%, then flattens around 30–40% for 3+ distinct labels. The right panel explains why: the share of extreme ratings (1★ and 5★ over half of the "all agree" group) shrinks steadily as disagreement grows, replaced by middle ratings (2★–4★), exactly the boundary cases where a human annotator would also hesitate between adjacent stars. At the extreme (5 distinct predictions, well under 1% of the test set : too few examples to read anything into the small accuracy uptick there), the composition is almost purely 2★/3★: a textbook "mildly negative or neutral?" ambiguity. This backs the **label-ambiguity** reading — a meaningful share of the remaining error sits in inherently fuzzy middle-rating reviews, a ceiling that no architecture change is likely to break — while the ~23% error rate that persists even where all six models agree points to a second, smaller pool of genuinely hard or mislabeled examples shared across architectures.
+**Reading the rendered chart**: the eight architectures agree unanimously on a portion of the test set, and there the majority vote is right most of the time. Agreement collapses quickly past that point — once predictions split into 2 distinct labels, majority-vote accuracy drops significantly, then flattens for 3+ distinct labels. The right panel explains why: the share of extreme ratings (1★ and 5★) shrinks steadily as disagreement grows, replaced by middle ratings (2★–4★), exactly the boundary cases where a human annotator would also hesitate between adjacent stars. This backs the **label-ambiguity** reading — a meaningful share of the remaining error sits in inherently fuzzy middle-rating reviews, a ceiling that no architecture change is likely to break — while the error rate that persists even where all eight models agree points to a smaller pool of genuinely hard or mislabeled examples shared across architectures.
 
 ### Examples
 
@@ -883,7 +906,8 @@ sample = pool.sample(12, random_state=42).reset_index(drop=True)
 
 ARCH_SHORT = {"FastText": "FastText", "FastText + Label Attention": "FT+LA",
               "FATE (L=1)": "FATE (L=1)", "FATE (L=1) + Label Attention": "FATE (L=1)+LA",
-              "FATE (L=2)": "FATE (L=2)", "FATE (L=2) + Label Attention": "FATE (L=2)+LA"}
+              "FATE (L=2)": "FATE (L=2)", "FATE (L=2) + Label Attention": "FATE (L=2)+LA",
+              "FATE (L=4)": "FATE (L=4)", "FATE (L=4) + Label Attention": "FATE (L=4)+LA"}
 
 examples = [
     {"true": int(r["true"]), "text": str(r["text"]),
@@ -960,7 +984,7 @@ HTML(html)
 
 ## Explainability
 
-This section turns the spotlight on *why* the models predict what they predict, not just *how often* they're right. The analysis is built around a focused comparison: our **best-performing model** : FATE (L=2) with Label Attention is set against its direct counterpart **FATE (L=2) without label attention** (identical architecture and hyperparameters, mean pooling as the sole difference). This pairing isolates the contribution of the label attention mechanism to how the model reasons about text. Both models are probed with an identical battery of analyses on the *same* 200 sampled test reviews, so every figure below is a direct, paired comparison rather than two separate reports glued together.
+This section turns the spotlight on *why* the models predict what they predict, not just *how often* they're right. The analysis is built around a focused comparison: our **best-performing model** : FATE (L=4) with Label Attention is set against its direct counterpart **FATE (L=4) without label attention** (identical architecture and hyperparameters, mean pooling as the sole difference). This pairing isolates the contribution of the label attention mechanism to how the model reasons about text. Both models are probed with an identical battery of analyses on the *same* 200 sampled test reviews, so every figure below is a direct, paired comparison rather than two separate reports glued together.
 
 Five complementary instruments are used throughout:
 

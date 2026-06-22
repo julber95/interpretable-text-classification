@@ -860,12 +860,12 @@ All three architectures use a **WordPiece tokenizer** trained on the training da
 
 All experiments are tracked with **MLflow** and run on GPU via **Argo Workflows** on the INSEE datalab infrastructure. Each configuration is trained for up to 40 epochs with early stopping (patience = 5).
 
-The grid search covers 672 configurations in total. For FastText (`n_layers=0`), `n_head` is not applicable; without label attention this yields $4 \times 4 \times 3 = 48$ runs, and with label attention another $4 \times 4 \times 3 = 48$ runs, for a FastText subtotal of 96. For transformer architectures (`n_layers` ∈ {1, 2}), the full grid gives $4 \times 2 \times 3 \times 2 \times 4 \times 3 = 576$ runs.
+The grid search covers 960 configurations in total. For FastText (`n_layers=0`), `n_head` is not applicable; without label attention this yields $4 \times 4 \times 3 = 48$ runs, and with label attention another $4 \times 4 \times 3 = 48$ runs, for a FastText subtotal of 96. For transformer architectures (`n_layers` ∈ {1, 2, 4}), the full grid gives $4 \times 3 \times 3 \times 2 \times 4 \times 3 = 864$ runs.
 
 | Hyperparameter | Values | Applies to |
 |---|---|---|
 | Embedding dimension | 64, 128, 256, 512 | All |
-| Number of layers (`n_layers`) | 0, 1, 2 | All |
+| Number of layers (`n_layers`) | 0, 1, 2, 4 | All |
 | Vocabulary size | 2,000 / 5,000 / 10,000 / 20,000 | All |
 | Learning rate | 0.0001, 0.0005, 0.001 | All |
 | Attention heads (`n_head`) | 2, 4, 8 | `n_layers` ≥ 1 |
