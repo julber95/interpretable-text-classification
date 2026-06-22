@@ -42,5 +42,5 @@ index.html
 schemas/
 
 # Predictions
-/benchmark/results/preds/*npz
+/results/amazon/preds/*npz
 **/*.quarto_ipynb
