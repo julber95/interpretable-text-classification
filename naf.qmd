@@ -209,7 +209,7 @@ HTML("""
 import json
 from IPython.display import HTML
 
-with open('results/naf/naf2025_structure.json') as f:
+with open('assets/naf2025_structure.json') as f:
     _naf = json.load(f)
 
 _json = json.dumps(_naf, ensure_ascii=False)
