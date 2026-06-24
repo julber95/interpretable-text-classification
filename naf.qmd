@@ -2,4 +2,446 @@
 title: "NAF"
 ---
 
-*Coming soon.*
+## The NAF 2025 nomenclature
+
+The **Nomenclature of French Activities 2025 (NAF 2025)** is France's official classification of economic activities, aligned with **NACE Rev. 2.1**. Every business unit is assigned an **APE code** from this nomenclature, which underpins official economic statistics across Europe. It organises all activities into five nested hierarchical levels; a full interactive breakdown is available in the [appendix](#detailed-breakdown-of-the-naf-2025).
+
+The training dataset was built by relabelling INSEE's previous 2.7-million-observation corpus from NACE 2.0 to NACE 2.1. While 75% of codes map one-to-one and were converted by direct table lookup, the remaining 25% are *multivocal* (one old code → several candidates) and, due to their overrepresentation in practice, account for ~52% of observations. These required reading the activity description to resolve. A **Rule-Based Augmented Generation (RBAG)** pipeline was developed for this: given a description and its legacy NACE 2.0 code, the correspondence table retrieves the 2–5 candidate NACE 2.1 codes, their official explanatory notes are injected into a prompt, and an LLM picks the best match. Evaluated on a 30,000-observation benchmark annotated by ~25 experts (strict inter-annotator agreement: 62%), an ensemble of three LLMs reaches **78% accuracy** — with much of the gap attributable to genuine ambiguity rather than model errors. The final corpus contains ~2.3 million NAF 2025 labels. More details in the [codif-ape-nace-revision](https://github.com/InseeFrLab/codif-ape-nace-revision/tree/prod) repository.
+
+```{python}
+#| echo: false
+from IPython.display import HTML
+HTML("""
+<style>
+.naf {
+  max-width: 500px;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  margin: 1.6rem auto 2rem;
+}
+.naf-card {
+  display: flex;
+  border: 1px solid #dde3ec;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color .2s, box-shadow .2s;
+  user-select: none;
+}
+.naf-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,.07); }
+.naf-bar  { width: 5px; flex-shrink: 0; transition: width .2s; }
+.naf-card.open .naf-bar { width: 7px; }
+.naf-body { flex: 1; padding: 14px 20px; }
+.naf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.naf-name { font-size: 14px; font-weight: 700; }
+.naf-right { display: flex; align-items: center; gap: 14px; }
+.naf-count-wrap { text-align: right; line-height: 1; }
+.naf-n    { font-size: 30px; font-weight: 700; opacity: .5; line-height: 1; }
+.naf-n-lbl { font-size: 9px; color: #b0b8c8; text-transform: uppercase; letter-spacing: .06em; margin-top: 2px; }
+.naf-chevron { font-size: 11px; color: #c0c8d8; transition: transform .25s; line-height: 1; }
+.naf-card.open .naf-chevron { transform: rotate(180deg); }
+.naf-fmt {
+  display: inline-block;
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 4px;
+  margin-top: 6px;
+}
+.naf-desc {
+  font-size: 12px;
+  color: #555;
+  line-height: 1.55;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height .3s ease, opacity .25s ease, margin-top .3s ease;
+  margin-top: 0;
+}
+.naf-card.open .naf-desc {
+  max-height: 80px;
+  opacity: 1;
+  margin-top: 9px;
+}
+.naf-sep {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2px 0;
+}
+.naf-sep-line  { width: 1px; height: 7px; background: #d4dae6; }
+.naf-sep-stat  { font-size: 10px; color: #b5bfcf; padding: 2px 0; white-space: nowrap; }
+.naf-sep-arrow { font-size: 12px; color: #cdd3de; line-height: 1; }
+.naf-hint { font-size: 11px; color: #b0b8c8; margin-bottom: 8px; font-style: italic; text-align: center; }
+</style>
+
+<div class="naf">
+<p style="text-align:center; font-size:16px; font-weight:700; color:#1a2a4a; margin-bottom:4px; letter-spacing:.01em;">NAF 2025 — Hierarchical structure</p>
+<p class="naf-hint">Click on a level to display its description.</p>
+
+<div class="naf-card" onclick="this.classList.toggle('open')" style="background:linear-gradient(to right,rgba(13,59,119,.07) 2.8%,#fafbff 2.8%)">
+  <div class="naf-bar" style="background:#0D3B77"></div>
+  <div class="naf-body">
+    <div class="naf-head">
+      <span class="naf-name" style="color:#0D3B77">Section</span>
+      <div class="naf-right">
+        <div class="naf-count-wrap">
+          <div class="naf-n" style="color:#0D3B77">21</div>
+          <div class="naf-n-lbl">codes</div>
+        </div>
+        <span class="naf-chevron">▼</span>
+      </div>
+    </div>
+    <span class="naf-fmt" style="color:#0D3B77; background:#e8edf8;">1 letter &nbsp;·&nbsp; A to U</span>
+    <div class="naf-desc">21 broad thematic families (agriculture, industry, services…). Highest level of the nomenclature, standard granularity for macroeconomic analysis.</div>
+  </div>
+</div>
+
+<div class="naf-sep">
+  <div class="naf-sep-line"></div>
+  <span class="naf-sep-stat">≈ 4 divisions per section</span>
+  <div class="naf-sep-arrow">▼</div>
+</div>
+
+<div class="naf-card" onclick="this.classList.toggle('open')" style="background:linear-gradient(to right,rgba(21,101,192,.07) 11.6%,#fafbff 11.6%)">
+  <div class="naf-bar" style="background:#1565C0"></div>
+  <div class="naf-body">
+    <div class="naf-head">
+      <span class="naf-name" style="color:#1565C0">Division</span>
+      <div class="naf-right">
+        <div class="naf-count-wrap">
+          <div class="naf-n" style="color:#1565C0">87</div>
+          <div class="naf-n-lbl">codes</div>
+        </div>
+        <span class="naf-chevron">▼</span>
+      </div>
+    </div>
+    <span class="naf-fmt" style="color:#1565C0; background:#e0e9f7;">2 digits &nbsp;·&nbsp; 01 to 99</span>
+    <div class="naf-desc">First numeric level. Breaks each section into homogeneous activity domains; reference granularity for national and European sectoral statistics.</div>
+  </div>
+</div>
+
+<div class="naf-sep">
+  <div class="naf-sep-line"></div>
+  <span class="naf-sep-stat">≈ 3.3 groups per division</span>
+  <div class="naf-sep-arrow">▼</div>
+</div>
+
+<div class="naf-card" onclick="this.classList.toggle('open')" style="background:linear-gradient(to right,rgba(25,118,210,.07) 38.4%,#fafbff 38.4%)">
+  <div class="naf-bar" style="background:#1976D2"></div>
+  <div class="naf-body">
+    <div class="naf-head">
+      <span class="naf-name" style="color:#1976D2">Group</span>
+      <div class="naf-right">
+        <div class="naf-count-wrap">
+          <div class="naf-n" style="color:#1976D2">287</div>
+          <div class="naf-n-lbl">codes</div>
+        </div>
+        <span class="naf-chevron">▼</span>
+      </div>
+    </div>
+    <span class="naf-fmt" style="color:#1976D2; background:#d8e6f6;">3 digits &nbsp;·&nbsp; XX.X</span>
+    <div class="naf-desc">Refines the division into sets of activities sharing common economic characteristics. Intermediate level for detailed sectoral analysis.</div>
+  </div>
+</div>
+
+<div class="naf-sep">
+  <div class="naf-sep-line"></div>
+  <span class="naf-sep-stat">≈ 2.3 classes per group</span>
+  <div class="naf-sep-arrow">▼</div>
+</div>
+
+<div class="naf-card" onclick="this.classList.toggle('open')" style="background:linear-gradient(to right,rgba(33,150,243,.07) 87.1%,#fafbff 87.1%)">
+  <div class="naf-bar" style="background:#2196F3"></div>
+  <div class="naf-body">
+    <div class="naf-head">
+      <span class="naf-name" style="color:#2196F3">Class</span>
+      <div class="naf-right">
+        <div class="naf-count-wrap">
+          <div class="naf-n" style="color:#2196F3">651</div>
+          <div class="naf-n-lbl">codes</div>
+        </div>
+        <span class="naf-chevron">▼</span>
+      </div>
+    </div>
+    <span class="naf-fmt" style="color:#2196F3; background:#cfe0fb;">4 digits &nbsp;·&nbsp; XX.XX</span>
+    <div class="naf-desc">Detail level shared with the European NACE Rev. 2.1. Defines a specific activity; the level at which statistical harmonisation across EU member states takes place.</div>
+  </div>
+</div>
+
+<div class="naf-sep">
+  <div class="naf-sep-line"></div>
+  <span class="naf-sep-stat">≈ 1.1 sub-classes per class</span>
+  <div class="naf-sep-arrow">▼</div>
+</div>
+
+<div class="naf-card" onclick="this.classList.toggle('open')" style="background:rgba(66,165,245,.07)">
+  <div class="naf-bar" style="background:#42A5F5"></div>
+  <div class="naf-body">
+    <div class="naf-head">
+      <span class="naf-name" style="color:#2b8fe0">Sub-class</span>
+      <div class="naf-right">
+        <div class="naf-count-wrap">
+          <div class="naf-n" style="color:#2b8fe0">747</div>
+          <div class="naf-n-lbl">codes</div>
+        </div>
+        <span class="naf-chevron">▼</span>
+      </div>
+    </div>
+    <span class="naf-fmt" style="color:#2b8fe0; background:#c5dafa;">4 digits + letter &nbsp;·&nbsp; XX.XXY</span>
+    <div class="naf-desc">Finest level, specific to France. May split or merge classes to reflect national specificities. The trailing letter distinguishes sub-classes within the same class.</div>
+  </div>
+</div>
+
+</div>
+""")
+```
+
+## Detailed breakdown of the NAF 2025 {.appendix}
+
+```{python}
+#| echo: false
+import json
+from IPython.display import HTML
+
+with open('results/naf/naf2025_structure.json') as f:
+    _naf = json.load(f)
+
+_json = json.dumps(_naf, ensure_ascii=False)
+
+_styles = """
+<style>
+.nafx {
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  border: 1px solid #dde3ec;
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 1rem 0 2rem;
+}
+.nafx-bc {
+  padding: 9px 16px;
+  background: #f7f8fb;
+  border-bottom: 1px solid #e8edf5;
+  font-size: 11px;
+  color: #888;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.nafx-bc-item { font-weight: 600; }
+.nafx-bc-sep  { color: #ccc; }
+.nafx-cols {
+  display: grid;
+  grid-template-columns: 22fr 22fr 12fr 12fr 22fr;
+}
+.nafx-col { display: flex; flex-direction: column; }
+.nafx-col + .nafx-col { border-left: 1px solid #eaeef5; }
+.nafx-col-hdr {
+  padding: 7px 12px;
+  background: #f3f5fa;
+  border-bottom: 1px solid #e4e9f2;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: #778;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  white-space: nowrap;
+}
+.nafx-col-n {
+  font-size: 10px;
+  font-weight: 600;
+  background: #e8edf5;
+  color: #556;
+  border-radius: 10px;
+  padding: 1px 7px;
+}
+.nafx-body {
+  overflow-y: auto;
+  max-height: 280px;
+  flex: 1;
+}
+.nafx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #f3f5fa;
+  cursor: pointer;
+  transition: background .12s;
+  font-size: 12px;
+  color: #333;
+}
+.nafx-item:last-child { border-bottom: none; }
+.nafx-item:hover { background: #f5f7fc; }
+.nafx-item.active { background: #eef2fb; font-weight: 600; }
+.nafx-strip {
+  width: 3px;
+  align-self: stretch;
+  border-radius: 2px;
+  flex-shrink: 0;
+  min-height: 16px;
+}
+.nafx-code {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.nafx-lbl  { color: #555; line-height: 1.3; }
+.nafx-empty {
+  padding: 18px 12px;
+  font-size: 11px;
+  color: #bbb;
+  font-style: italic;
+}
+.nafx-hint {
+  font-size: 11px;
+  color: #aaa;
+  font-style: italic;
+  padding: 10px 16px;
+  border-top: 1px solid #eaeef5;
+  text-align: center;
+}
+</style>
+"""
+
+_html = """
+<div class="nafx">
+  <div class="nafx-bc" id="nafx-bc">Select a section to explore the hierarchy.</div>
+  <div class="nafx-cols">
+    <div class="nafx-col">
+      <div class="nafx-col-hdr">Section <span class="nafx-col-n">21</span></div>
+      <div class="nafx-body" id="nafx-list-s"></div>
+    </div>
+    <div class="nafx-col">
+      <div class="nafx-col-hdr">Division <span class="nafx-col-n" id="nafx-n-d">—</span></div>
+      <div class="nafx-body" id="nafx-list-d"><div class="nafx-empty">← Select a section</div></div>
+    </div>
+    <div class="nafx-col">
+      <div class="nafx-col-hdr">Group <span class="nafx-col-n" id="nafx-n-g">—</span></div>
+      <div class="nafx-body" id="nafx-list-g"><div class="nafx-empty">← Select a division</div></div>
+    </div>
+    <div class="nafx-col">
+      <div class="nafx-col-hdr">Class <span class="nafx-col-n" id="nafx-n-c">—</span></div>
+      <div class="nafx-body" id="nafx-list-c"><div class="nafx-empty">← Select a group</div></div>
+    </div>
+    <div class="nafx-col">
+      <div class="nafx-col-hdr">Sub-class <span class="nafx-col-n" id="nafx-n-sc">—</span></div>
+      <div class="nafx-body" id="nafx-list-sc"><div class="nafx-empty">← Select a class</div></div>
+    </div>
+  </div>
+  <div class="nafx-hint">Groups and classes are identified by their code only (labels not available at these levels).</div>
+</div>
+"""
+
+_script = r"""
+<script>
+(function() {
+  const NAF = JSON.parse(document.getElementById('_naf_data').textContent);
+
+  let selS = null, selD = null, selG = null, selC = null;
+
+  function color() { return selS ? NAF.sections.find(s => s.id === selS).color : '#888'; }
+
+  function item(code, label, active) {
+    const c = color();
+    const txt = label
+      ? `<span class="nafx-code" style="color:${c}">${code}</span><span class="nafx-lbl">${label}</span>`
+      : `<span class="nafx-code" style="color:${c}">${code}</span>`;
+    return `<div class="nafx-item${active?' active':''}" data-id="${code}">
+      <div class="nafx-strip" style="background:${c}"></div>${txt}</div>`;
+  }
+
+  function set(id, html) { document.getElementById(id).innerHTML = html || '<div class="nafx-empty">—</div>'; }
+  function setN(id, n)   { document.getElementById(id).textContent = n; }
+
+  function bc() {
+    const parts = [];
+    if (selS) { const s = NAF.sections.find(x => x.id===selS); parts.push(`<span class="nafx-bc-item" style="color:${s.color}">${s.id} — ${s.label}</span>`); }
+    if (selD) { parts.push(`<span class="nafx-bc-sep">›</span><span class="nafx-bc-item">${selD} — ${NAF.divisions[selD].label}</span>`); }
+    if (selG) { parts.push(`<span class="nafx-bc-sep">›</span><span class="nafx-bc-item">${selG}</span>`); }
+    if (selC) { parts.push(`<span class="nafx-bc-sep">›</span><span class="nafx-bc-item">${selC}</span>`); }
+    document.getElementById('nafx-bc').innerHTML = parts.length ? parts.join('') : 'Select a section to explore the hierarchy.';
+  }
+
+  function renderS() {
+    set('nafx-list-s', NAF.sections.map(s =>
+      `<div class="nafx-item${selS===s.id?' active':''}" data-id="${s.id}">
+        <div class="nafx-strip" style="background:${s.color}"></div>
+        <span class="nafx-code" style="color:${s.color}">${s.id}</span>
+        <span class="nafx-lbl">${s.label}</span>
+      </div>`).join(''));
+    document.querySelectorAll('#nafx-list-s .nafx-item').forEach(el =>
+      el.addEventListener('click', () => {
+        selS = el.dataset.id; selD = null; selG = null; selC = null;
+        renderS(); renderD(); clearG(); clearC(); clearSC(); bc();
+      }));
+  }
+
+  function renderD() {
+    if (!selS) { set('nafx-list-d','<div class="nafx-empty">← Select a section</div>'); setN('nafx-n-d','—'); return; }
+    const divIds = NAF.sections.find(s => s.id===selS).divisions;
+    set('nafx-list-d', divIds.map(id => item(id, NAF.divisions[id]?.label, selD===id)).join(''));
+    setN('nafx-n-d', divIds.length);
+    document.querySelectorAll('#nafx-list-d .nafx-item').forEach(el =>
+      el.addEventListener('click', () => {
+        selD = el.dataset.id; selG = null; selC = null;
+        renderD(); renderG(); clearC(); clearSC(); bc();
+      }));
+  }
+
+  function renderG() {
+    if (!selD) { set('nafx-list-g','<div class="nafx-empty">← Select a division</div>'); setN('nafx-n-g','—'); return; }
+    const grpIds = NAF.divisions[selD].groupes;
+    set('nafx-list-g', grpIds.map(id => item(id, null, selG===id)).join(''));
+    setN('nafx-n-g', grpIds.length);
+    document.querySelectorAll('#nafx-list-g .nafx-item').forEach(el =>
+      el.addEventListener('click', () => {
+        selG = el.dataset.id; selC = null;
+        renderG(); renderC(); clearSC(); bc();
+      }));
+  }
+
+  function renderC() {
+    if (!selG) { set('nafx-list-c','<div class="nafx-empty">← Select a group</div>'); setN('nafx-n-c','—'); return; }
+    const clsIds = NAF.groupes[selG].classes;
+    set('nafx-list-c', clsIds.map(id => item(id, null, selC===id)).join(''));
+    setN('nafx-n-c', clsIds.length);
+    document.querySelectorAll('#nafx-list-c .nafx-item').forEach(el =>
+      el.addEventListener('click', () => {
+        selC = el.dataset.id;
+        renderC(); renderSC(); bc();
+      }));
+  }
+
+  function renderSC() {
+    if (!selC) { set('nafx-list-sc','<div class="nafx-empty">← Select a class</div>'); setN('nafx-n-sc','—'); return; }
+    const scIds = NAF.classes[selC].sousclasses;
+    set('nafx-list-sc', scIds.map(id => item(id, NAF.sousclasses[id], false)).join(''));
+    setN('nafx-n-sc', scIds.length);
+  }
+
+  function clearG()  { selG=null; set('nafx-list-g','<div class="nafx-empty">← Select a division</div>'); setN('nafx-n-g','—'); }
+  function clearC()  { selC=null; set('nafx-list-c','<div class="nafx-empty">← Select a group</div>');    setN('nafx-n-c','—'); }
+  function clearSC() { set('nafx-list-sc','<div class="nafx-empty">← Select a class</div>');               setN('nafx-n-sc','—'); }
+
+  renderS();
+})();
+</script>
+"""
+
+HTML(
+    f'<script type="application/json" id="_naf_data">{_json}</script>\n'
+    + _styles + _html + _script
+)
+```

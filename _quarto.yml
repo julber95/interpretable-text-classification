@@ -11,8 +11,8 @@ website:
         text: "Intro & Setup"
       - href: amazon.qmd
         text: "Amazon"
-      - href: imdb.qmd
-        text: "IMDb"
+      - href: clinc150.qmd
+        text: "CLINC150"
       - href: naf.qmd
         text: "NAF"
       - href: concepts.qmd

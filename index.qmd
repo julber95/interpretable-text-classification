@@ -35,12 +35,12 @@ The benchmark covers three datasets of increasing number of classes, designed as
 
 **NAF** is the target application: automatic coding of business creation declarations against the *Nomenclature des Activités Françaises*, with more than 700 classes. Results on this dataset constitute the core deliverable of the internship.
 
-In our experiments, 5,000 (Amazon) and 1,500 (CLINC150) training examples are held out as a validation set.
+In our experiments, 5,000 (Amazon) and 3,100 (CLINC150) training examples are held out as a validation set.
 
 | Dataset | Classes | Train | Val | Test | SOTA (acc.) |
 |---|---|---|---|---|---|
 | Amazon Reviews | 5 | 195,000 | 5,000 | 5,000 | 63.3% (mBERT) |
-| CLINC150 | 150 | 13,500 | 1,500 | 4,500 | ~97% (large LMs) |
+| CLINC150 | 150 | 15,200 | 3,100 | 5,500 | ~97% (large LMs) |
 | NAF | ~750 | — | — | — | — |
 
 ### Models

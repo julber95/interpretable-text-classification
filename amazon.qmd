@@ -2,6 +2,8 @@
 title: "Amazon"
 ---
 
+**Amazon Reviews** (`amazon_reviews_multi`, English) is the Multilingual Amazon Reviews Corpus. The English split contains 200,000 training and 5,000 test product reviews, each rated from 1 to 5 stars. Reviews combine a title and a body; the 5-class ordinal nature of the task makes it harder than binary sentiment classification. It serves here as a first benchmark on a large, relatively simple dataset before tackling the more complex CLINC150 and NAF settings.
+
 ```{python}
 #| label: fetch-mlflow-amazon
 
