@@ -125,6 +125,10 @@ def load_data(dataset_cfg: dict, seed: int):
     train_data  = ds[train_split].shuffle(seed=seed)
     test_data   = ds[test_split].shuffle(seed=seed)
 
+    if dataset_cfg.get("filter_oos", False):
+        train_data = train_data.filter(lambda x: x[label_col] is not None and str(x[label_col]) != "nan")
+        test_data  = test_data.filter(lambda x: x[label_col] is not None and str(x[label_col]) != "nan")
+
     def from_split(data, start, end):
         return _make_X(data[text_col][start:end],
                        data[title_col][start:end] if title_col else None,
@@ -142,6 +146,8 @@ def load_data(dataset_cfg: dict, seed: int):
     elif val_split:
         n_train  = _resolve_n_train(n_train, len(train_data), 0, fraction)
         val_data = ds[val_split].shuffle(seed=seed)
+        if dataset_cfg.get("filter_oos", False):
+            val_data = val_data.filter(lambda x: x[label_col] is not None and str(x[label_col]) != "nan")
         n_val    = n_val or len(val_data)
         X_train, y_train = from_split(train_data, 0, n_train)
         X_val,   y_val   = from_split(val_data, 0, n_val)

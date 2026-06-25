@@ -142,6 +142,8 @@ fig.update_layout(
 fig.show()
 ```
 
+Both FastText variants plateau regardless of model size — FastText around 0.93–0.94 and FastText + Label Attention slightly lower at ~0.92 — confirming that the mean-pooling bottleneck sets a hard performance ceiling that extra parameters cannot overcome. FATE architectures improve steadily with capacity: FATE (L=4) reaches the lowest validation loss (~0.845) and dominates across all parameter budgets, followed by FATE (L=2) and then FATE (L=1) at ~0.88–0.90. Adding label attention to FATE does not systematically change the frontier, suggesting that the transformer blocks already capture most of the relevant context.
+
 ### Effect of training set size
 
 Each curve shows the best validation loss (over `n_head` and `lr`) for a given architecture and parameter count, repeated across fractions of the training set. This reveals how quickly each architecture saturates with data and how sensitive it is to data scarcity.
@@ -252,6 +254,8 @@ fig.update_layout(
 fig.show()
 ```
 
+TODO
+
 ### Stability
 
 The violin plot shows the **distribution of validation loss across all runs** for each architecture. A narrow violin indicates that the architecture is robust to hyperparameter choice, while a wide one signals high sensitivity.
@@ -305,13 +309,9 @@ fig.update_layout(
 fig.show()
 ```
 
+The two FastText variants are by far the most stable: their violins are narrow and tightly concentrated (FastText ~0.94, FastText + Label Attention ~0.93), meaning hyperparameter choice has almost no impact on the outcome. FATE (L=1) shows a moderate spread centered around 0.90. FATE (L=2) exhibits wider distributions (~0.86–0.92). FATE (L=4) achieves the best median loss (~0.845) but also shows a spread, with the label-attention variant reaching the lowest tails. The trade-off is clear: the most capable architectures achieve the best performance but require more careful tuning.
+
 :::
-
-**Val loss vs. parameters.** Both FastText variants plateau regardless of model size — FastText around 0.93–0.94 and FastText + Label Attention slightly lower at ~0.92 confirming that the mean-pooling bottleneck sets a hard performance ceiling that extra parameters cannot overcome (for this architecture). FATE architectures improve steadily with capacity: FATE (L=4) reaches the lowest validation loss (~0.845) and dominates across all parameter budgets, followed by FATE (L=2) and then FATE (L=1) at ~0.88–0.90. Adding label attention to FATE does not systematically change the frontier, suggesting that the transformer blocks already capture most of the relevant context.
-
-**Effect of training set size.** TODO
-
-**Stability.** The two FastText variants are by far the most stable: their violins are narrow and tightly concentrated (FastText ~0.94, FastText + Label Attention ~0.93), meaning hyperparameter choice has almost no impact on the outcome. FATE (L=1) shows a moderate spread centered around 0.90. FATE (L=2) exhibits wider distributions (~0.86–0.92). FATE (L=4) achieves the best median loss (~0.845) but also shows a spread, with the label-attention variant reaching the lowest tails. The trade-off is clear: the most capable architectures achieve the best performance but require more careful tuning.
 
 ### Effect of vocabulary size and embedding dimension
 
@@ -383,6 +383,8 @@ fig.update_layout(
 fig.show()
 ```
 
+The main gains occur between 2,000 and 5,000 tokens; beyond that, all curves flatten. FATE architectures show a noticeable drop from 2k to 5k, after which performance stabilises: FATE (L=1) variants around 0.895–0.900, FATE (L=2) around 0.88, and FATE (L=4) around 0.863. This suggests that a vocabulary of 5,000 tokens already captures most of the useful subword coverage for this dataset.
+
 ### Embedding dimension
 
 ```{python}
@@ -434,11 +436,9 @@ fig.update_layout(
 fig.show()
 ```
 
+FastText variants are insensitive throughout, their curves remaining essentially flat from 64 to 512. FATE (L=1) architectures improve from 64 to 128–256 then plateau. FATE (L=2) and FATE (L=4) show a similar pattern with validation loss decreasing up to 256 and slightly increasing at 512, making **256 the clear sweet spot** for deeper transformer architectures. Larger embeddings add parameters without improving and can marginally hurt the most expressive models.
+
 :::
-
-**Vocabulary size.** The main gains occur between 2,000 and 5,000 tokens; beyond that, all curves flatten. FATE architectures show a noticeable drop from 2k to 5k, after which performance stabilises: FATE (L=1) variants around 0.895–0.900, FATE (L=2) around 0.88, and FATE (L=4) around 0.863. This suggests that a vocabulary of 5,000 tokens already captures most of the useful subword coverage for this dataset.
-
-**Embedding dimension.** FastText variants are insensitive throughout, their curves remaining essentially flat from 64 to 512. FATE (L=1) architectures improve from 64 to 128–256 then plateau. FATE (L=2) and FATE (L=4) show a similar pattern with validation loss decreasing up to 256 and slightly increasing at 512, making **256 the clear sweet spot** for deeper transformer architectures. Larger embeddings add parameters without improving and can marginally hurt the most expressive models.
 
 ### Effect of number of attention heads
 

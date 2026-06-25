@@ -2,4 +2,887 @@
 title: "CLINC150"
 ---
 
-*Coming soon.*
+**CLINC150** (`clinc_oos`) is an intent detection dataset with 150 intent classes covering everyday conversational domains (banking, travel, home automation, etc.), with 100 training examples per class. The large number of classes and the short, colloquial nature of utterances make it a natural intermediate step between Amazon and NAF.
+
+```{python}
+#| label: fetch-mlflow-clinc150
+
+from pathlib import Path
+import mlflow, os
+import pandas as pd
+
+CACHE_PATH = Path("results/clinc150/runs.csv")
+if not CACHE_PATH.parent.is_dir():
+    CACHE_PATH.parent.mkdir(parents=True)
+
+if CACHE_PATH.exists():
+    df = pd.read_csv(CACHE_PATH)
+else:
+    df = mlflow.search_runs(experiment_names=["clinc150"], max_results=5000)
+    df = df[df["status"] == "FINISHED"].copy()
+    df = df.rename(columns={
+        "params.emb_dim":                  "emb_dim",
+        "params.n_layers":                 "n_layers",
+        "params.n_head":                   "n_head",
+        "params.n_heads_label_attention":  "n_heads_label_attn",
+        "params.vocab_size":               "vocab_size",
+        "params.lr":                       "lr",
+        "metrics.num_params":              "num_params",
+        "metrics.test_accuracy":           "test_accuracy",
+        "metrics.test_f1_macro":           "test_f1_macro",
+        "metrics.train_time_s":            "train_time_s",
+        "metrics.val_loss":                "min_val_loss",
+    })
+    for col in ["emb_dim", "n_layers", "vocab_size"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    df["lr"]         = df["lr"].astype(float)
+    df["num_params"] = pd.to_numeric(df["num_params"], errors="coerce").astype("Int64")
+
+    def arch_label(row):
+        la = str(row["n_heads_label_attn"]) == "4"
+        if row["n_layers"] == 0:
+            return "FastText + Label Attention" if la else "FastText"
+        suffix = " + Label Attention" if la else ""
+        return f"FATE (L={row['n_layers']}){suffix}"
+
+    df["architecture"] = df.apply(arch_label, axis=1)
+
+    key_cols = ["n_layers","emb_dim","vocab_size","n_head","n_heads_label_attn","lr"]
+    df = df.sort_values("min_val_loss").drop_duplicates(subset=key_cols, keep="first")
+    df.to_csv(CACHE_PATH, index=False)
+```
+
+## Hyperparameter sweep
+
+This section explores the results across four complementary angles: model capacity and robustness; the effect of vocabulary size and embedding dimension; the effect of the number of attention heads; and training time.
+
+### Capacity & robustness
+
+::: {.panel-tabset}
+### Val loss vs. parameters
+
+A key observation is that **`n_head` and `lr` do not affect `num_params`**. In a standard transformer, the total size of the attention matrices is $4 \times d^2$ regardless of how many heads are used, since $d_{\text{head}} = d / n_{\text{head}}$. Similarly, `lr` is a training hyperparameter with no effect on architecture. As a result, for any fixed combination of `(emb_dim, n_layers, vocab_size)`, FATE architectures have exactly $3 \times 3 = 9$ runs sharing the same `num_params` (3 values of `n_head` × 3 values of `lr`), while FastText has only $3$ runs. This motivates two complementary views:
+
+- **Scatter plot**: all 504 runs, showing the full spread of achievable val_loss for a given parameter budget.
+- **Curve plot**: for each `(architecture, emb_dim, vocab_size)` group, take the `min(val_loss)` over `n_head` and `lr`, tracing the performance frontier as model capacity grows.
+
+```{python}
+#| label: fig-pareto-clinc150
+#| fig-cap: "Validation loss vs. number of parameters"
+
+import plotly.graph_objects as go
+
+COLORS = {
+    "FastText":                          "#2196F3",
+    "FastText + Label Attention":        "#00BCD4",
+    "FATE (L=1)":                        "#FFC107",
+    "FATE (L=1) + Label Attention":      "#FF8C00",
+    "FATE (L=2)":                        "#CC0000",
+    "FATE (L=2) + Label Attention":      "#880E4F",
+}
+
+df_curves = (
+    df.groupby(["architecture", "emb_dim", "vocab_size", "num_params"], as_index=False)
+    ["min_val_loss"].min()
+    .sort_values("num_params")
+)
+
+ft_archs   = ["FastText", "FastText + Label Attention"]
+df_ft      = df[df["architecture"].isin(ft_archs)].groupby(
+    ["architecture", "emb_dim", "vocab_size", "lr", "num_params"], as_index=False
+)["min_val_loss"].min()
+df_scatter = pd.concat([df_ft, df[~df["architecture"].isin(ft_archs)]], ignore_index=True)
+
+fig = go.Figure()
+
+for arch in COLORS:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+
+for arch, group in df_scatter.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["num_params"], y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.3),
+        hovertemplate="params=%{x:,}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+for arch, group in df_curves.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["num_params"], y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=5),
+        hovertemplate="params=%{x:,}<br>best val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+y_cap = df["min_val_loss"].quantile(0.92)
+fig.update_layout(
+    xaxis_title="Number of parameters",
+    yaxis_title="Validation loss",
+    legend_title="Architecture",
+    height=450,
+    xaxis=dict(tickformat=".2s"),
+    yaxis=dict(range=[df["min_val_loss"].min() * 0.98, y_cap]),
+)
+fig.show()
+```
+
+The most striking observation is the **clear split into two performance tiers**, which is much sharper than on Amazon. The lower tier (val loss ≈ 0.4–0.6) contains FastText, FATE (L=1), and FATE (L=2); the upper tier (val loss ≈ 0.7–1.4) contains their Label Attention counterparts. On Amazon, label attention had a small but consistent positive effect — here it **consistently hurts**. A likely explanation: with 150 classes, the label attention module adds a large number of parameters (~150 × `emb_dim`) that overfit on the small per-class sample (100 examples per class), while the same mechanism was harmless on Amazon's 5-class problem with 200k examples.
+
+Within the lower tier, **FATE (L=2) is the clear winner**, reaching val loss ≈ 0.4 from ~2M parameters onward — a stronger advantage over L=1 than was observed on Amazon. Intuitively, 150 fine-grained intents require more representational depth than 5 sentiment stars. **FastText** remains competitive at the smallest scales (< 500k params) but plateaus around 0.47, unable to close the gap with attention-based models as capacity increases.
+
+### Stability
+
+The violin plot shows the **distribution of validation loss across all runs** for each architecture. A narrow violin indicates robustness to hyperparameter choice; a wide one signals high sensitivity.
+
+```{python}
+#| label: fig-violin-clinc150
+#| fig-cap: "Distribution of validation loss by architecture"
+
+arch_order = ["FastText", "FastText + Label Attention",
+              "FATE (L=1)", "FATE (L=1) + Label Attention",
+              "FATE (L=2)", "FATE (L=2) + Label Attention"]
+arch_order = [a for a in arch_order if a in df["architecture"].unique()]
+
+fig = go.Figure()
+for arch in arch_order:
+    color = COLORS.get(arch, "grey")
+    vals  = df[df["architecture"] == arch]["min_val_loss"].dropna()
+    fig.add_trace(go.Violin(
+        y=vals, name=arch,
+        side="both",
+        fillcolor=color, opacity=0.25,
+        line=dict(color=color, width=1.5),
+        box_visible=False, meanline_visible=False,
+        points=False, showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Box(
+        y=vals, name=arch,
+        marker=dict(color=color, size=3, opacity=0.4),
+        line=dict(color=color, width=1.5),
+        fillcolor="white", boxmean="sd", width=0.12,
+        showlegend=False,
+        hovertemplate="<b>" + arch + "</b><br>median=%{median:.4f}<br>Q1=%{q1:.4f}<br>Q3=%{q3:.4f}<extra></extra>",
+    ))
+
+fig.update_layout(
+    template="simple_white",
+    yaxis_title="Validation loss",
+    yaxis=dict(gridcolor="#e8e8e8"),
+    showlegend=False, height=430,
+    violingap=0.4, boxgap=0.4,
+)
+fig.show()
+```
+
+The two-tier structure from the previous plot reappears here. The three architectures **without** label attention (FastText, FATE L=1, FATE L=2) all produce tight, low-variance violins centered around 0.45–0.47, confirming they are robust to the choice of `lr` and `n_head`. Their label attention counterparts are not only worse on average but dramatically more sensitive: the violins span 0.7 to 1.8+, meaning a poor hyperparameter choice can degrade performance by nearly a factor of four. FATE (L=2) + Label Attention is the least erratic of the three, but still far above the non-LA tier.
+
+:::
+
+### Effect of vocabulary size and embedding dimension
+
+::: {.panel-tabset}
+### Vocabulary size
+
+```{python}
+#| label: fig-vocab-clinc150
+#| fig-cap: "Effect of vocabulary size on validation loss"
+
+import numpy as np
+
+vocab_vals = sorted(df["vocab_size"].dropna().unique())
+emb_vals   = sorted(df["emb_dim"].dropna().unique())
+
+df_vocab_mean = (
+    df.groupby(["architecture", "vocab_size"], as_index=False)["min_val_loss"].mean()
+    .sort_values("vocab_size")
+)
+
+vocab_offsets = {
+    "FastText":                          -350,
+    "FastText + Label Attention":        -210,
+    "FATE (L=1)":                        -70,
+    "FATE (L=1) + Label Attention":      +70,
+    "FATE (L=2)":                        +210,
+    "FATE (L=2) + Label Attention":      +350,
+}
+
+fig = go.Figure()
+for arch in COLORS:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df.groupby("architecture"):
+    offset = vocab_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["vocab_size"] + offset, y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
+        hovertemplate="vocab=%{customdata:,}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["vocab_size"],
+    ))
+for arch, group in df_vocab_mean.groupby("architecture"):
+    offset = vocab_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["vocab_size"] + offset, y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=6),
+        hovertemplate="vocab=%{customdata:,}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["vocab_size"],
+    ))
+fig.update_layout(
+    xaxis_title="Vocabulary size", yaxis_title="Validation loss",
+    xaxis=dict(tickvals=vocab_vals, ticktext=[f"{v:,}" for v in vocab_vals]),
+    legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
+    height=430, width=740, margin=dict(l=60, r=20),
+)
+fig.show()
+```
+
+Note: vocabulary sizes were capped at 10,000 — a 20,000 target was tested but saturated at ~10,300 tokens, as CLINC150's short conversational utterances simply don't contain enough distinct surface forms to fill a larger vocabulary.
+
+The trends are somewhat counterintuitive: for non-LA architectures, performance **slightly degrades** as vocabulary grows. With only 15,000 training examples, many token embeddings are updated only a handful of times at 10k vocab, resulting in poorly calibrated representations — more noise than signal. A compact 2,000-token vocabulary forces capacity onto tokens that actually occur frequently. On Amazon (200k examples, rich review language), larger vocabularies helped; here the data cannot support them. For **label attention** variants the effect is amplified, stacking embedding-table overfitting on top of the already problematic label attention behaviour.
+
+### Embedding dimension
+
+```{python}
+#| label: fig-emb-clinc150
+#| fig-cap: "Effect of embedding dimension on validation loss"
+
+df_emb_mean = (
+    df.groupby(["architecture", "emb_dim"], as_index=False)["min_val_loss"].mean()
+    .sort_values("emb_dim")
+)
+
+emb_offsets = {
+    "FastText":                          -22,
+    "FastText + Label Attention":        -13,
+    "FATE (L=1)":                        -4,
+    "FATE (L=1) + Label Attention":      +4,
+    "FATE (L=2)":                        +13,
+    "FATE (L=2) + Label Attention":      +22,
+}
+
+fig = go.Figure()
+for arch in COLORS:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df.groupby("architecture"):
+    offset = emb_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["emb_dim"] + offset, y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
+        hovertemplate="emb_dim=%{customdata}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["emb_dim"],
+    ))
+for arch, group in df_emb_mean.groupby("architecture"):
+    offset = emb_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["emb_dim"] + offset, y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=6),
+        hovertemplate="emb_dim=%{customdata}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["emb_dim"],
+    ))
+fig.update_layout(
+    xaxis_title="Embedding dimension", yaxis_title="Validation loss",
+    xaxis=dict(tickvals=emb_vals, ticktext=[str(v) for v in emb_vals]),
+    legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
+    height=430, width=740, margin=dict(l=60, r=20),
+)
+fig.show()
+```
+
+Embedding dimension has a clear and consistent effect: **all architectures improve as `emb_dim` grows**, with the steepest gains between 64 and 256. Beyond 256, returns diminish but do not vanish — 150 fine-grained intents genuinely require a richer token representation, more so than Amazon's 5 sentiment classes. The two performance tiers remain perfectly separated at every `emb_dim` value: no amount of embedding capacity compensates for the overfitting introduced by label attention on this small dataset.
+
+:::
+
+### Effect of number of attention heads
+
+```{python}
+#| label: fig-nhead-clinc150
+#| fig-cap: "Effect of number of attention heads on validation loss"
+
+df_attn = df[df["n_layers"] > 0].copy()
+df_attn["n_head"] = pd.to_numeric(df_attn["n_head"], errors="coerce")
+head_vals = sorted(df_attn["n_head"].dropna().unique())
+
+df_head_min = (
+    df_attn.groupby(["architecture", "n_head"], as_index=False)["min_val_loss"].mean()
+    .sort_values("n_head")
+)
+
+head_offsets = {
+    "FATE (L=1)":                        -0.16,
+    "FATE (L=1) + Label Attention":      -0.06,
+    "FATE (L=2)":                        +0.06,
+    "FATE (L=2) + Label Attention":      +0.16,
+}
+
+fate_archs = [a for a in COLORS if a.startswith("FATE")]
+fig = go.Figure()
+for arch in fate_archs:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df_attn.groupby("architecture"):
+    offset = head_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["n_head"] + offset, y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
+        hovertemplate="n_head=%{customdata}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["n_head"],
+    ))
+for arch, group in df_head_min.groupby("architecture"):
+    offset = head_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["n_head"] + offset, y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=6),
+        hovertemplate="n_head=%{customdata}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["n_head"],
+    ))
+fig.update_layout(
+    xaxis_title="Number of attention heads", yaxis_title="Validation loss",
+    xaxis=dict(tickvals=head_vals, ticktext=[str(int(v)) for v in head_vals]),
+    legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
+    height=420,
+)
+fig.show()
+```
+
+The number of attention heads has virtually **no effect** on validation loss — the mean lines are flat across 2, 4, and 8 heads for all four architectures. This is consistent with what was observed on Amazon and confirms the theoretical expectation: since total attention capacity is fixed at $4d^2$ regardless of head count, the head split is a structural choice rather than a capacity one. On CLINC150 specifically, the task may not require the kind of multi-perspective token interactions that more heads are designed to capture — a single or few-headed attention over short utterances is sufficient.
+
+### Training time
+
+```{python}
+#| label: fig-train-time-clinc150
+#| fig-cap: "Validation loss vs. training time"
+
+fig = go.Figure()
+for arch in COLORS:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["train_time_s"], y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=6, opacity=0.5),
+        hovertemplate="time=%{x:.0f}s<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+fig.update_layout(
+    xaxis_title="Training time (s)", yaxis_title="Validation loss",
+    legend_title="Architecture", height=430,
+    xaxis=dict(type="log", tickformat=".2s"),
+)
+fig.show()
+```
+
+The plot reads as two separate clouds. The lower cloud (val loss ≈ 0.4–0.6) is made up of FastText, FATE (L=1), and FATE (L=2): training time increases with model size, but performance improves in return. FastText is the fastest (100–500s) and already reaches ~0.47; FATE (L=1) adds depth at moderate cost (200s–2k s) and pushes down to ~0.44; FATE (L=2) is the slowest (up to ~5k s) but achieves the lowest val loss. The upper cloud (val loss ≈ 0.8–1.6) is the label attention variants — and the key observation here is that they are **not faster**: FATE (L=2) + LA can take as long as 3k+ seconds and still land at 0.8 val loss. There is no speed–accuracy tradeoff to exploit; label attention costs the same compute and reliably performs worse.
+
+### Interaction: embedding dimension × vocabulary size
+
+```{python}
+#| label: fig-heatmap-clinc150
+#| fig-cap: "Mean validation loss by embedding dimension and vocabulary size"
+
+from plotly.subplots import make_subplots
+
+arch_order = [a for a in COLORS if a in df["architecture"].unique()]
+emb_vals   = sorted(df["emb_dim"].dropna().unique())
+vocab_vals  = sorted(df["vocab_size"].dropna().unique())
+
+vmin = df.groupby(["architecture", "emb_dim", "vocab_size"])["min_val_loss"].mean().min()
+vmax = df.groupby(["architecture", "emb_dim", "vocab_size"])["min_val_loss"].mean().max()
+
+n_cols_hm = 3
+n_rows_hm = (len(arch_order) + n_cols_hm - 1) // n_cols_hm
+fig = make_subplots(rows=n_rows_hm, cols=n_cols_hm, subplot_titles=arch_order,
+                    horizontal_spacing=0.06, vertical_spacing=0.28)
+
+for idx, arch in enumerate(arch_order):
+    row, col = divmod(idx, n_cols_hm)
+    pivot = (
+        df[df["architecture"] == arch]
+        .groupby(["emb_dim", "vocab_size"])["min_val_loss"].mean()
+        .unstack("vocab_size")
+        .reindex(index=emb_vals, columns=vocab_vals)
+    )
+    fig.add_trace(go.Heatmap(
+        z=pivot.values,
+        x=[f"{v:,}" for v in vocab_vals],
+        y=[str(v) for v in emb_vals],
+        colorscale="Viridis_r",
+        zmin=vmin, zmax=vmax,
+        text=[[f"{v:.3f}" if not np.isnan(v) else "" for v in row_] for row_ in pivot.values],
+        texttemplate="%{text}",
+        textfont=dict(color="#555555"),
+        showscale=(idx == 0),
+        colorbar=dict(title="Mean val loss", orientation="h", x=0.5, xanchor="center",
+                      y=-0.18, yanchor="top", len=0.5, thickness=18, title_side="bottom") if idx == 0 else None,
+        hovertemplate="vocab=%{x}<br>emb_dim=%{y}<br>val_loss=%{z:.4f}<extra>" + arch + "</extra>",
+    ), row=row + 1, col=col + 1)
+    fig.update_yaxes(title_text="Embedding dim" if col == 0 else "", row=row + 1, col=col + 1)
+
+for ann in fig.layout.annotations:
+    ann.update(font=dict(size=12))
+fig.add_annotation(
+    text="Vocabulary size", xref="paper", yref="paper",
+    x=0.5, y=-0.12, showarrow=False, font=dict(size=15),
+)
+fig.update_layout(height=290 * n_rows_hm, autosize=True, margin=dict(l=50, r=20, t=40, b=80))
+fig.show()
+```
+
+The heatmaps confirm the two previous findings in a single view. **`emb_dim` dominates**: the vertical gradient is strong and consistent across all six panels — going from 64 to 512 cuts val loss by ~0.1 for non-LA architectures and by ~0.4–0.5 for LA ones. **Vocabulary size has a weaker and negative effect**: the horizontal gradient is mild but the colour always gets slightly darker left-to-right, confirming that 2,000 tokens is the best choice on this dataset. The two effects appear largely additive — there is no notable interaction between them. The best absolute configuration is `emb_dim=512, vocab=2,000`, reached at 0.419 by both FATE (L=1) and FATE (L=2), with FastText close behind at 0.467.
+
+## Prediction analysis
+
+```{python}
+#| label: load-predictions-clinc150
+
+import json, urllib.request, os
+import numpy as np
+from pathlib import Path
+
+PRED_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions"
+ARCH_FILES  = {
+    "FastText":                     "cl150_fasttext.npz",
+    "FastText + Label Attention":   "cl150_fasttext_labatt.npz",
+    "FATE (L=1)":                   "cl150_fateL1.npz",
+    "FATE (L=1) + Label Attention": "cl150_fateL1_labatt.npz",
+    "FATE (L=2)":                   "cl150_fateL2.npz",
+    "FATE (L=2) + Label Attention": "cl150_fateL2_labatt.npz",
+}
+
+PREDS_DIR = Path("results/clinc150/preds")
+if not PREDS_DIR.is_dir():
+    PREDS_DIR.mkdir(parents=True)
+
+preds_by_arch = {}
+for arch, fname in ARCH_FILES.items():
+    cache = PREDS_DIR / fname
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{PRED_BUCKET}/{fname}", cache)
+        d = np.load(cache, allow_pickle=True)
+        preds_by_arch[arch] = {
+            "y_test": d["y_test"].astype(int),
+            "y_pred": d["y_pred"].astype(int),
+            "X_test": d["X_test"],
+        }
+    except Exception:
+        pass
+
+ARCHS_AVAIL = list(preds_by_arch.keys())
+
+with open("assets/clinc150_labels.json") as f:
+    LABEL_MAP = {int(k): v for k, v in json.load(f).items()}
+
+OOS_LABEL = 150
+IN_SCOPE  = [i for i in range(151) if i != OOS_LABEL]
+```
+
+::: {.panel-tabset}
+
+### Confusion matrix
+
+```{python}
+#| label: fig-confusion-clinc150
+#| fig-cap: "Domain-level confusion matrix (rows = true domain, columns = predicted domain, normalised by row)"
+
+from sklearn.metrics import confusion_matrix as sk_cm
+from IPython.display import HTML
+import json, numpy as np
+
+with open("assets/clinc150_domains.json") as f:
+    INTENT_TO_DOMAIN = json.load(f)
+
+DOMAIN_ORDER = [
+    "Banking", "Credit Cards", "Kitchen & Dining", "Auto & Commute",
+    "Travel", "Utility", "Work", "Meta", "Small Talk", "Home", "OOS",
+]
+
+def intent_domain(label_int):
+    if label_int == OOS_LABEL:
+        return "OOS"
+    intent = LABEL_MAP.get(label_int, "")
+    return INTENT_TO_DOMAIN.get(intent, "Other")
+
+n_archs = len(ARCHS_AVAIL)
+fig = go.Figure()
+
+for i, arch in enumerate(ARCHS_AVAIL):
+    d = preds_by_arch[arch]
+    true_domains = [intent_domain(y) for y in d["y_test"]]
+    pred_domains = [intent_domain(y) for y in d["y_pred"]]
+    cm = sk_cm(true_domains, pred_domains, labels=DOMAIN_ORDER).astype(float)
+    row_sums = cm.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1
+    cm_norm = cm / row_sums
+    text = [[f"{v:.2f}" for v in row] for row in cm_norm]
+    fig.add_trace(go.Heatmap(
+        z=cm_norm,
+        x=DOMAIN_ORDER, y=DOMAIN_ORDER,
+        colorscale="Viridis_r", zmin=0, zmax=1,
+        text=text, texttemplate="%{text}",
+        textfont=dict(size=11),
+        showscale=(i == 0),
+        colorbar=dict(title="Fraction", thickness=14),
+        hovertemplate="True=%{y}<br>Pred=%{x}<br>%{z:.3f}<extra></extra>",
+        visible=(i == 0),
+    ))
+
+options = "".join(f'<option value="{i}">{arch}</option>' for i, arch in enumerate(ARCHS_AVAIL))
+fig.update_layout(
+    xaxis=dict(title="Predicted domain", tickangle=-30),
+    yaxis=dict(title="True domain", autorange="reversed"),
+    height=520, width=620,
+    margin=dict(t=20, b=100, l=140, r=20),
+)
+fig_html = fig.to_html(include_plotlyjs=False, div_id="cm-cl150", full_html=False)
+
+html = f"""
+<div style="display:flex;flex-direction:column;align-items:center;">
+  <div style="font-family:sans-serif;margin-bottom:0.75rem;">
+    <label for="cm-cl150-select" style="font-size:13px;font-weight:600;margin-right:8px;">Model:</label>
+    <select id="cm-cl150-select" onchange="cmCl150Change(this.value)"
+      style="font-size:13px;padding:4px 8px;border:1px solid #ccc;border-radius:4px;background:#fff;">
+      {options}
+    </select>
+  </div>
+  {fig_html}
+</div>
+<script>
+(function(){{
+  var N={n_archs};
+  window.cmCl150Change=function(val){{
+    var idx=parseInt(val), vis=Array(N).fill(false); vis[idx]=true;
+    Plotly.restyle("cm-cl150",{{visible:vis}});
+  }};
+}})();
+</script>
+"""
+HTML(html)
+```
+
+### Top confused pairs
+
+```{python}
+#| label: fig-confused-clinc150
+#| fig-cap: "Top 20 most confused intent pairs (excluding correct predictions)"
+
+from sklearn.metrics import confusion_matrix
+import plotly.graph_objects as go
+import pandas as pd
+from IPython.display import HTML
+
+n_archs = len(ARCHS_AVAIL)
+
+# Precompute top-25 confused pairs per arch
+def top_confused(y_true, y_pred, n=25, exclude_oos=False):
+    mask = (y_true != OOS_LABEL) if exclude_oos else np.ones(len(y_true), dtype=bool)
+    yt, yp = y_true[mask], y_pred[mask]
+    rows = []
+    for t, p in zip(yt, yp):
+        if t != p:
+            rows.append((LABEL_MAP.get(t, str(t)), LABEL_MAP.get(p, str(p))))
+    s = pd.Series(rows).value_counts().head(n)
+    pairs = [f"{a} → {b}" for a, b in s.index]
+    counts = s.values.tolist()
+    return pairs[::-1], counts[::-1]   # reversed for horizontal bar (bottom = most confused)
+
+fig = go.Figure()
+for i, arch in enumerate(ARCHS_AVAIL):
+    d = preds_by_arch[arch]
+    pairs, counts = top_confused(d["y_test"], d["y_pred"], exclude_oos=True)
+    fig.add_trace(go.Bar(
+        x=counts, y=pairs, orientation="h",
+        name=arch,
+        marker_color=COLORS.get(arch, "grey"),
+        visible=(i == 0),
+        hovertemplate="%{y}<br>count=%{x}<extra></extra>",
+    ))
+
+buttons = [dict(
+    label=arch, method="update",
+    args=[{"visible": [j == i for j in range(n_archs)]},
+          {"title": ""}],
+) for i, arch in enumerate(ARCHS_AVAIL)]
+
+fig.update_layout(
+    xaxis_title="Number of misclassifications",
+    height=560,
+    margin=dict(l=260, r=20, t=60, b=40),
+    updatemenus=[dict(
+        type="dropdown", buttons=buttons,
+        x=0.5, xanchor="center", y=1.12, yanchor="top",
+        showactive=True, bgcolor="#f0f0f0", bordercolor="#ccc",
+        font=dict(size=12),
+    )],
+)
+fig.show()
+```
+
+OOS examples are excluded here — with 500 OOS test examples vs. ~33 per in-scope class, OOS misclassifications would mechanically dominate the chart. The remaining in-scope confusions are mostly structurally related intents: pairs sharing vocabulary or near-duplicate intent definitions like `schedule_meeting` / `meeting_schedule`, `reminder` / `reminder_update`, or `transfer` / `pay_bill`. This kind of confusion is largely intrinsic to the task and unlikely to be resolved by scaling the model.
+
+### Per-class accuracy
+
+```{python}
+#| label: fig-perclass-clinc150
+#| fig-cap: "Per-class accuracy for each architecture (in-scope classes only, sorted by FATE L=2 accuracy)"
+
+from sklearn.metrics import confusion_matrix
+
+# Per-class accuracy per arch (in-scope only)
+records = []
+ref_arch = "FATE (L=2)"
+d_ref = preds_by_arch[ref_arch]
+cm_ref = confusion_matrix(d_ref["y_test"], d_ref["y_pred"],
+                          labels=IN_SCOPE + [OOS_LABEL])
+per_class_ref = {IN_SCOPE[i]: cm_ref[i, i] / cm_ref[i].sum()
+                 for i in range(len(IN_SCOPE)) if cm_ref[i].sum() > 0}
+
+sort_order = sorted(per_class_ref, key=per_class_ref.get)  # worst → best
+label_strs = [LABEL_MAP.get(c, str(c)) for c in sort_order]
+
+fig = go.Figure()
+for i, arch in enumerate(ARCHS_AVAIL):
+    d = preds_by_arch[arch]
+    cm = confusion_matrix(d["y_test"], d["y_pred"],
+                          labels=IN_SCOPE + [OOS_LABEL])
+    accs = [cm[IN_SCOPE.index(c), IN_SCOPE.index(c)] / cm[IN_SCOPE.index(c)].sum()
+            if cm[IN_SCOPE.index(c)].sum() > 0 else 0.0
+            for c in sort_order]
+    fig.add_trace(go.Bar(
+        x=accs, y=label_strs, orientation="h",
+        name=arch,
+        marker_color=COLORS.get(arch, "grey"),
+        opacity=0.85,
+        visible=(i == 0),
+        hovertemplate="%{y}<br>accuracy=%{x:.2f}<extra></extra>",
+    ))
+
+buttons = [dict(
+    label=arch, method="update",
+    args=[{"visible": [j == i for j in range(n_archs)]}],
+) for i, arch in enumerate(ARCHS_AVAIL)]
+
+fig.update_layout(
+    xaxis=dict(title="Per-class accuracy", range=[0, 1]),
+    height=2800,
+    margin=dict(l=200, r=20, t=60, b=40),
+    updatemenus=[dict(
+        type="dropdown", buttons=buttons,
+        x=0.5, xanchor="center", y=1.01, yanchor="top",
+        showactive=True, bgcolor="#f0f0f0", bordercolor="#ccc",
+        font=dict(size=12),
+    )],
+)
+fig.show()
+```
+
+### Model agreement
+
+Rather than asking *which* model is wrong, this view asks: when the six architectures disagree, is that because some are weaker, or because the utterance itself is ambiguous? For each test example we count how many distinct intent predictions the six models collectively produce, then look at (a) how often the **majority vote** is correct at each agreement level, and (b) which true intents dominate the disagreement zone.
+
+```{python}
+#| label: fig-agreement-clinc150
+#| fig-cap: "Model agreement vs. correctness"
+
+from plotly.subplots import make_subplots
+
+preds_matrix = np.array([preds_by_arch[a]["y_pred"] for a in ARCHS_AVAIL])
+y_true       = preds_by_arch[ARCHS_AVAIL[0]]["y_test"]
+n_test       = preds_matrix.shape[1]
+
+n_distinct  = np.array([len(set(preds_matrix[:, i])) for i in range(n_test)])
+maj_pred    = np.array([np.bincount(preds_matrix[:, i], minlength=152).argmax()
+                        for i in range(n_test)])
+maj_correct = (maj_pred == y_true)
+
+levels  = sorted(np.unique(n_distinct).tolist())
+xlabels = [f"All {len(ARCHS_AVAIL)} agree" if k == 1 else f"{k} distinct labels"
+           for k in levels]
+
+share = [(n_distinct == k).mean() * 100 for k in levels]
+acc   = [maj_correct[n_distinct == k].mean() * 100 for k in levels]
+
+# Top-5 true intents per agreement level
+INTENT_COLORS = [
+    "#1565C0","#1976D2","#2196F3","#42A5F5","#90CAF9",
+    "#E53935","#C62828","#FF7043","#FB8C00","#FDD835",
+]
+top_intents_per_level = []
+for k in levels:
+    mask = n_distinct == k
+    vals = y_true[mask]
+    counts = pd.Series(vals).value_counts().head(5)
+    top_intents_per_level.append([(LABEL_MAP.get(int(lbl), str(lbl)), cnt)
+                                  for lbl, cnt in counts.items()])
+
+all_top = list(dict.fromkeys(
+    name for level in top_intents_per_level for name, _ in level
+))
+
+fig = make_subplots(rows=1, cols=2,
+                    subplot_titles=["Share of test set & majority-vote accuracy",
+                                    "Top intents in each agreement group"])
+
+fig.add_trace(go.Bar(
+    x=xlabels, y=share, name="% of test set", marker_color="#90A4AE",
+    hovertemplate="%{x}<br>%{y:.1f}% of test set<extra></extra>",
+), row=1, col=1)
+fig.add_trace(go.Scatter(
+    x=xlabels, y=acc, name="Majority-vote accuracy", mode="lines+markers",
+    marker=dict(size=10, color="#C62828"), line=dict(width=3, color="#C62828"),
+    hovertemplate="%{x}<br>accuracy: %{y:.1f}%<extra></extra>",
+), row=1, col=1)
+
+for ci, intent_name in enumerate(all_top):
+    col_counts = []
+    for k_idx, k in enumerate(levels):
+        d_intent = dict(top_intents_per_level[k_idx])
+        col_counts.append(d_intent.get(intent_name, 0))
+    fig.add_trace(go.Bar(
+        x=xlabels, y=col_counts, name=intent_name,
+        marker_color=INTENT_COLORS[ci % len(INTENT_COLORS)],
+        hovertemplate=f"<b>{intent_name}</b><br>%{{x}}: %{{y}} examples<extra></extra>",
+    ), row=1, col=2)
+
+fig.update_yaxes(title_text="%", range=[0, 100], row=1, col=1)
+fig.update_yaxes(title_text="Count", row=1, col=2)
+fig.update_xaxes(tickangle=-20)
+fig.update_layout(
+    barmode="stack", template="simple_white", height=440,
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.35, yanchor="top"),
+    margin=dict(t=60, b=130),
+)
+fig.show()
+```
+
+### Examples
+
+```{python}
+#| label: fig-examples-clinc150
+#| fig-cap: "Example predictions — cases where models disagree or are wrong"
+
+import json, random
+from IPython.display import HTML
+
+random.seed(42)
+
+y_test_ref = preds_by_arch[ARCHS_AVAIL[0]]["y_test"]
+X_test_ref = preds_by_arch[ARCHS_AVAIL[0]]["X_test"]
+texts = X_test_ref.tolist() if X_test_ref.ndim == 1 else X_test_ref[:, 0].tolist()
+
+df_ex = pd.DataFrame({"true": y_test_ref, "text": texts})
+for arch in ARCHS_AVAIL:
+    df_ex[arch] = preds_by_arch[arch]["y_pred"]
+
+df_ex["disagree"] = df_ex[ARCHS_AVAIL].nunique(axis=1) > 1
+df_ex["any_wrong"] = (df_ex[ARCHS_AVAIL].values != df_ex[["true"]].values).any(axis=1)
+pool   = df_ex[df_ex["disagree"] & df_ex["any_wrong"]]
+sample = pool.sample(min(15, len(pool)), random_state=42).reset_index(drop=True)
+
+ARCH_SHORT = {
+    "FastText":                     "FT",
+    "FastText + Label Attention":   "FT+LA",
+    "FATE (L=1)":                   "FATE L=1",
+    "FATE (L=1) + Label Attention": "FATE L=1+LA",
+    "FATE (L=2)":                   "FATE L=2",
+    "FATE (L=2) + Label Attention": "FATE L=2+LA",
+}
+
+examples = [
+    {"true":     int(r["true"]),
+     "true_str": LABEL_MAP.get(int(r["true"]), str(int(r["true"]))),
+     "text":     str(r["text"]),
+     "preds":    {a: {"int": int(r[a]),
+                      "str": LABEL_MAP.get(int(r[a]), str(int(r[a])))}
+                  for a in ARCHS_AVAIL}}
+    for _, r in sample.iterrows()
+]
+
+html = f"""
+<style>
+  .cl-wrap  {{ font-family:sans-serif;font-size:14px;max-width:100%; }}
+  .cl-card  {{ border:1px solid #ddd;border-radius:8px;padding:18px 22px;
+               background:#fafafa;margin-bottom:14px; }}
+  .cl-meta  {{ font-size:13px;color:#555;margin-bottom:8px; }}
+  .cl-meta b {{ color:#222; }}
+  .cl-text  {{ line-height:1.7;color:#222;margin-bottom:14px;font-style:italic; }}
+  .cl-preds {{ display:flex;gap:10px;flex-wrap:wrap; }}
+  .cl-model {{ display:flex;flex-direction:column;align-items:center;gap:3px; }}
+  .cl-mname {{ font-size:10px;color:#888;font-weight:600;text-transform:uppercase;
+               letter-spacing:.04em; }}
+  .cl-badge {{ padding:4px 10px;border-radius:5px;font-weight:600;font-size:12px;
+               max-width:130px;text-align:center;word-break:break-word; }}
+  .correct  {{ background:#d4edda;color:#155724; }}
+  .wrong    {{ background:#f8d7da;color:#721c24; }}
+  .cl-nav   {{ display:flex;align-items:center;gap:12px;justify-content:center; }}
+  .cl-btn   {{ padding:6px 18px;background:#f0f0f0;border:1px solid #ccc;
+               border-radius:5px;cursor:pointer;font-size:13px; }}
+  .cl-btn:hover {{ background:#e0e0e0; }}
+  .cl-count {{ font-size:12px;color:#999; }}
+</style>
+<div class="cl-wrap">
+  <div class="cl-nav" style="margin-bottom:12px;">
+    <button class="cl-btn" onclick="clNav(-1)">← Prev</button>
+    <span class="cl-count" id="cl-count"></span>
+    <button class="cl-btn" onclick="clNav(1)">Next →</button>
+  </div>
+  <div class="cl-card">
+    <div class="cl-meta"  id="cl-meta"></div>
+    <div class="cl-text"  id="cl-text"></div>
+    <div class="cl-preds" id="cl-preds"></div>
+  </div>
+</div>
+<script>
+(function(){{
+  const EX = {json.dumps(examples)};
+  const AS = {json.dumps(ARCH_SHORT)};
+  let cur = 0;
+  function esc(s) {{ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }}
+  function render(i) {{
+    const e = EX[i];
+    document.getElementById('cl-count').textContent = (i+1) + ' / ' + EX.length;
+    document.getElementById('cl-meta').innerHTML =
+      'True intent: <b>' + esc(e.true_str) + '</b>';
+    document.getElementById('cl-text').textContent = '«' + e.text + '»';
+    let h = '';
+    for (const [arch, p] of Object.entries(e.preds)) {{
+      const ok  = p.int === e.true;
+      const cls = ok ? 'correct' : 'wrong';
+      h += '<div class="cl-model">'
+        +  '<span class="cl-mname">' + esc(AS[arch]||arch) + '</span>'
+        +  '<span class="cl-badge ' + cls + '">' + esc(p.str) + '</span>'
+        +  '</div>';
+    }}
+    document.getElementById('cl-preds').innerHTML = h;
+  }}
+  window.clNav = function(d) {{ cur = (cur+d+EX.length)%EX.length; render(cur); }};
+  render(0);
+}})();
+</script>
+"""
+HTML(html)
+```
+
+:::
+
