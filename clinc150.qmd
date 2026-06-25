@@ -699,13 +699,17 @@ fig.show()
 
 ### Model agreement
 
-Rather than asking *which* model is wrong, this view asks: when the six architectures disagree, is that because some are weaker, or because the utterance itself is ambiguous? For each test example we count how many distinct intent predictions the six models collectively produce, then look at (a) how often the **majority vote** is correct at each agreement level, and (b) which true intents dominate the disagreement zone.
+Rather than asking *which* model is wrong, this view asks: when the six architectures disagree, is that because some are weaker, or because the utterance itself is ambiguous? For each test example we count how many distinct intent predictions the six models collectively produce, then look at (a) how often the **majority vote** is correct at each agreement level, and (b) which **domains** generate the most inter-model disagreement.
 
 ```{python}
 #| label: fig-agreement-clinc150
 #| fig-cap: "Model agreement vs. correctness"
 
+import json
 from plotly.subplots import make_subplots
+
+with open("assets/clinc150_domains.json") as f:
+    INTENT_TO_DOMAIN = json.load(f)
 
 preds_matrix = np.array([preds_by_arch[a]["y_pred"] for a in ARCHS_AVAIL])
 y_true       = preds_by_arch[ARCHS_AVAIL[0]]["y_test"]
@@ -717,32 +721,38 @@ maj_pred    = np.array([np.bincount(preds_matrix[:, i], minlength=152).argmax()
 maj_correct = (maj_pred == y_true)
 
 levels  = sorted(np.unique(n_distinct).tolist())
-xlabels = [f"All {len(ARCHS_AVAIL)} agree" if k == 1 else f"{k} distinct labels"
+xlabels = [f"All {len(ARCHS_AVAIL)} agree" if k == 1 else f"{k} distinct\npredictions"
            for k in levels]
 
 share = [(n_distinct == k).mean() * 100 for k in levels]
 acc   = [maj_correct[n_distinct == k].mean() * 100 for k in levels]
 
-# Top-5 true intents per agreement level
-INTENT_COLORS = [
-    "#1565C0","#1976D2","#2196F3","#42A5F5","#90CAF9",
-    "#E53935","#C62828","#FF7043","#FB8C00","#FDD835",
+# Disagreement rate per domain (% of domain examples where models disagree)
+disagree_mask = n_distinct > 1
+DOMAIN_ORDER_PLOT = [
+    "Banking", "Credit Cards", "Kitchen & Dining", "Auto & Commute",
+    "Travel", "Utility", "Work", "Meta", "Small Talk", "Home", "OOS",
 ]
-top_intents_per_level = []
-for k in levels:
-    mask = n_distinct == k
-    vals = y_true[mask]
-    counts = pd.Series(vals).value_counts().head(5)
-    top_intents_per_level.append([(LABEL_MAP.get(int(lbl), str(lbl)), cnt)
-                                  for lbl, cnt in counts.items()])
+def label_domain(lbl):
+    if lbl == OOS_LABEL:
+        return "OOS"
+    return INTENT_TO_DOMAIN.get(LABEL_MAP.get(int(lbl), ""), "Other")
 
-all_top = list(dict.fromkeys(
-    name for level in top_intents_per_level for name, _ in level
-))
+domains_true = np.array([label_domain(y) for y in y_true])
+disagree_rate = []
+for dom in DOMAIN_ORDER_PLOT:
+    mask_dom = domains_true == dom
+    if mask_dom.sum() == 0:
+        disagree_rate.append(0.0)
+    else:
+        disagree_rate.append(disagree_mask[mask_dom].mean() * 100)
 
-fig = make_subplots(rows=1, cols=2,
-                    subplot_titles=["Share of test set & majority-vote accuracy",
-                                    "Top intents in each agreement group"])
+fig = make_subplots(
+    rows=1, cols=2,
+    subplot_titles=["Share of test set & majority-vote accuracy",
+                    "Disagreement rate by domain"],
+    column_widths=[0.48, 0.52],
+)
 
 fig.add_trace(go.Bar(
     x=xlabels, y=share, name="% of test set", marker_color="#90A4AE",
@@ -754,24 +764,24 @@ fig.add_trace(go.Scatter(
     hovertemplate="%{x}<br>accuracy: %{y:.1f}%<extra></extra>",
 ), row=1, col=1)
 
-for ci, intent_name in enumerate(all_top):
-    col_counts = []
-    for k_idx, k in enumerate(levels):
-        d_intent = dict(top_intents_per_level[k_idx])
-        col_counts.append(d_intent.get(intent_name, 0))
-    fig.add_trace(go.Bar(
-        x=xlabels, y=col_counts, name=intent_name,
-        marker_color=INTENT_COLORS[ci % len(INTENT_COLORS)],
-        hovertemplate=f"<b>{intent_name}</b><br>%{{x}}: %{{y}} examples<extra></extra>",
-    ), row=1, col=2)
+sorted_idx = sorted(range(len(DOMAIN_ORDER_PLOT)), key=lambda i: disagree_rate[i], reverse=True)
+dom_sorted  = [DOMAIN_ORDER_PLOT[i] for i in sorted_idx]
+rate_sorted = [disagree_rate[i] for i in sorted_idx]
+
+fig.add_trace(go.Bar(
+    x=rate_sorted, y=dom_sorted, orientation="h",
+    marker_color="#5C6BC0",
+    hovertemplate="<b>%{y}</b><br>%{x:.1f}% disagreement<extra></extra>",
+    showlegend=False,
+), row=1, col=2)
 
 fig.update_yaxes(title_text="%", range=[0, 100], row=1, col=1)
-fig.update_yaxes(title_text="Count", row=1, col=2)
-fig.update_xaxes(tickangle=-20)
+fig.update_xaxes(title_text="% examples with ≥ 2 distinct predictions", row=1, col=2)
+fig.update_xaxes(tickangle=-20, row=1, col=1)
 fig.update_layout(
-    barmode="stack", template="simple_white", height=440,
-    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.35, yanchor="top"),
-    margin=dict(t=60, b=130),
+    barmode="group", template="simple_white", height=440,
+    legend=dict(orientation="h", x=0.22, xanchor="center", y=-0.18, yanchor="top"),
+    margin=dict(t=60, b=100, r=20),
 )
 fig.show()
 ```
