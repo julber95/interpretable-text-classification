@@ -142,7 +142,7 @@ fig.show()
 ```
 
 The most striking observation is the **clear split into two performance tiers**, which is much sharper than on Amazon. The lower tier (val loss ≈ 0.4–0.6) contains FastText, FATE (L=1), and FATE (L=2); the upper tier (val loss ≈ 0.7–1.4) contains their Label Attention counterparts. On Amazon, label attention had a small but consistent positive effect — here it **consistently hurts**. A likely explanation: with 150 classes, the label attention module adds a large number of parameters (~150 × `emb_dim`) that overfit on the small per-class sample (100 examples per class), while the same mechanism was harmless on Amazon's 5-class problem with 200k examples.
-
+ok Two training regimes were explored: one on the standard 150-class dataset, and one that adds an out-of-scope (OOS) class grouping utterances that do not match any of the 150 intents. At the training level, both regimes produce similar results — validation loss curves and hyperparameter sensitivities are nearly identical — so the sweep above applies to both. The interesting differences emerge at prediction time. This section therefore focuses entirely on inference behaviour: which intents get confused, where models agree or disagree, which classes are structurally hard, and — in a dedicated subsection — how the presence of the OOS class during training affects the model’s decisions on in-scope examples.
 
 ### Stability
 
@@ -464,6 +464,8 @@ The heatmaps consolidate the two previous findings in a single view. **`emb_dim`
 
 ## Prediction analysis
 
+This section examines what the models actually predict. We also trained all six architectures on a variant of the dataset that includes an additional *out-of-scope* (OOS) class, grouping utterances that do not belong to any of the 150 intents. Since training-level results are nearly identical between the two regimes, we focus exclusively on prediction behaviour — first analysing the standard 150-class models, then comparing them to their OOS counterparts to quantify how adding this class at training time affects in-scope classification.
+
 ```{python}
 #| label: load-predictions-clinc150
 
@@ -508,9 +510,11 @@ with open("assets/clinc150_labels.json") as f:
 IN_SCOPE  = list(range(150))
 ```
 
+### No-OOS results
+
 ::: {.panel-tabset}
 
-### Confusion matrix
+#### Confusion matrix
 
 ```{python}
 #| label: fig-confusion-clinc150
@@ -589,7 +593,7 @@ html = f"""
 HTML(html)
 ```
 
-### Top confused pairs
+#### Top confused pairs
 
 ```{python}
 #| label: fig-confused-clinc150
@@ -656,7 +660,7 @@ fig.show()
 
 The most frequent confusions are mostly structurally related intents: pairs sharing vocabulary or near-duplicate intent definitions like `calendar` / `calendar_update`, `bill_balance` / `bill_due`, or `order` / `order_status`. This kind of confusion is largely intrinsic to the task and unlikely to be resolved by scaling the model.
 
-### Model agreement
+#### Model agreement
 
 Rather than asking *which* model is wrong, this view asks: when models disagree, is that because some are weaker, or because the utterance itself is ambiguous? For each test example we count how many distinct intent predictions the three models within each group produce, then look at how often the **majority vote** is correct at each agreement level. The analysis is run separately for the non-LA and LA groups.
 
@@ -713,7 +717,7 @@ fig.update_layout(
 fig.show()
 ```
 
-### Hardness map
+#### Hardness map
 
 ```{python}
 #| label: fig-hardness-clinc150
@@ -804,7 +808,7 @@ fig.show()
 
 Each row is a domain; each cell is one intent class, coloured by its mean per-class accuracy averaged across the six architectures. Green cells are easy classes (all models agree and are correct); red cells are universally hard ones. White/grey gaps simply pad shorter domains to the same width.
 
-### Examples
+#### Examples
 
 ```{python}
 #| label: fig-examples-clinc150
@@ -911,6 +915,299 @@ html = f"""
 """
 HTML(html)
 ```
+
+:::
+
+### Comparison: with OOS vs. without OOS
+
+This section compares the two training regimes head-to-head: models trained on the full dataset including the out-of-scope class (151 classes) versus models trained without it (150 classes). All comparisons are restricted to **in-scope examples only** so the evaluation target is identical in both cases.
+
+```{python}
+#| label: load-oos-preds
+
+OOS_ARCH_FILES = {
+    "FastText":                     "cl150_fasttext.npz",
+    "FastText + Label Attention":   "cl150_fasttext_labatt.npz",
+    "FATE (L=1)":                   "cl150_fateL1.npz",
+    "FATE (L=1) + Label Attention": "cl150_fateL1_labatt.npz",
+    "FATE (L=2)":                   "cl150_fateL2.npz",
+    "FATE (L=2) + Label Attention": "cl150_fateL2_labatt.npz",
+}
+OOS_LABEL_IDX = 150
+IN_SCOPE_150  = list(range(150))
+
+preds_oos = {}
+for arch, fname in OOS_ARCH_FILES.items():
+    cache = PREDS_DIR / fname
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{PRED_BUCKET}/{fname}", cache)
+        d = np.load(cache, allow_pickle=True)
+        y_test_full = d["y_test"].astype(int)
+        y_pred_full = d["y_pred"].astype(int)
+        mask = y_test_full != OOS_LABEL_IDX
+        preds_oos[arch] = {
+            "y_test":      y_test_full[mask],
+            "y_pred":      y_pred_full[mask],
+            "y_test_full": y_test_full,
+            "y_pred_full": y_pred_full,
+        }
+    except Exception:
+        pass
+```
+
+::: {.panel-tabset}
+
+#### Confusion matrix (with OOS)
+
+```{python}
+#| label: fig-oos-confmat
+#| fig-cap: "Domain-level confusion matrix — with OOS models (rows = true domain, columns = predicted domain, normalised by row)"
+
+from IPython.display import HTML
+
+ALL_DOMAINS = DOMAIN_ORDER + ["OOS"]
+
+def label_to_domain(label_int):
+    if label_int == OOS_LABEL_IDX:
+        return "OOS"
+    return intent_domain(label_int)
+
+OOS_ARCHS_AVAIL = [a for a in ARCHS_AVAIL if a in preds_oos]
+n_oos_archs = len(OOS_ARCHS_AVAIL)
+fig = go.Figure()
+
+for i, arch in enumerate(OOS_ARCHS_AVAIL):
+    yt_full = preds_oos[arch]["y_test_full"]
+    yp_full = preds_oos[arch]["y_pred_full"]
+    true_dom = [label_to_domain(y) for y in yt_full]
+    pred_dom = [label_to_domain(y) for y in yp_full]
+    cm = sk_cm(true_dom, pred_dom, labels=ALL_DOMAINS).astype(float)
+    row_sums = cm.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1
+    cm_norm = cm / row_sums
+    text = [[f"{v:.2f}" for v in row] for row in cm_norm]
+    fig.add_trace(go.Heatmap(
+        z=cm_norm,
+        x=ALL_DOMAINS, y=ALL_DOMAINS,
+        colorscale="Viridis_r", zmin=0, zmax=1,
+        text=text, texttemplate="%{text}",
+        textfont=dict(size=11),
+        showscale=True,
+        colorbar=dict(title="Fraction", thickness=14),
+        hovertemplate="True=%{y}<br>Pred=%{x}<br>%{z:.3f}<extra></extra>",
+        visible=(i == 0),
+    ))
+
+options_oos = "".join(
+    f'<option value="{i}">{arch}</option>' for i, arch in enumerate(OOS_ARCHS_AVAIL)
+)
+fig.update_layout(
+    xaxis=dict(title="Predicted domain", tickangle=-30),
+    yaxis=dict(title="True domain", autorange="reversed"),
+    height=560, width=660,
+    margin=dict(t=20, b=120, l=140, r=20),
+)
+fig_html = fig.to_html(include_plotlyjs=False, div_id="cm-cl150-oos", full_html=False)
+
+html = f"""
+<div style="display:flex;flex-direction:column;align-items:center;">
+  <div style="font-family:sans-serif;margin-bottom:0.75rem;">
+    <label for="cm-cl150-oos-select"
+      style="font-size:13px;font-weight:600;margin-right:8px;">Model:</label>
+    <select id="cm-cl150-oos-select" onchange="cmCl150OosChange(this.value)"
+      style="font-size:13px;padding:4px 8px;border:1px solid #ccc;
+             border-radius:4px;background:#fff;">
+      {options_oos}
+    </select>
+  </div>
+  {fig_html}
+</div>
+<script>
+(function(){{
+  var N={n_oos_archs};
+  window.cmCl150OosChange=function(val){{
+    var idx=parseInt(val), vis=Array(N).fill(false); vis[idx]=true;
+    Plotly.restyle("cm-cl150-oos",{{visible:vis}});
+  }};
+}})();
+</script>
+"""
+HTML(html)
+```
+
+Same format as the confusion matrix in the Predictions section, with an extra "OOS" row (true OOS examples) and "OOS" column (examples predicted as OOS). The diagonal entry of the OOS row shows how well the model identifies actual out-of-scope utterances; the OOS column reveals which in-scope domains are most contaminated.
+
+#### Global accuracy
+
+```{python}
+#| label: fig-oos-accuracy
+#| fig-cap: "Test accuracy on in-scope classes: with OOS training vs. without"
+
+from sklearn.metrics import accuracy_score, f1_score
+
+records = []
+for arch in ARCHS_AVAIL:
+    if arch in preds_by_arch and arch in preds_oos:
+        acc_noos = accuracy_score(preds_by_arch[arch]["y_test"],
+                                  preds_by_arch[arch]["y_pred"])
+        acc_oos  = accuracy_score(preds_oos[arch]["y_test"],
+                                  preds_oos[arch]["y_pred"])
+        f1_noos  = f1_score(preds_by_arch[arch]["y_test"],
+                            preds_by_arch[arch]["y_pred"], average="macro")
+        f1_oos   = f1_score(preds_oos[arch]["y_test"],
+                            preds_oos[arch]["y_pred"], average="macro")
+        records.append({"arch": arch,
+                        "acc_noos": acc_noos, "acc_oos": acc_oos,
+                        "f1_noos":  f1_noos,  "f1_oos":  f1_oos})
+
+df_cmp = pd.DataFrame(records)
+
+fig = make_subplots(rows=1, cols=2, subplot_titles=["Accuracy", "Macro F1"],
+                    shared_yaxes=False, horizontal_spacing=0.12)
+
+for col, (metric, label) in enumerate([("acc", "Accuracy"), ("f1", "Macro F1")], start=1):
+    fig.add_trace(go.Bar(
+        name="Without OOS", x=df_cmp["arch"],
+        y=df_cmp[f"{metric}_noos"],
+        marker_color="#2196F3", showlegend=(col == 1),
+        hovertemplate="%{x}<br>" + label + " (no OOS): %{y:.3f}<extra></extra>",
+    ), row=1, col=col)
+    fig.add_trace(go.Bar(
+        name="With OOS", x=df_cmp["arch"],
+        y=df_cmp[f"{metric}_oos"],
+        marker_color="#FF8C00", showlegend=(col == 1),
+        hovertemplate="%{x}<br>" + label + " (with OOS): %{y:.3f}<extra></extra>",
+    ), row=1, col=col)
+
+fig.update_layout(
+    barmode="group", template="simple_white", height=420,
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.18, yanchor="top"),
+    margin=dict(t=40, b=100, r=20, l=60),
+    xaxis=dict(tickangle=-20), xaxis2=dict(tickangle=-20),
+)
+fig.show()
+```
+
+#### OOS contamination & accuracy impact
+
+```{python}
+#| label: fig-oos-dumbbell
+#| fig-cap: "Top 10 most OOS-contaminated classes: per-class accuracy with vs. without OOS training (FATE L=2)"
+
+from sklearn.metrics import confusion_matrix
+
+ref_arch = "FATE (L=2)"
+y_test_full = preds_oos[ref_arch]["y_test_full"]
+y_pred_full = preds_oos[ref_arch]["y_pred_full"]
+
+contam_class = {}
+for c in IN_SCOPE_150:
+    mask_c = y_test_full == c
+    contam_class[c] = (y_pred_full[mask_c] == OOS_LABEL_IDX).mean() * 100 if mask_c.sum() > 0 else 0.0
+
+def per_class_acc(y_test, y_pred, classes):
+    cm = confusion_matrix(y_test, y_pred, labels=classes)
+    return {classes[i]: cm[i, i] / cm[i].sum() if cm[i].sum() > 0 else 0.0
+            for i in range(len(classes))}
+
+acc_noos = per_class_acc(preds_by_arch[ref_arch]["y_test"],
+                         preds_by_arch[ref_arch]["y_pred"], IN_SCOPE)
+acc_oos  = per_class_acc(preds_oos[ref_arch]["y_test"],
+                         preds_oos[ref_arch]["y_pred"], IN_SCOPE_150)
+
+top10      = sorted(contam_class, key=contam_class.get, reverse=True)[:10]
+labels_db  = [LABEL_MAP.get(c, str(c)) for c in top10][::-1]
+contam_v   = [contam_class[c] for c in top10][::-1]
+acc_noos_v = [acc_noos.get(c, 0) for c in top10][::-1]
+acc_oos_v  = [acc_oos.get(c, 0)  for c in top10][::-1]
+
+fig = go.Figure()
+
+for i, label in enumerate(labels_db):
+    fig.add_trace(go.Scatter(
+        x=[acc_oos_v[i], acc_noos_v[i]], y=[label, label],
+        mode="lines", line=dict(color="#bbb", width=2),
+        showlegend=False, hoverinfo="skip",
+    ))
+
+fig.add_trace(go.Scatter(
+    x=acc_oos_v, y=labels_db, mode="markers",
+    name="With OOS", marker=dict(color="#FF8C00", size=12),
+    hovertemplate="%{y}<br>with OOS: %{x:.2f}<extra></extra>",
+))
+fig.add_trace(go.Scatter(
+    x=acc_noos_v, y=labels_db, mode="markers",
+    name="Without OOS", marker=dict(color="#2196F3", size=12),
+    hovertemplate="%{y}<br>without OOS: %{x:.2f}<extra></extra>",
+))
+
+for i, label in enumerate(labels_db):
+    fig.add_annotation(
+        x=max(acc_oos_v[i], acc_noos_v[i]) + 0.02,
+        y=label, text=f"{contam_v[i]:.0f}% OOS",
+        showarrow=False, font=dict(size=10, color="#CC0000"), xanchor="left",
+    )
+
+fig.update_layout(
+    xaxis=dict(title="Per-class accuracy", range=[0, 1.15]),
+    template="simple_white", height=400,
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.15, yanchor="top"),
+    margin=dict(l=180, r=80, t=20, b=60),
+)
+fig.show()
+```
+
+Each row shows one of the 10 most OOS-contaminated classes. The **orange dot** is the per-class accuracy of the model trained *with* OOS; the **blue dot** is the accuracy of the model trained *without* OOS. The red annotation gives the contamination rate — the share of that class's test examples that the with-OOS model incorrectly predicted as OOS instead of the correct intent.
+
+Two distinct patterns emerge. For classes where the two dots **overlap** (e.g. `book_flight`, `spending_history`, `measurement_conversion`), contamination exists but does not translate into an accuracy drop: even though a fraction of examples get absorbed by the OOS catch-all, the model still classifies the remainder correctly, and the overall per-class accuracy is unaffected. For classes where the **orange dot sits clearly to the left of the blue** (e.g. `distance`, `change_ai_name`), the with-OOS model has systematically learned to treat these intents as out-of-scope, causing a substantial accuracy loss that disappears once the OOS class is removed from training. These are the intents whose surface forms — generic, open-ended queries — overlap most with what a real OOS utterance looks like, making them vulnerable to the OOS attractor.
+
+#### Error migration
+
+```{python}
+#| label: fig-oos-migration
+#| fig-cap: "Error type for examples the with-OOS model gets wrong but the no-OOS model gets right (FATE L=2)"
+
+ref_arch = "FATE (L=2)"
+yt_noos = preds_by_arch[ref_arch]["y_test"]
+yp_noos = preds_by_arch[ref_arch]["y_pred"]
+yt_oos  = preds_oos[ref_arch]["y_test"]
+yp_oos  = preds_oos[ref_arch]["y_pred"]
+
+pred_to_oos, pred_to_other = 0, 0
+for idx in range(len(yt_noos)):
+    true_c = yt_noos[idx]
+    if yp_noos[idx] == true_c and yp_oos[idx] != true_c:
+        if yp_oos[idx] == OOS_LABEL_IDX:
+            pred_to_oos += 1
+        else:
+            pred_to_other += 1
+
+total = pred_to_oos + pred_to_other if pred_to_oos + pred_to_other > 0 else 1
+
+fig = go.Figure(go.Bar(
+    x=["Absorbed by OOS class", "Confused with another in-scope class"],
+    y=[pred_to_oos, pred_to_other],
+    marker_color=["#CC0000", "#FF8C00"],
+    text=[f"{pred_to_oos}<br>({pred_to_oos/total*100:.0f}%)",
+          f"{pred_to_other}<br>({pred_to_other/total*100:.0f}%)"],
+    textposition="outside",
+    hovertemplate="%{x}<br>count: %{y}<extra></extra>",
+))
+fig.update_layout(
+    yaxis=dict(title="Number of examples", range=[0, max(pred_to_oos, pred_to_other) * 1.25]),
+    template="simple_white", height=400,
+    margin=dict(t=40, b=60, l=70, r=20),
+)
+fig.show()
+```
+
+This chart isolates examples where **adding OOS training directly causes a mistake** — i.e. the no-OOS model is correct but the with-OOS model is wrong on the same example. Among those cases, it answers: *why* does the with-OOS model fail?
+
+- **Absorbed by OOS class** (red): the model explicitly routes the example to the OOS catch-all. The OOS class acts as a drain that pulls in-scope utterances. This is a *direct* effect of OOS training — the model has learned to treat certain in-scope phrasing as out-of-scope.
+- **Confused with another in-scope class** (orange): the OOS class is not the predicted label, but training with it has still shifted the decision boundaries enough to break a classification that was previously correct. This is an *indirect* effect — the in-scope label space has been reorganised by the presence of the OOS attractor during training.
+
+The balance between the two bars tells us whether OOS contamination is primarily a direct routing problem or a more diffuse boundary distortion.
 
 :::
 
