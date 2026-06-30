@@ -4,5 +4,5 @@ data_files:
 text_col: libelle_cleaned
 label_col: nace2025
 val_size: 50000
-test_size: 100000
+test_size: 50000
 predict_batch_size: 64
