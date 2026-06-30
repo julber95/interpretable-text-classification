@@ -239,7 +239,7 @@ def main(cfg: DictConfig):
     train_fraction = cfg.get("train_fraction", 1.0)
     dataset_cfg["train_fraction"] = train_fraction
     X_train, y_train, X_val, y_val, X_test, y_test, value_encoder = load_data(dataset_cfg, cfg.seed)
-    num_classes = len(np.unique(y_train))
+    num_classes = value_encoder.num_classes if value_encoder is not None else len(np.unique(y_train))
 
     tokenizer = build_tokenizer(tok_cfg, X_train)
 
@@ -306,6 +306,11 @@ def main(cfg: DictConfig):
         t0 = time.time()
         clf.train(X_train, y_train, training_config=training_config, X_val=X_val, y_val=y_val)
         train_time = round(time.time() - t0, 1)
+
+        # clf.train() leaves cached/fragmented CUDA memory from the optimizer and
+        # scheduler state reloaded with the checkpoint; release it before predicting.
+        if accelerator == "cuda":
+            torch.cuda.empty_cache()
 
         num_params = sum(p.numel() for p in clf.lightning_module.model.parameters())
 
