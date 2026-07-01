@@ -328,13 +328,23 @@ def main(cfg: DictConfig):
 
         preds = batch_predict(X_test)
 
+        # For parquet datasets, y_test is integer-encoded but clf.predict() decodes preds
+        # back to original string labels via value_encoder. Re-encode preds to int to match.
+        y_test_eval = y_test
+        preds_eval  = preds
+        if (value_encoder is not None
+                and np.issubdtype(np.array(y_test).dtype, np.integer)
+                and len(preds) > 0
+                and isinstance(preds[0], str)):
+            preds_eval = value_encoder.label_encoder.transform(np.array(preds).astype(str))
+
         preds_path = RESULTS_DIR / f"predictions_{mlflow.active_run().info.run_id}.npz"
-        np.savez(preds_path, X_test=X_test, y_test=y_test, y_pred=preds)
+        np.savez(preds_path, X_test=X_test, y_test=y_test_eval, y_pred=preds_eval)
         mlflow.log_artifact(str(preds_path), artifact_path="predictions")
         preds_path.unlink()
 
-        test_accuracy = round(accuracy_score(y_test, preds), 4)
-        test_f1_macro = round(f1_score(y_test, preds, average="macro"), 4)
+        test_accuracy = round(accuracy_score(y_test_eval, preds_eval), 4)
+        test_f1_macro = round(f1_score(y_test_eval, preds_eval, average="macro", zero_division=0), 4)
 
         mlflow.log_metrics({
             "test_accuracy": test_accuracy,
