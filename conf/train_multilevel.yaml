@@ -1,0 +1,18 @@
+defaults:
+  - dataset: naf
+  - tokenizer: wordpiece
+  - model: default
+  - training: default
+  - _self_
+
+seed: 42
+experiment_name: naf_multilevel
+train_fraction: 1.0
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    root:
+      level: WARNING
