@@ -19,7 +19,6 @@ import warnings
 from pathlib import Path
 
 import hydra
-import matplotlib.pyplot as plt
 import mlflow
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning.loggers import MLFlowLogger
@@ -27,7 +26,7 @@ from pytorch_lightning.loggers import MLFlowLogger
 import torch
 import numpy as np
 from datasets import load_dataset
-from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import accuracy_score, f1_score
 from sklearn.preprocessing import LabelEncoder as SKLabelEncoder
 
 from torchTextClassifiers import ModelConfig, TrainingConfig, torchTextClassifiers
@@ -344,10 +343,6 @@ def main(cfg: DictConfig):
             "num_params": num_params,
         })
 
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ConfusionMatrixDisplay(confusion_matrix(y_test, preds)).plot(ax=ax)
-        mlflow.log_figure(fig, "confusion_matrix.png")
-        plt.close(fig)
 
         mlflow.log_artifacts(save_path, artifact_path="model")
 
