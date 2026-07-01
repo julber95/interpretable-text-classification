@@ -3,6 +3,6 @@ data_files:
   train: ${oc.env:NAF_PARQUET_PATH}
 text_col: libelle_cleaned
 label_col: nace2025
-val_size: 50000
-test_size: 50000
+val_size: 25000
+test_size: 25000
 predict_batch_size: 64
