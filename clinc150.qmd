@@ -1240,18 +1240,14 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 EXPLAIN_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/explanations/clinc150"
-EXPLAIN_RUN_LABATT  = "fb8ab8ee46654d2bbec71c756b6552bc"
-EXPLAIN_RUN_POOLING = "1c9439a33bb1470d9aaed4b0fb810e96"
 
 _ARTIFACT_NAMES = ["captum.npz", "label_attn.npz", "class_vectors.npz", "self_attn.npz", "faithfulness.npz"]
-_NOT_APPLICABLE = {(EXPLAIN_RUN_POOLING, "label_attn.npz")}  # mean pooling has no label attention mechanism
-_RUN_LABEL = {EXPLAIN_RUN_LABATT: "labatt", EXPLAIN_RUN_POOLING: "pooling"}
+_NOT_APPLICABLE = {("pooling", "label_attn.npz")}  # mean pooling has no label attention mechanism
 
-def _load_artifact(run_id: str, name: str):
-    """Fetch (and cache) one explainability artifact for run_id; None if unavailable."""
-    if not run_id or run_id.startswith("?") or (run_id, name) in _NOT_APPLICABLE:
+def _load_artifact(method: str, name: str):
+    """Fetch (and cache) one explainability artifact; None if unavailable."""
+    if (method, name) in _NOT_APPLICABLE:
         return None
-    method = _RUN_LABEL.get(run_id, run_id[:8])
     cache_dir = Path("results/clinc150/explain") / method
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache = cache_dir / name
@@ -1262,8 +1258,8 @@ def _load_artifact(run_id: str, name: str):
     except Exception:
         return None
 
-cap_la, lat_la, cv_la, sa_la, fai_la = (_load_artifact(EXPLAIN_RUN_LABATT,  n) for n in _ARTIFACT_NAMES)
-cap_pl, lat_pl, cv_pl, sa_pl, fai_pl = (_load_artifact(EXPLAIN_RUN_POOLING, n) for n in _ARTIFACT_NAMES)
+cap_la, lat_la, cv_la, sa_la, fai_la = (_load_artifact("labatt",  n) for n in _ARTIFACT_NAMES)
+cap_pl, lat_pl, cv_pl, sa_pl, fai_pl = (_load_artifact("pooling", n) for n in _ARTIFACT_NAMES)
 
 HAS_LA   = cap_la is not None
 HAS_PL   = cap_pl is not None
