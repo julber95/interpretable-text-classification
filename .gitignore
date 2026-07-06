@@ -41,6 +41,6 @@ index.html
 # Schemas
 schemas/
 
-# Predictions
-/results/amazon/preds/*npz
+# Predictions and explanations (downloaded from MinIO in CI, see .github/workflows/pages.yml)
+results/**/*.npz
 **/*.quarto_ipynb

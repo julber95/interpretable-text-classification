@@ -18,6 +18,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download predictions from MinIO
+        run: |
+          BASE=https://minio.lab.sspcloud.fr/projet-text-classif
+          download() { mkdir -p "$(dirname "$2")" && curl -sSL --fail "$1" -o "$2"; }
+
+          download $BASE/predictions/amazon/fasttext.npz        results/amazon/preds/fasttext.npz
+          download $BASE/predictions/amazon/fasttext_labatt.npz results/amazon/preds/fasttext_labatt.npz
+          download $BASE/predictions/amazon/fateL1.npz          results/amazon/preds/fateL1.npz
+          download $BASE/predictions/amazon/fateL1_labatt.npz   results/amazon/preds/fateL1_labatt.npz
+          download $BASE/predictions/amazon/fateL2.npz          results/amazon/preds/fateL2.npz
+          download $BASE/predictions/amazon/fateL2_labatt.npz   results/amazon/preds/fateL2_labatt.npz
+          download $BASE/predictions/amazon/fateL4.npz          results/amazon/preds/fateL4.npz
+          download $BASE/predictions/amazon/fateL4_labatt.npz   results/amazon/preds/fateL4_labatt.npz
+
+          download $BASE/explanations/amazon/labatt/captum.npz        results/amazon/explain/labatt/captum.npz
+          download $BASE/explanations/amazon/labatt/class_vectors.npz results/amazon/explain/labatt/class_vectors.npz
+          download $BASE/explanations/amazon/labatt/faithfulness.npz  results/amazon/explain/labatt/faithfulness.npz
+          download $BASE/explanations/amazon/labatt/label_attn.npz    results/amazon/explain/labatt/label_attn.npz
+          download $BASE/explanations/amazon/labatt/self_attn.npz     results/amazon/explain/labatt/self_attn.npz
+          download $BASE/explanations/amazon/pooling/captum.npz        results/amazon/explain/pooling/captum.npz
+          download $BASE/explanations/amazon/pooling/class_vectors.npz results/amazon/explain/pooling/class_vectors.npz
+          download $BASE/explanations/amazon/pooling/faithfulness.npz  results/amazon/explain/pooling/faithfulness.npz
+          download $BASE/explanations/amazon/pooling/self_attn.npz     results/amazon/explain/pooling/self_attn.npz
+
+          download $BASE/predictions/clinc150/fasttext.npz        results/clinc150/preds/cl150_fasttext.npz
+          download $BASE/predictions/clinc150/fasttext_labatt.npz results/clinc150/preds/cl150_fasttext_labatt.npz
+          download $BASE/predictions/clinc150/fateL1.npz          results/clinc150/preds/cl150_fateL1.npz
+          download $BASE/predictions/clinc150/fateL1_labatt.npz   results/clinc150/preds/cl150_fateL1_labatt.npz
+          download $BASE/predictions/clinc150/fateL2.npz          results/clinc150/preds/cl150_fateL2.npz
+          download $BASE/predictions/clinc150/fateL2_labatt.npz   results/clinc150/preds/cl150_fateL2_labatt.npz
+          download $BASE/predictions/clinc150_nooos/fasttext.npz        results/clinc150/preds/cl150nooos_fasttext.npz
+          download $BASE/predictions/clinc150_nooos/fasttext_labatt.npz results/clinc150/preds/cl150nooos_fasttext_labatt.npz
+          download $BASE/predictions/clinc150_nooos/fateL1.npz          results/clinc150/preds/cl150nooos_fateL1.npz
+          download $BASE/predictions/clinc150_nooos/fateL1_labatt.npz   results/clinc150/preds/cl150nooos_fateL1_labatt.npz
+          download $BASE/predictions/clinc150_nooos/fateL2.npz          results/clinc150/preds/cl150nooos_fateL2.npz
+          download $BASE/predictions/clinc150_nooos/fateL2_labatt.npz   results/clinc150/preds/cl150nooos_fateL2_labatt.npz
+
+          download $BASE/explanations/clinc150/labatt/captum.npz        results/clinc150/explain/labatt/captum.npz
+          download $BASE/explanations/clinc150/labatt/class_vectors.npz results/clinc150/explain/labatt/class_vectors.npz
+          download $BASE/explanations/clinc150/labatt/faithfulness.npz  results/clinc150/explain/labatt/faithfulness.npz
+          download $BASE/explanations/clinc150/labatt/label_attn.npz    results/clinc150/explain/labatt/label_attn.npz
+          download $BASE/explanations/clinc150/labatt/self_attn.npz     results/clinc150/explain/labatt/self_attn.npz
+          download $BASE/explanations/clinc150/pooling/captum.npz        results/clinc150/explain/pooling/captum.npz
+          download $BASE/explanations/clinc150/pooling/class_vectors.npz results/clinc150/explain/pooling/class_vectors.npz
+          download $BASE/explanations/clinc150/pooling/faithfulness.npz  results/clinc150/explain/pooling/faithfulness.npz
+          download $BASE/explanations/clinc150/pooling/self_attn.npz     results/clinc150/explain/pooling/self_attn.npz
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 

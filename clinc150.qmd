@@ -1244,18 +1244,16 @@ EXPLAIN_RUN_LABATT  = "fb8ab8ee46654d2bbec71c756b6552bc"
 EXPLAIN_RUN_POOLING = "1c9439a33bb1470d9aaed4b0fb810e96"
 
 _ARTIFACT_NAMES = ["captum.npz", "label_attn.npz", "class_vectors.npz", "self_attn.npz", "faithfulness.npz"]
+_NOT_APPLICABLE = {(EXPLAIN_RUN_POOLING, "label_attn.npz")}  # mean pooling has no label attention mechanism
 
 def _load_artifact(run_id: str, name: str):
     """Download (and cache) one explainability artifact for run_id; None if unavailable."""
-    if not run_id or run_id.startswith("?"):
+    if not run_id or run_id.startswith("?") or (run_id, name) in _NOT_APPLICABLE:
         return None
     _RUN_LABEL = {EXPLAIN_RUN_LABATT: "labatt", EXPLAIN_RUN_POOLING: "pooling"}
     cache_dir = Path("results/clinc150/explain") / _RUN_LABEL.get(run_id, run_id[:8])
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache = cache_dir / name
-    sentinel = cache_dir / (name + ".missing")
-    if sentinel.exists():
-        return None
     if cache.exists():
         return np.load(cache, allow_pickle=True)
     try:
@@ -1266,7 +1264,6 @@ def _load_artifact(run_id: str, name: str):
             np.savez(str(cache), **{k: d[k] for k in d.files})
         return np.load(cache, allow_pickle=True)
     except Exception:
-        sentinel.touch()
         return None
 
 cap_la, lat_la, cv_la, sa_la, fai_la = (_load_artifact(EXPLAIN_RUN_LABATT,  n) for n in _ARTIFACT_NAMES)
