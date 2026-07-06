@@ -1,0 +1,799 @@
+---
+title: "NAF — Single-level classification"
+---
+
+## Hyperparameter sweep
+
+The model predicts only the finest-grained **sub-class** code (679 classes in the training split) directly, in a single pass, with no auxiliary hierarchy levels — this is the baseline the [Multi-level classification](naf_multilevel.qmd) page is compared against.
+
+The `naf` MLflow experiment mixes runs from two different `train_fraction` sweeps over the same hyperparameter grid: an earlier one at **0.13** (163,615 examples) and a later, larger one at **0.26** (314,230 examples) of the 2.3M-observation corpus. The rest of this section uses **0.26** only (the larger, more recent sweep) — the figure below is the exception, comparing both to isolate the effect of training-data size itself.
+
+```{python}
+#| label: fetch-mlflow-naf
+
+from pathlib import Path
+import mlflow
+import pandas as pd
+
+RENAME_COLS = {
+    "params.emb_dim":                  "emb_dim",
+    "params.n_layers":                 "n_layers",
+    "params.n_head":                   "n_head",
+    "params.n_heads_label_attention":  "n_heads_label_attn",
+    "params.vocab_size":               "vocab_size",
+    "params.lr":                       "lr",
+    "metrics.num_params":              "num_params",
+    "metrics.test_accuracy":           "test_accuracy",
+    "metrics.test_f1_macro":           "test_f1_macro",
+    "metrics.train_time_s":            "train_time_s",
+    "metrics.val_loss":                "min_val_loss",
+}
+KEY_COLS = ["n_layers", "emb_dim", "vocab_size", "n_head", "n_heads_label_attn", "lr"]
+
+def arch_label(row):
+    la = str(row["n_heads_label_attn"]) == "4"
+    if row["n_layers"] == 0:
+        return "FastText + Label Attention" if la else "FastText"
+    suffix = " + Label Attention" if la else ""
+    return f"FATE (L={row['n_layers']}){suffix}"
+
+def fetch_runs(experiment_name: str, cache_path: Path, train_fraction: float) -> pd.DataFrame:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if cache_path.exists():
+        return pd.read_csv(cache_path)
+    raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
+    raw = raw[raw["status"] == "FINISHED"].copy()
+    raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
+    raw = raw.rename(columns={k: v for k, v in RENAME_COLS.items() if k in raw.columns})
+    for col in ["emb_dim", "n_layers", "vocab_size"]:
+        raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
+    raw["lr"]         = raw["lr"].astype(float)
+    raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
+    raw["architecture"] = raw.apply(arch_label, axis=1)
+    raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS, keep="first")
+    raw.to_csv(cache_path, index=False)
+    return raw
+
+# train_fraction=0.13 — earlier, smaller sweep
+df_frac13 = fetch_runs("naf", Path("results/naf/runs_frac13.csv"), train_fraction=0.13)
+
+# train_fraction=0.26 — later, larger sweep — used as the main dataset below
+df_frac26 = fetch_runs("naf", Path("results/naf/runs_frac26.csv"), train_fraction=0.26)
+
+df = df_frac26
+```
+
+```{python}
+#| label: fig-trainsize-naf
+#| fig-cap: "Validation loss vs. training set size, by architecture"
+
+import plotly.graph_objects as go
+
+COLORS = {
+    "FastText":                          "#2196F3",
+    "FastText + Label Attention":        "#00BCD4",
+    "FATE (L=1)":                        "#FFC107",
+    "FATE (L=1) + Label Attention":      "#FF8C00",
+}
+N_TRAIN = {0.13: 163615, 0.26: 314230}
+
+common_archs = ["FastText", "FastText + Label Attention"]
+means13 = df_frac13[df_frac13["architecture"].isin(common_archs)].groupby("architecture")["min_val_loss"].mean()
+means26 = df_frac26[df_frac26["architecture"].isin(common_archs)].groupby("architecture")["min_val_loss"].mean()
+
+fig = go.Figure()
+for arch in common_archs:
+    fig.add_trace(go.Scatter(
+        x=[N_TRAIN[0.13], N_TRAIN[0.26]], y=[means13[arch], means26[arch]],
+        mode="lines+markers", name=arch,
+        line=dict(color=COLORS[arch], width=2), marker=dict(size=9),
+        hovertemplate="train size=%{x:,}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+# FATE (L=1): a single run exists at train_fraction=0.13, none yet at 0.26
+fate13 = df_frac13[df_frac13["architecture"] == "FATE (L=1)"]
+if not fate13.empty:
+    fig.add_trace(go.Scatter(
+        x=[N_TRAIN[0.13]], y=[fate13["min_val_loss"].mean()],
+        mode="markers", name="FATE (L=1) (single run)",
+        marker=dict(color=COLORS["FATE (L=1)"], size=11, symbol="diamond"),
+        hovertemplate="train size=%{x:,}<br>val_loss=%{y:.4f}<extra>FATE (L=1), n=1</extra>",
+    ))
+
+fig.update_layout(
+    xaxis_title="Training set size", yaxis_title="Mean validation loss",
+    xaxis=dict(tickvals=[N_TRAIN[0.13], N_TRAIN[0.26]], ticktext=["163,615", "314,230"]),
+    legend_title="Architecture", height=430,
+)
+fig.show()
+```
+
+Doubling the training data (163,615 → 314,230 examples) improves mean validation loss for both architectures — FastText from ≈0.63 to ≈0.57, FastText + Label Attention from ≈0.76 to ≈0.63 — with the label-attention variant benefiting proportionally more, consistent with it needing more examples per class to learn meaningful per-class query vectors. The single `FATE (L=1)` run available (only at 163,615 examples) already beats FastText at the same size, but with no sweep to confirm robustness.
+
+### Capacity & robustness
+
+::: {.panel-tabset}
+#### Val loss vs. parameters
+
+```{python}
+#| label: fig-pareto-naf
+#| fig-cap: "Validation loss vs. number of parameters"
+
+import plotly.graph_objects as go
+
+COLORS = {
+    "FastText":                          "#2196F3",
+    "FastText + Label Attention":        "#00BCD4",
+    "FATE (L=1)":                        "#FFC107",
+    "FATE (L=1) + Label Attention":      "#FF8C00",
+}
+ARCHS_PRESENT = [a for a in COLORS if a in df["architecture"].unique()]
+
+df_curves = (
+    df.groupby(["architecture", "emb_dim", "vocab_size", "num_params"], as_index=False)
+    ["min_val_loss"].min()
+    .sort_values("num_params")
+)
+
+fig = go.Figure()
+
+for arch in ARCHS_PRESENT:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+
+for arch, group in df.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["num_params"], y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.3),
+        hovertemplate="params=%{x:,}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+for arch, group in df_curves.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["num_params"], y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=5),
+        hovertemplate="params=%{x:,}<br>best val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+y_cap = df["min_val_loss"].quantile(0.95)
+fig.update_layout(
+    xaxis_title="Number of parameters",
+    yaxis_title="Validation loss",
+    legend_title="Architecture",
+    height=450,
+    xaxis=dict(tickformat=".2s"),
+    yaxis=dict(range=[df["min_val_loss"].min() * 0.98, y_cap]),
+)
+fig.show()
+```
+
+Label attention consistently **hurts** on NAF, mirroring CLINC150 rather than Amazon, but the gap is far narrower here (mean val loss ≈0.57 for FastText vs. ≈0.63 for FastText + Label Attention, compared to a 2–4× gap on CLINC150). With ~300k training examples (`train_fraction=0.13` of the 2.3M corpus) spread across 679 classes, each label-attention query gets more signal per class than on CLINC150's 100-example intents, but still not enough to fully match Mean Pooling.
+
+#### Stability
+
+```{python}
+#| label: fig-violin-naf
+#| fig-cap: "Distribution of validation loss by architecture"
+
+fig = go.Figure()
+for arch in ARCHS_PRESENT:
+    color = COLORS[arch]
+    vals  = df[df["architecture"] == arch]["min_val_loss"].dropna()
+    fig.add_trace(go.Violin(
+        y=vals, name=arch,
+        side="both",
+        fillcolor=color, opacity=0.25,
+        line=dict(color=color, width=1.5),
+        box_visible=False, meanline_visible=False,
+        points=False, showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Box(
+        y=vals, name=arch,
+        marker=dict(color=color, size=3, opacity=0.4),
+        line=dict(color=color, width=1.5),
+        fillcolor="white", boxmean="sd", width=0.12,
+        showlegend=False,
+        hovertemplate="<b>" + arch + "</b><br>median=%{median:.4f}<br>Q1=%{q1:.4f}<br>Q3=%{q3:.4f}<extra></extra>",
+    ))
+
+fig.update_layout(
+    template="simple_white",
+    yaxis_title="Validation loss",
+    yaxis=dict(gridcolor="#e8e8e8"),
+    showlegend=False, height=430,
+    violingap=0.4, boxgap=0.4,
+)
+fig.show()
+```
+
+:::
+
+### Effect of vocabulary size and embedding dimension
+
+::: {.panel-tabset}
+#### Vocabulary size
+
+```{python}
+#| label: fig-vocab-naf
+#| fig-cap: "Effect of vocabulary size on validation loss"
+
+vocab_vals = sorted(df["vocab_size"].dropna().unique())
+emb_vals   = sorted(df["emb_dim"].dropna().unique())
+
+df_vocab_mean = (
+    df.groupby(["architecture", "vocab_size"], as_index=False)["min_val_loss"].mean()
+    .sort_values("vocab_size")
+)
+
+vocab_offsets = {
+    "FastText":                          -300,
+    "FastText + Label Attention":        -100,
+    "FATE (L=1)":                        +100,
+    "FATE (L=1) + Label Attention":      +300,
+}
+
+fig = go.Figure()
+for arch in ARCHS_PRESENT:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df.groupby("architecture"):
+    offset = vocab_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["vocab_size"] + offset, y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
+        hovertemplate="vocab=%{customdata:,}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["vocab_size"],
+    ))
+for arch, group in df_vocab_mean.groupby("architecture"):
+    offset = vocab_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["vocab_size"] + offset, y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=6),
+        hovertemplate="vocab=%{customdata:,}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["vocab_size"],
+    ))
+fig.update_layout(
+    xaxis_title="Vocabulary size", yaxis_title="Validation loss",
+    xaxis=dict(tickvals=vocab_vals, ticktext=[f"{v:,}" for v in vocab_vals]),
+    legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
+    height=430, width=740, margin=dict(l=60, r=20),
+)
+fig.show()
+```
+
+Both architectures degrade slightly as vocabulary grows (FastText: 0.551→0.585, FastText + Label Attention: 0.601→0.662 from 2,000 to 20,000 tokens) — the same sparse-coverage effect as CLINC150, though milder here since NAF's larger corpus provides more gradient signal per token even at 20,000 vocab.
+
+#### Embedding dimension
+
+```{python}
+#| label: fig-emb-naf
+#| fig-cap: "Effect of embedding dimension on validation loss"
+
+df_emb_mean = (
+    df.groupby(["architecture", "emb_dim"], as_index=False)["min_val_loss"].mean()
+    .sort_values("emb_dim")
+)
+
+emb_offsets = {
+    "FastText":                          -18,
+    "FastText + Label Attention":        -6,
+    "FATE (L=1)":                        +6,
+    "FATE (L=1) + Label Attention":      +18,
+}
+
+fig = go.Figure()
+for arch in ARCHS_PRESENT:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df.groupby("architecture"):
+    offset = emb_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["emb_dim"] + offset, y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
+        hovertemplate="emb_dim=%{customdata}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["emb_dim"],
+    ))
+for arch, group in df_emb_mean.groupby("architecture"):
+    offset = emb_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["emb_dim"] + offset, y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=6),
+        hovertemplate="emb_dim=%{customdata}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["emb_dim"],
+    ))
+fig.update_layout(
+    xaxis_title="Embedding dimension", yaxis_title="Validation loss",
+    xaxis=dict(tickvals=emb_vals, ticktext=[str(v) for v in emb_vals]),
+    legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
+    height=430, width=740, margin=dict(l=60, r=20),
+)
+fig.show()
+```
+
+FastText is essentially flat across embedding dimension (best at 128, ≈0.555), while FastText + Label Attention improves monotonically from 64 to 512 (0.653→0.624) — the extra label-attention parameters benefit from a richer token representation even though they never catch up to Mean Pooling.
+
+:::
+
+### Effect of number of attention heads
+
+```{python}
+#| label: fig-nhead-naf
+#| fig-cap: "Effect of number of attention heads on validation loss"
+
+import numpy as np
+
+df_attn = df[df["n_layers"] > 0].copy()
+
+if df_attn.empty:
+    print("No FATE (n_layers > 0) runs available yet for NAF — this figure will populate once those sweeps complete.")
+else:
+    df_attn["n_head"] = pd.to_numeric(df_attn["n_head"], errors="coerce")
+    head_vals = sorted(df_attn["n_head"].dropna().unique())
+
+    df_head_mean = (
+        df_attn.groupby(["architecture", "n_head"], as_index=False)["min_val_loss"].mean()
+        .sort_values("n_head")
+    )
+
+    fate_archs = [a for a in ARCHS_PRESENT if a.startswith("FATE")]
+    fig = go.Figure()
+    for arch in fate_archs:
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            name=arch, legendgroup=arch, showlegend=True,
+            marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+        ))
+    for arch, group in df_attn.groupby("architecture"):
+        fig.add_trace(go.Scatter(
+            x=group["n_head"], y=group["min_val_loss"],
+            mode="markers", name=arch, legendgroup=arch, showlegend=False,
+            marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
+            hovertemplate="n_head=%{customdata}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+            customdata=group["n_head"],
+        ))
+    for arch, group in df_head_mean.groupby("architecture"):
+        fig.add_trace(go.Scatter(
+            x=group["n_head"], y=group["min_val_loss"],
+            mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+            line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=6),
+            hovertemplate="n_head=%{customdata}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+            customdata=group["n_head"],
+        ))
+    fig.update_layout(
+        xaxis_title="Number of attention heads", yaxis_title="Validation loss",
+        xaxis=dict(tickvals=head_vals, ticktext=[str(int(v)) for v in head_vals]),
+        legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
+        height=420,
+    )
+    fig.show()
+```
+
+### Training time
+
+```{python}
+#| label: fig-train-time-naf
+#| fig-cap: "Validation loss vs. training time"
+
+fig = go.Figure()
+for arch in ARCHS_PRESENT:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["train_time_s"], y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=6, opacity=0.5),
+        hovertemplate="time=%{x:.0f}s<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+fig.update_layout(
+    xaxis_title="Training time (s)", yaxis_title="Validation loss",
+    legend_title="Architecture", height=430,
+    xaxis=dict(type="log"),
+)
+fig.show()
+```
+
+Unlike CLINC150 — where label attention trained *faster* due to early stopping on a stalled loss — on NAF it trains markedly **slower** (mean ≈5,750s vs. ≈2,120s for FastText): with enough data to keep improving, label-attention runs keep going instead of stopping early, at real extra compute cost for a worse result.
+
+### Interaction: embedding dimension × vocabulary size
+
+```{python}
+#| label: fig-heatmap-naf
+#| fig-cap: "Mean validation loss by embedding dimension and vocabulary size"
+
+from plotly.subplots import make_subplots
+
+vmin = df.groupby(["architecture", "emb_dim", "vocab_size"])["min_val_loss"].mean().min()
+vmax = df.groupby(["architecture", "emb_dim", "vocab_size"])["min_val_loss"].mean().max()
+
+n_cols_hm = min(2, len(ARCHS_PRESENT))
+n_rows_hm = (len(ARCHS_PRESENT) + n_cols_hm - 1) // n_cols_hm
+fig = make_subplots(rows=n_rows_hm, cols=n_cols_hm, subplot_titles=ARCHS_PRESENT,
+                    horizontal_spacing=0.08, vertical_spacing=0.28)
+
+for idx, arch in enumerate(ARCHS_PRESENT):
+    row, col = divmod(idx, n_cols_hm)
+    pivot = (
+        df[df["architecture"] == arch]
+        .groupby(["emb_dim", "vocab_size"])["min_val_loss"].mean()
+        .unstack("vocab_size")
+        .reindex(index=emb_vals, columns=vocab_vals)
+    )
+    fig.add_trace(go.Heatmap(
+        z=pivot.values,
+        x=[f"{v:,}" for v in vocab_vals],
+        y=[str(v) for v in emb_vals],
+        colorscale="Viridis_r",
+        zmin=vmin, zmax=vmax,
+        text=[[f"{v:.3f}" if not np.isnan(v) else "" for v in row_] for row_ in pivot.values],
+        texttemplate="%{text}",
+        textfont=dict(color="#555555"),
+        showscale=(idx == 0),
+        colorbar=dict(title="Mean val loss", orientation="h", x=0.5, xanchor="center",
+                      y=-0.18, yanchor="top", len=0.5, thickness=18, title_side="bottom") if idx == 0 else None,
+        hovertemplate="vocab=%{x}<br>emb_dim=%{y}<br>val_loss=%{z:.4f}<extra>" + arch + "</extra>",
+    ), row=row + 1, col=col + 1)
+    fig.update_yaxes(title_text="Embedding dim" if col == 0 else "", row=row + 1, col=col + 1)
+
+for ann in fig.layout.annotations:
+    ann.update(font=dict(size=12))
+fig.add_annotation(
+    text="Vocabulary size", xref="paper", yref="paper",
+    x=0.5, y=-0.12, showarrow=False, font=dict(size=15),
+)
+fig.update_layout(height=290 * n_rows_hm, autosize=True, margin=dict(l=50, r=20, t=40, b=80))
+fig.show()
+```
+
+## Prediction analysis
+
+This section examines what the models actually predict, using the best (`train_fraction=0.26`) run of each architecture available so far. Only `FastText` and `FastText + Label Attention` have predictions today — `FATE (L=1)` will be added once its sweep on `train_fraction=0.26` completes. With 679 sub-class targets, a full per-class confusion matrix or example view (as used for Amazon's 5 classes and CLINC150's 150) would be unreadable — figures below are adapted to this scale: the confusion matrix is aggregated to the 21 **sections** (the coarsest NAF level), and confused pairs / examples show the actual sub-class code and its official label rather than a bare class index.
+
+```{python}
+#| label: load-predictions-naf
+
+import json
+import urllib.request
+import numpy as np
+from pathlib import Path
+
+PRED_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions/naf"
+ARCH_FILES  = {
+    "FastText":                   "fasttext.npz",
+    "FastText + Label Attention": "fasttext_labatt.npz",
+}
+
+PREDS_DIR = Path("results/naf/preds")
+PREDS_DIR.mkdir(parents=True, exist_ok=True)
+
+preds_by_arch = {}   # arch -> {"y_test": ..., "y_pred": ..., "X_test": ...}
+
+for arch, fname in ARCH_FILES.items():
+    cache = PREDS_DIR / fname
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{PRED_BUCKET}/{fname}", cache)
+        d = np.load(cache, allow_pickle=True)
+        preds_by_arch[arch] = {
+            "y_test": d["y_test"].astype(int),
+            "y_pred": d["y_pred"].astype(int),
+            "X_test": d["X_test"],
+        }
+    except Exception:
+        pass
+
+ARCHS_AVAIL = list(preds_by_arch.keys())
+
+# Reconstructs the class index -> NAF sub-class code mapping produced by the
+# sklearn LabelEncoder in src/train.py (see assets/naf_labels.json for how it was built).
+with open("assets/naf_labels.json") as f:
+    NAF_LABEL_MAP = json.load(f)  # {"0": "0111Y", ...}
+
+with open("assets/naf2025_structure.json") as f:
+    _naf_struct = json.load(f)
+
+DIVISION_TO_SECTION = {
+    div: s["id"] for s in _naf_struct["sections"] for div in s["divisions"]
+}
+SECTION_LABEL = {s["id"]: s["label"] for s in _naf_struct["sections"]}
+SECTION_ORDER = [s["id"] for s in _naf_struct["sections"]]
+SOUSCLASSE_LABEL = _naf_struct["sousclasses"]  # keyed like "01.11Y"
+
+def class_code(idx: int) -> str:
+    return NAF_LABEL_MAP.get(str(idx), "?")
+
+def code_section(code: str) -> str:
+    return DIVISION_TO_SECTION.get(code[:2], "?")
+
+def code_label(code: str) -> str:
+    dotted = code[:2] + "." + code[2:]
+    return SOUSCLASSE_LABEL.get(dotted, code)
+```
+
+::: {.panel-tabset}
+
+### Confusion matrix
+
+```{python}
+#| label: fig-confusion-naf
+#| fig-cap: "Section-level confusion matrix (rows = true section, columns = predicted section, normalised by row). With 679 sub-classes, individual-level display would be unreadable."
+
+from sklearn.metrics import confusion_matrix as sk_cm
+from IPython.display import HTML
+
+n_archs = len(ARCHS_AVAIL)
+fig = go.Figure()
+
+for i, arch in enumerate(ARCHS_AVAIL):
+    d = preds_by_arch[arch]
+    true_sections = [code_section(class_code(y)) for y in d["y_test"]]
+    pred_sections = [code_section(class_code(y)) for y in d["y_pred"]]
+    cm = sk_cm(true_sections, pred_sections, labels=SECTION_ORDER).astype(float)
+    row_sums = cm.sum(axis=1, keepdims=True)
+    row_sums[row_sums == 0] = 1
+    cm_norm = cm / row_sums
+    fig.add_trace(go.Heatmap(
+        z=cm_norm,
+        x=SECTION_ORDER, y=SECTION_ORDER,
+        colorscale="Viridis_r", zmin=0, zmax=1,
+        text=[[f"{v:.2f}" for v in row] for row in cm_norm],
+        texttemplate="%{text}",
+        textfont=dict(size=9),
+        colorbar=dict(title="Fraction", thickness=14),
+        hovertemplate="True=%{y}<br>Pred=%{x}<br>%{z:.3f}<extra></extra>",
+        visible=(i == 0),
+    ))
+
+options = "".join(f'<option value="{i}">{arch}</option>' for i, arch in enumerate(ARCHS_AVAIL))
+fig.update_layout(
+    xaxis=dict(title="Predicted section", tickangle=0),
+    yaxis=dict(title="True section", autorange="reversed"),
+    height=560, width=620,
+    margin=dict(t=20, b=50, l=60, r=20),
+)
+fig_html = fig.to_html(include_plotlyjs=False, div_id="cm-naf", full_html=False)
+
+html = f"""
+<div style="display:flex;flex-direction:column;align-items:center;">
+  <div style="font-family:sans-serif;margin-bottom:0.75rem;">
+    <label for="cm-naf-select" style="font-size:13px;font-weight:600;margin-right:8px;">Model:</label>
+    <select id="cm-naf-select" onchange="cmNafChange(this.value)"
+      style="font-size:13px;padding:4px 8px;border:1px solid #ccc;border-radius:4px;background:#fff;">
+      {options}
+    </select>
+  </div>
+  {fig_html}
+</div>
+<script>
+(function(){{
+  var N={n_archs};
+  window.cmNafChange=function(val){{
+    var idx=parseInt(val), vis=Array(N).fill(false); vis[idx]=true;
+    Plotly.restyle("cm-naf",{{visible:vis}});
+  }};
+}})();
+</script>
+"""
+HTML(html)
+```
+
+### Top confused pairs
+
+```{python}
+#| label: fig-confused-naf
+#| fig-cap: "Top 25 most confused sub-class pairs — bubble size proportional to error count"
+
+import pandas as pd
+
+N_PAIRS = 25
+COLORS = {"FastText": "#2196F3", "FastText + Label Attention": "#00BCD4"}
+
+def top_confused_pairs(y_true, y_pred, n=N_PAIRS):
+    rows = []
+    for t, p in zip(y_true, y_pred):
+        if t != p:
+            rows.append((code_label(class_code(t)), code_label(class_code(p))))
+    s = pd.Series(rows).value_counts().head(n).reset_index()
+    s.columns = ["pair", "count"]
+    s[["true_lbl", "pred_lbl"]] = pd.DataFrame(s["pair"].tolist(), index=s.index)
+    return s
+
+n_archs = len(ARCHS_AVAIL)
+fig = go.Figure()
+
+for i, arch in enumerate(ARCHS_AVAIL):
+    d = preds_by_arch[arch]
+    df_pairs = top_confused_pairs(d["y_test"], d["y_pred"])
+    fig.add_trace(go.Scatter(
+        x=df_pairs["pred_lbl"],
+        y=df_pairs["true_lbl"],
+        mode="markers",
+        marker=dict(
+            size=df_pairs["count"] * 4,
+            color=COLORS.get(arch, "grey"),
+            opacity=0.7,
+            line=dict(width=1, color="white"),
+            sizemode="area",
+        ),
+        text=df_pairs["count"],
+        hovertemplate="True: <b>%{y}</b><br>Predicted: <b>%{x}</b><br>Count: %{text}<extra></extra>",
+        visible=(i == 0),
+    ))
+
+buttons = [dict(
+    label=arch, method="update",
+    args=[{"visible": [j == i for j in range(n_archs)]}],
+) for i, arch in enumerate(ARCHS_AVAIL)]
+
+fig.update_layout(
+    xaxis=dict(title="Predicted sub-class", tickangle=-35, automargin=True, tickfont=dict(size=9)),
+    yaxis=dict(title="True sub-class", automargin=True, tickfont=dict(size=9)),
+    height=620,
+    margin=dict(l=20, r=20, t=60, b=20),
+    updatemenus=[dict(
+        type="dropdown", buttons=buttons,
+        x=0.5, xanchor="center", y=1.1, yanchor="top",
+        showactive=True, bgcolor="#f0f0f0", bordercolor="#ccc",
+        font=dict(size=12),
+    )],
+)
+fig.show()
+```
+
+### Model agreement
+
+Rather than asking *which* model is wrong, this view asks: when models disagree, is that because one is simply weaker, or because the description itself is ambiguous (a business activity that genuinely straddles two sub-classes)? For each test example, we count how many distinct sub-classes the available models collectively predict, then check how often the **majority vote** is correct at each agreement level.
+
+```{python}
+#| label: fig-agreement-naf
+#| fig-cap: "Model agreement vs. correctness"
+
+preds_matrix = np.array([preds_by_arch[a]["y_pred"] for a in ARCHS_AVAIL])
+y_true       = preds_by_arch[ARCHS_AVAIL[0]]["y_test"]
+n_test       = preds_matrix.shape[1]
+n_models     = len(ARCHS_AVAIL)
+
+n_distinct  = np.array([len(set(preds_matrix[:, i])) for i in range(n_test)])
+# argmax breaks ties by lowest class index — majority vote is undefined when all models disagree
+maj_pred    = np.array([np.bincount(preds_matrix[:, i], minlength=679).argmax() for i in range(n_test)])
+maj_correct = (maj_pred == y_true)
+
+levels  = sorted(np.unique(n_distinct).tolist())
+xlabels = ["All agree"] + [f"{k} distinct" for k in levels if k > 1]
+
+share = [(n_distinct == k).mean() * 100 for k in levels]
+acc   = [maj_correct[n_distinct == k].mean() * 100 for k in levels]
+
+fig = go.Figure()
+fig.add_trace(go.Bar(
+    x=xlabels, y=share, name="% of test set", marker_color="#90A4AE",
+    hovertemplate="%{x}<br>%{y:.1f}% of test set<extra></extra>",
+))
+fig.add_trace(go.Scatter(
+    x=xlabels, y=acc, name="Majority-vote accuracy", mode="lines+markers",
+    marker=dict(size=10, color="#C62828"), line=dict(width=3, color="#C62828"),
+    yaxis="y2",
+    hovertemplate="%{x}<br>accuracy: %{y:.1f}%<extra></extra>",
+))
+fig.update_layout(
+    template="simple_white", height=420,
+    yaxis=dict(title="% of test set", range=[0, 100]),
+    yaxis2=dict(title="Majority-vote accuracy (%)", overlaying="y", side="right", range=[0, 100]),
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.18, yanchor="top"),
+    margin=dict(t=20, b=80),
+)
+fig.show()
+```
+
+### Examples
+
+```{python}
+#| label: fig-examples-naf
+#| fig-cap: "Example predictions on the NAF test set"
+
+import random
+random.seed(42)
+
+y_test = preds_by_arch[ARCHS_AVAIL[0]]["y_test"]
+X_test = preds_by_arch[ARCHS_AVAIL[0]]["X_test"]
+
+df_ex = pd.DataFrame({"true": y_test, "text": X_test.tolist()})
+for arch in ARCHS_AVAIL:
+    df_ex[arch] = preds_by_arch[arch]["y_pred"]
+
+df_ex["disagree"]  = df_ex[ARCHS_AVAIL].nunique(axis=1) > 1
+df_ex["any_wrong"] = (df_ex[ARCHS_AVAIL].values != df_ex[["true"]].values).any(axis=1)
+pool   = df_ex[df_ex["disagree"] & df_ex["any_wrong"]]
+sample = pool.sample(min(12, len(pool)), random_state=42).reset_index(drop=True)
+
+def fmt_label(idx: int) -> str:
+    code = class_code(int(idx))
+    return f"{code} — {code_label(code)}"
+
+examples = [
+    {"true": fmt_label(r["true"]), "text": str(r["text"]),
+     "preds": {a: fmt_label(r[a]) for a in ARCHS_AVAIL}}
+    for _, r in sample.iterrows()
+]
+
+html = f"""
+<style>
+  .ex-wrap  {{ font-family:sans-serif; font-size:14px; max-width:100%; }}
+  .ex-card  {{ border:1px solid #ddd; border-radius:8px; padding:20px 24px;
+               background:#fafafa; margin-bottom:14px; }}
+  .ex-meta  {{ font-size:13px; color:#555; margin-bottom:10px; }}
+  .ex-meta b {{ color:#222; }}
+  .ex-text  {{ line-height:1.75; color:#222; margin-bottom:18px; }}
+  .ex-preds {{ display:flex; gap:12px; flex-wrap:wrap; }}
+  .ex-model {{ display:flex; flex-direction:column; align-items:center; gap:4px; max-width:220px; }}
+  .ex-mname {{ font-size:11px; color:#888; font-weight:600; text-transform:uppercase;
+               letter-spacing:.04em; }}
+  .ex-badge {{ padding:5px 10px; border-radius:5px; font-weight:700; font-size:12px; text-align:center; }}
+  .correct  {{ background:#d4edda; color:#155724; }}
+  .wrong    {{ background:#f8d7da; color:#721c24; }}
+  .ex-nav   {{ display:flex; align-items:center; gap:12px; }}
+  .ex-btn   {{ padding:6px 18px; background:#f0f0f0; border:1px solid #ccc;
+               border-radius:5px; cursor:pointer; font-size:13px; }}
+  .ex-btn:hover {{ background:#e0e0e0; }}
+  .ex-count {{ font-size:12px; color:#999; }}
+</style>
+
+<div class="ex-wrap">
+  <div class="ex-nav" style="justify-content:center; margin-bottom:12px;">
+    <button class="ex-btn" onclick="exNafNav(-1)">← Prev</button>
+    <span class="ex-count" id="ex-naf-count"></span>
+    <button class="ex-btn" onclick="exNafNav(1)">Next →</button>
+  </div>
+  <div class="ex-card">
+    <div class="ex-meta" id="ex-naf-meta"></div>
+    <div class="ex-text" id="ex-naf-text"></div>
+    <div class="ex-preds" id="ex-naf-preds"></div>
+  </div>
+</div>
+
+<script>
+(function() {{
+  const EX = {json.dumps(examples)};
+  let cur = 0;
+
+  function render(i) {{
+    const e = EX[i];
+    document.getElementById('ex-naf-meta').innerHTML = 'True: <b>' + e.true + '</b>';
+    document.getElementById('ex-naf-text').textContent = e.text;
+    let h = '';
+    for (const [arch, pred] of Object.entries(e.preds)) {{
+      const cls = pred === e.true ? 'correct' : 'wrong';
+      h += '<div class="ex-model"><span class="ex-mname">' + arch + '</span>'
+         + '<span class="ex-badge ' + cls + '">' + pred + '</span></div>';
+    }}
+    document.getElementById('ex-naf-preds').innerHTML = h;
+    document.getElementById('ex-naf-count').textContent = (i+1) + ' / ' + EX.length;
+  }}
+
+  window.exNafNav = function(d) {{ cur = (cur + d + EX.length) % EX.length; render(cur); }};
+  render(0);
+}})();
+</script>
+"""
+HTML(html)
+```
+
+:::

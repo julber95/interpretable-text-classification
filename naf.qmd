@@ -207,316 +207,76 @@ HTML("""
 """)
 ```
 
-## Multi-level classification
+## Two modelling approaches
 
-The five-level hierarchy of NAF 2025 opens a natural multi-task training strategy: rather than predicting only the finest level (sub-class), the model can be trained to simultaneously predict multiple levels of the hierarchy. Two theoretical benefits follow: (1) coarser levels are easier to classify and inject additional gradient signal that guides the shared representation towards features discriminant across the taxonomy; (2) at inference time the model directly outputs predictions at every level, requiring no post-hoc aggregation.
-
-All five NAF levels are used: the **section** (1 letter, 20 codes in the training set out of 21 in the full nomenclature), the **division** (first 2 characters, 84 out of 87), the **group** (first 3 characters, 274 out of 287), the **class** (first 4 characters, 586 out of 651), and the **sub-class** (full 5-character code, 679 out of 747). All five classification heads share a single **TokenEmbedder** — one WordPiece tokenizer and one embedding matrix — that is jointly optimised through the sum of five independent cross-entropy losses. Each level then has its own **SentenceEmbedder** (either mean pooling or label attention) and a **ClassificationHead** (a single linear projection). This design keeps the parameter count modest: only the five separate sentence embedders and linear heads add level-specific parameters on top of the shared trunk. The architecture natively supports additional categorical input variables; they are not used here for simplicity, as the NAF dataset provides only a free-text description.
+Two independent modelling approaches are covered, each on its own page:
 
 ```{python}
 #| echo: false
 from IPython.display import HTML
 HTML("""
 <style>
-.ml-outer {
-  font-family: -apple-system, 'Segoe UI', sans-serif;
-  margin: 2rem 0;
-}
-.ml-card {
-  border: 2px solid #d0d0d0;
-  border-radius: 14px;
-  background: #fff;
-  padding: 28px 24px 20px;
-  box-shadow: 0 2px 14px rgba(0,0,0,.06);
-}
-.ml-blk {
+.naf-sel {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  border-radius: 9px;
-  padding: 9px 12px;
-  text-align: center;
+  gap: 20px;
+  margin: 1.6rem 0 2.2rem;
+  flex-wrap: wrap;
 }
-.ml-icon { font-size: 17px; line-height: 1; }
-.ml-name { font-size: 11px; font-weight: 700; margin-top: 3px; }
-.ml-sub  { font-size: 8.5px; margin-top: 2px; }
-.ml-arr {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 0 4px;
-  gap: 1px;
-  flex-shrink: 0;
+.naf-sel-card {
+  flex: 1;
+  min-width: 260px;
+  display: block;
+  text-decoration: none !important;
+  border: 1px solid #dde3ec;
+  border-radius: 12px;
+  padding: 28px 26px;
+  background: #fafbff;
+  transition: border-color .2s, box-shadow .2s, transform .2s;
 }
-/* hoverable blocks — same as .ah-block in index.qmd */
-.ml-tip-target {
-  cursor: default;
-  transition: box-shadow .15s, transform .15s;
-}
-.ml-tip-target:hover {
-  box-shadow: 0 4px 16px rgba(0,0,0,.18);
+.naf-sel-card:hover {
+  box-shadow: 0 6px 20px rgba(0,0,0,.08);
   transform: translateY(-2px);
+  border-color: #90a4ae;
 }
-.ml-ashape { font-size: 8px;  font-weight: 600; color: #888; white-space: nowrap; }
-.ml-aline  { font-size: 11px; color: #ccc; }
+.naf-sel-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: 8px;
+}
+.naf-sel-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1a2a4a;
+  margin-bottom: 8px;
+}
+.naf-sel-desc {
+  font-size: 13px;
+  color: #555;
+  line-height: 1.55;
+  margin-bottom: 14px;
+}
+.naf-sel-cta {
+  font-size: 13px;
+  font-weight: 700;
+}
 </style>
 
-<div class="ml-outer">
-
-<p style="text-align:center;font-size:14.5px;font-weight:700;color:#1a2a4a;margin:0 0 20px;letter-spacing:.01em;">
-  Multi-level NACE Classification &mdash; Architecture
-</p>
-
-<div class="ml-card">
-
-  <!-- INPUT -->
-  <div style="display:flex;justify-content:center;margin-bottom:6px;">
-    <div style="background:#f8f9fa;border:1.5px solid #ccc;border-radius:8px;padding:8px 24px;text-align:center;">
-      <div style="font-size:9px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px;">Input</div>
-      <div style="font-size:12px;color:#333;font-style:italic;">"Conseil en stratégie et management"</div>
-      <div style="font-size:8.5px;color:#bbb;margin-top:2px;">(B,)&nbsp;&middot;&nbsp;str</div>
-    </div>
-  </div>
-
-  <!-- arrow input → trunk -->
-  <div style="display:flex;justify-content:center;height:18px;">
-    <div style="display:flex;flex-direction:column;align-items:center;">
-      <div style="width:1.5px;flex:1;background:#ccc;"></div>
-      <div style="width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:7px solid #ccc;"></div>
-    </div>
-  </div>
-
-  <!-- SHARED TRUNK -->
-  <div class="ml-tip-target" style="background:#f3f5fa;border:1.5px solid #90a4ae;border-radius:10px;padding:14px 18px;"
-    data-tip="<b>Shared Token Encoder</b><br>WordPiece + Embedding + RMSNorm are computed <i>once</i> per input and reused by all N classification heads. This is the key multi-task design choice: all levels share the same token-level representations.<br><br>During backpropagation, gradients from all N losses flow through these shared parameters simultaneously — providing a richer learning signal than single-task training, and forcing the encoder to learn features useful at every level of the hierarchy.">
-    <div style="font-size:9px;font-weight:700;color:#78909c;text-transform:uppercase;letter-spacing:.1em;text-align:center;margin-bottom:10px;">
-      Shared Token Encoder &mdash; weights shared across all levels
-    </div>
-    <div style="display:flex;align-items:center;justify-content:center;flex-wrap:nowrap;gap:0;">
-
-      <!-- WordPiece -->
-      <div class="ml-blk" style="background:#eceff1;border:1.5px solid #78909c;min-width:78px;">
-        <div class="ml-icon" style="color:#546e7a;">&#9000;</div>
-        <div class="ml-name" style="color:#37474f;">WordPiece</div>
-        <div class="ml-sub"  style="color:#78909c;">vocab_size</div>
-      </div>
-      <div class="ml-arr">
-        <div class="ml-ashape">(B, L)&nbsp;&middot;&nbsp;int64</div>
-        <div class="ml-aline">&#9472;&#9472;&#9472;&#9472;&#9658;</div>
-      </div>
-
-      <!-- Embedding -->
-      <div class="ml-blk" style="background:#e3f2fd;border:1.5px solid #1976d2;min-width:90px;">
-        <div class="ml-icon" style="color:#1565c0;">&#8862;</div>
-        <div class="ml-name" style="color:#0d47a1;">Embedding</div>
-        <div class="ml-sub"  style="color:#1976d2;">V &times; d</div>
-      </div>
-      <div class="ml-arr">
-        <div class="ml-ashape">(B, L, d)&nbsp;&middot;&nbsp;float32</div>
-        <div class="ml-aline">&#9472;&#9472;&#9472;&#9472;&#9658;</div>
-      </div>
-
-      <!-- RMSNorm -->
-      <div class="ml-blk" style="background:#e0f7fa;border:1.5px solid #0097a7;min-width:56px;">
-        <div style="font-size:14px;font-weight:700;color:#006064;">&sigma;</div>
-        <div class="ml-name" style="color:#00838f;">RMSNorm</div>
-      </div>
-      <div class="ml-arr">
-        <div class="ml-ashape">(B, L, d)&nbsp;&middot;&nbsp;float32</div>
-        <div class="ml-aline">&#9472;&#9472;&#9472;&#9472;&#9658;</div>
-      </div>
-
-      <!-- Token embeddings output label -->
-      <div class="ml-tip-target ml-blk" style="background:#ede7f6;border:1.5px solid #7b1fa2;min-width:100px;"
-        data-tip="<b>Token embeddings</b> — shape (B, L, d)<br>The output of the shared trunk: one d-dimensional vector per token position, for each example in the batch. This tensor is computed <i>once</i> and then broadcast to all N level-specific SentenceEmbedders simultaneously.<br><br>• B = batch size<br>• L = sequence length (padded)<br>• d = embedding dimension<br><br>No gradients are blocked between levels — all heads contribute to updating these shared representations during backprop.">
-        <div style="font-size:13px;font-weight:700;color:#6a1b9a;">T</div>
-        <div class="ml-name" style="color:#4a148c;">Token embeddings</div>
-        <div class="ml-sub" style="color:#7b1fa2;">reused by every head</div>
-      </div>
-
-    </div>
-  </div>
-
-  <!-- FORK: trunk → 3 drops -->
-  <div style="position:relative;height:50px;">
-    <div style="position:absolute;top:0;left:50%;width:1.5px;height:26px;background:#bbb;transform:translateX(-50%);"></div>
-    <div style="position:absolute;top:26px;left:12%;right:12%;height:1.5px;background:#bbb;"></div>
-    <!-- left drop (Division) -->
-    <div style="position:absolute;top:26px;left:12%;width:1.5px;height:22px;background:#1565C0;opacity:.6;transform:translateX(-50%);"></div>
-    <div style="position:absolute;bottom:0;left:12%;transform:translateX(-50%);width:0;height:0;
-                border-left:4px solid transparent;border-right:4px solid transparent;border-top:7px solid #1565C0;opacity:.6;"></div>
-    <!-- centre drop (ghost) -->
-    <div style="position:absolute;top:26px;left:50%;width:1.5px;height:22px;background:#aaa;opacity:.4;transform:translateX(-50%);"></div>
-    <div style="position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:0;height:0;
-                border-left:3px solid transparent;border-right:3px solid transparent;border-top:6px solid #aaa;opacity:.4;"></div>
-    <!-- right drop (Sub-class) -->
-    <div style="position:absolute;top:26px;right:12%;width:1.5px;height:22px;background:#1e88e5;opacity:.6;transform:translateX(50%);"></div>
-    <div style="position:absolute;bottom:0;right:12%;transform:translateX(50%);width:0;height:0;
-                border-left:4px solid transparent;border-right:4px solid transparent;border-top:7px solid #1e88e5;opacity:.6;"></div>
-  </div>
-
-  <!-- Division | ··· | ghost Level k | ··· | Sub-class -->
-  <div style="display:grid;grid-template-columns:5fr auto 4fr auto 5fr;gap:0;align-items:stretch;">
-
-    <!-- ── SECTION (Level 1) ── -->
-    <div style="display:flex;flex-direction:column;align-items:center;gap:7px;">
-      <div class="ml-tip-target" style="background:#e8edf8;border:1.5px solid #1565C0;border-radius:20px;padding:3px 10px;
-                  font-size:8.5px;font-weight:700;color:#1565C0;letter-spacing:.05em;white-space:nowrap;"
-        data-tip="<b>Level 1 — Section</b> (1 letter, e.g. &quot;A&quot;)<br>The coarsest level. With only 20 classes in the training set (21 in the full NAF 2025) it is the easiest to classify, providing a strong auxiliary gradient signal that anchors the shared representation to broad activity families early in training.">
-        Level 1 &middot; Section
-      </div>
-      <div class="ml-tip-target" style="width:100%;background:#e8edf8;border:1.5px solid #1565C0;border-radius:9px;padding:9px 6px;text-align:center;"
-        data-tip="<b>Level-specific SentenceEmbedder</b><br>Each level has its own SentenceEmbedder with <i>independent</i> weights. The token embeddings (B, L, d) from the shared trunk are aggregated into a sentence-level representation in two possible ways:<br>• <b>Mean Pool</b> → (B, d): masked average over real tokens<br>• <b>Label Attention</b> → (B, C<sub>k</sub>, d): one representation per class via cross-attention<br>Having separate aggregators lets each level focus on different aspects of the token sequence.">
-        <div style="font-size:13px;color:#1565C0;">&#x2211;&divide;n</div>
-        <div style="font-size:10px;font-weight:700;color:#0d47a1;">SentenceEmbedder</div>
-        <div style="font-size:7.5px;color:#1976d2;margin-top:2px;">Mean Pool or Label Attn</div>
-        <div style="font-size:7.5px;color:#888;margin-top:1px;">(B, d) or (B, C, d)</div>
-      </div>
-      <div style="width:1.5px;height:10px;background:#1565C0;opacity:.4;"></div>
-      <div class="ml-tip-target" style="width:100%;background:#fff3e0;border:1.5px solid #f57c00;border-radius:9px;padding:9px 6px;text-align:center;"
-        data-tip="<b>Level-specific Linear head</b><br>Shape depends on the aggregation mode:<br>• <b>Mean Pool</b>: W ∈ ℝ<sup>20 × d</sup> — maps the single (B, d) sentence vector to 20 logits directly.<br>• <b>Label Attention</b>: W ∈ ℝ<sup>1 × d</sup> — the SentenceEmbedder already outputs one (B, C<sub>1</sub>, d) representation per class; the linear scores each independently, then squeeze(-1) yields (B, 20) logits.<br><br>In both cases the output is (B, 20). Weights are not shared with other levels.">
-        <div style="font-size:13px;color:#e65100;">&#x22B8;</div>
-        <div style="font-size:10px;font-weight:700;color:#bf360c;">Linear</div>
-        <div style="font-size:7.5px;color:#f57c00;">d &rarr; 20&nbsp;<span style="color:#bbb;">|</span>&nbsp;1&times;d</div>
-      </div>
-      <div style="width:1.5px;height:10px;background:#bbb;"></div>
-      <div style="width:100%;background:#f8f9fa;border:1.5px solid #90a4ae;border-radius:9px;padding:7px 6px;text-align:center;">
-        <div style="font-size:11.5px;font-weight:700;color:#333;">&#375;&#770;<sub>1</sub></div>
-        <div style="font-size:8px;color:#555;font-family:monospace;margin-top:2px;">"A"</div>
-        <div style="font-size:7.5px;color:#888;margin-top:1px;">20 classes</div>
-      </div>
-      <div style="font-size:11px;color:#c62828;font-weight:700;">&Lscr;<sub>sec</sub></div>
-    </div>
-
-    <!-- ── SEPARATOR LEFT ── -->
-    <div style="display:flex;align-items:center;justify-content:center;padding:0 10px;">
-      <span style="font-size:15px;color:#777;letter-spacing:4px;white-space:nowrap;">· · ·</span>
-    </div>
-
-    <!-- ── GHOST Level k ── -->
-    <div style="display:flex;flex-direction:column;align-items:center;gap:7px;opacity:.82;">
-      <div class="ml-tip-target" style="background:#f0f1f5;border:1.5px dashed #b0b8cc;border-radius:20px;padding:3px 10px;
-                  font-size:8.5px;font-weight:700;color:#8890a8;letter-spacing:.05em;white-space:nowrap;"
-        data-tip="<b>Any intermediate level k</b><br>The same three-block pattern (SentenceEmbedder → Linear → logits) repeats identically for every level between Level 1 and Level N. In our NAF setup: k = 2 is Division (84 classes), k = 3 is Group (274 classes), k = 4 is Class (586 classes). Each level adds only its own SentenceEmbedder + Linear head on top of the shared trunk.">
-        Level k &middot; &hellip;
-      </div>
-      <div style="width:100%;background:#f0f2f7;border:1.5px dashed #b8bece;border-radius:9px;padding:9px 6px;text-align:center;">
-        <div style="font-size:13px;color:#a0a8be;">&#x2211;&divide;n</div>
-        <div style="font-size:10px;font-weight:700;color:#8890a8;">SentenceEmbedder</div>
-        <div style="font-size:7.5px;color:#aab0c0;margin-top:2px;">Mean Pool or Label Attn</div>
-        <div style="font-size:7.5px;color:#bbbfca;margin-top:1px;">(B, d) or (B, C, d)</div>
-      </div>
-      <div style="width:1.5px;height:10px;background:#c0c8d8;"></div>
-      <div style="width:100%;background:#f5f3ee;border:1.5px dashed #ccc4b0;border-radius:9px;padding:9px 6px;text-align:center;">
-        <div style="font-size:13px;color:#c0b898;">&#x22B8;</div>
-        <div style="font-size:10px;font-weight:700;color:#a8a090;">Linear</div>
-        <div style="font-size:7.5px;color:#bcb49a;">d &rarr; C<sub>k</sub></div>
-      </div>
-      <div style="width:1.5px;height:10px;background:#c8c8c8;"></div>
-      <div style="width:100%;background:#f8f8f8;border:1.5px dashed #c0c4cc;border-radius:9px;padding:7px 6px;text-align:center;">
-        <div style="font-size:11.5px;font-weight:700;color:#9098a8;">&#375;&#770;<sub>k</sub></div>
-        <div style="font-size:7.5px;color:#a8aab8;margin-top:2px;">C<sub>k</sub> classes</div>
-      </div>
-      <div style="font-size:11px;color:#b06060;font-weight:700;">&Lscr;<sub>k</sub></div>
-    </div>
-
-    <!-- ── SEPARATOR RIGHT ── -->
-    <div style="display:flex;align-items:center;justify-content:center;padding:0 10px;">
-      <span style="font-size:15px;color:#777;letter-spacing:4px;white-space:nowrap;">· · ·</span>
-    </div>
-
-    <!-- ── SUB-CLASS (Level N) ── -->
-    <div style="display:flex;flex-direction:column;align-items:center;gap:7px;">
-      <div class="ml-tip-target" style="background:#dce8f5;border:1.5px solid #1e88e5;border-radius:20px;padding:3px 10px;
-                  font-size:8.5px;font-weight:700;color:#1565c0;letter-spacing:.05em;white-space:nowrap;"
-        data-tip="<b>Level N — Sub-class</b> (5-char code, e.g. &quot;7010Y&quot;)<br>The finest level and the primary classification target. 679 classes in the training split (out of 747 in the full NAF 2025). Benefits from the auxiliary gradient signal of all coarser levels, which pre-shapes the shared representation before the finest-level head has to distinguish between similar sub-classes.">
-        Level 5 &middot; Sub-class
-      </div>
-      <div class="ml-tip-target" style="width:100%;background:#dce8f5;border:1.5px solid #1e88e5;border-radius:9px;padding:9px 6px;text-align:center;"
-        data-tip="<b>Level-specific SentenceEmbedder</b><br>Each level has its own SentenceEmbedder with <i>independent</i> weights. The token embeddings (B, L, d) from the shared trunk are aggregated into a sentence-level representation in two possible ways:<br>• <b>Mean Pool</b> → (B, d): masked average over real tokens<br>• <b>Label Attention</b> → (B, C<sub>N</sub>, d): one representation per class via cross-attention<br>Having separate aggregators lets each level focus on different aspects of the token sequence.">
-        <div style="font-size:13px;color:#1e88e5;">&#x2211;&divide;n</div>
-        <div style="font-size:10px;font-weight:700;color:#0d47a1;">SentenceEmbedder</div>
-        <div style="font-size:7.5px;color:#1976d2;margin-top:2px;">Mean Pool or Label Attn</div>
-        <div style="font-size:7.5px;color:#888;margin-top:1px;">(B, d) or (B, C, d)</div>
-      </div>
-      <div style="width:1.5px;height:10px;background:#1e88e5;opacity:.4;"></div>
-      <div class="ml-tip-target" style="width:100%;background:#fff3e0;border:1.5px solid #f57c00;border-radius:9px;padding:9px 6px;text-align:center;"
-        data-tip="<b>Level-specific Linear head</b><br>Shape depends on the aggregation mode:<br>• <b>Mean Pool</b>: W ∈ ℝ<sup>679 × d</sup> — maps the single (B, d) sentence vector to 679 logits directly.<br>• <b>Label Attention</b>: W ∈ ℝ<sup>1 × d</sup> — the SentenceEmbedder already outputs one (B, C<sub>N</sub>, d) representation per class; the linear scores each independently, then squeeze(-1) yields (B, 679) logits.<br><br>In both cases the output is (B, 679). Entirely independent from the heads of other levels.">
-        <div style="font-size:13px;color:#e65100;">&#x22B8;</div>
-        <div style="font-size:10px;font-weight:700;color:#bf360c;">Linear</div>
-        <div style="font-size:7.5px;color:#f57c00;">d &rarr; 679&nbsp;<span style="color:#bbb;">|</span>&nbsp;1&times;d</div>
-      </div>
-      <div style="width:1.5px;height:10px;background:#bbb;"></div>
-      <div style="width:100%;background:#f8f9fa;border:1.5px solid #90a4ae;border-radius:9px;padding:7px 6px;text-align:center;">
-        <div style="font-size:11.5px;font-weight:700;color:#333;">&#375;&#770;<sub>N</sub></div>
-        <div style="font-size:8px;color:#555;font-family:monospace;margin-top:2px;">"7010Y"</div>
-        <div style="font-size:7.5px;color:#888;margin-top:1px;">679 classes</div>
-      </div>
-      <div style="font-size:11px;color:#c62828;font-weight:700;">&Lscr;<sub>sub</sub></div>
-    </div>
-
-  </div><!-- end grid -->
-
-  <!-- JOINT LOSS -->
-  <div style="margin-top:16px;display:flex;justify-content:center;">
-    <div class="ml-tip-target" style="background:#fce4ec;border:1.5px solid #e91e63;border-radius:9px;padding:10px 28px;text-align:center;max-width:480px;"
-      data-tip="<b>Joint multi-task loss</b><br>ℒ = Σ<sub>k</sub> CrossEntropy(ŷ<sub>k</sub>, y<sub>k</sub>)<br><br>Each level contributes an independent gradient signal. Coarser levels are easier to classify and act as <i>auxiliary tasks</i> that regularise the shared token encoder — the model learns representations that are simultaneously discriminant at every granularity of the hierarchy.">
-      <div style="font-size:9px;font-weight:700;color:#880e4f;text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px;">
-        Joint training loss
-      </div>
-      <div style="font-size:15px;font-weight:700;color:#c2185b;">
-        &Lscr; = &Lscr;<sub>sec</sub> + &Lscr;<sub>div</sub> + &Lscr;<sub>grp</sub> + &Lscr;<sub>cls</sub> + &Lscr;<sub>sub</sub>
-      </div>
-      <div style="font-size:8.5px;color:#ad1457;margin-top:4px;">
-        Independent cross-entropy at each level &mdash; summed and back-propagated through the shared trunk
-      </div>
-    </div>
-  </div>
-
-</div><!-- end ml-card -->
-
-<!-- Tooltip box — same pattern as index.qmd #arch-tooltip-h -->
-<div id="ml-tooltip-h"
-  style="margin-top:.8rem;margin-left:auto;margin-right:auto;padding:12px 18px;
-         background:#fff;border:2px solid #ddd;border-radius:6px;
-         font-size:14px;color:#444;line-height:1.6;
-         max-width:640px;display:none;text-align:center;
-         transition:background .2s ease,border-color .2s ease;">
+<div class="naf-sel">
+  <a class="naf-sel-card" href="naf_single.html" style="border-left:4px solid #1565C0;">
+    <div class="naf-sel-eyebrow" style="color:#1565C0;">Baseline</div>
+    <div class="naf-sel-title">Single-level classification</div>
+    <div class="naf-sel-desc">Predicts only the finest-grained <b>sub-class</b> code (679 classes) directly, in a single pass.</div>
+    <div class="naf-sel-cta" style="color:#1565C0;">Explore single-level analysis &rarr;</div>
+  </a>
+  <a class="naf-sel-card" href="naf_multilevel.html" style="border-left:4px solid #C2185B;">
+    <div class="naf-sel-eyebrow" style="color:#C2185B;">Multi-task</div>
+    <div class="naf-sel-title">Multi-level classification</div>
+    <div class="naf-sel-desc">Predicts all five NAF levels at once with a single model: one shared token embedder feeds five independent per-level classification heads, trained jointly on one harmonised loss.</div>
+    <div class="naf-sel-cta" style="color:#C2185B;">Explore multi-level analysis &rarr;</div>
+  </a>
 </div>
-
-<p style="font-size:10px;color:#aaa;text-align:center;margin-top:8px;">
-  Class counts (20 / 84 / 274 / 586 / 679) reflect codes observed in the training split (train_fraction = 0.13 of the full corpus). Full NAF 2025: 21 / 87 / 287 / 651 / 747.
-</p>
-
-</div><!-- end ml-outer -->
-
-<script>
-(function(){
-  var tip = document.getElementById('ml-tooltip-h');
-  if (!tip) return;
-  var card = document.querySelector('.ml-card');
-  if (!card) return;
-
-  card.addEventListener('mouseover', function(e){
-    var el = e.target.closest ? e.target.closest('.ml-tip-target') : null;
-    if (!el) return;
-    var dt = el.getAttribute('data-tip');
-    if (!dt) return;
-    tip.innerHTML = dt;
-    tip.style.display = 'block';
-    tip.style.background  = el.style.background || '#fff';
-    tip.style.borderColor = el.style.borderColor || '#ddd';
-  });
-
-  card.addEventListener('mouseout', function(e){
-    var el = e.target.closest ? e.target.closest('.ml-tip-target') : null;
-    if (!el) return;
-    if (e.relatedTarget && el.contains(e.relatedTarget)) return;
-    tip.style.display = 'none';
-  });
-})();
-</script>
 """)
 ```
 
