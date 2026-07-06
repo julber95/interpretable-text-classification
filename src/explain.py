@@ -126,15 +126,21 @@ def _run_captum(
     n_captum: int,
     captum_batch_sz: int,
     label: str,
+    top_k: int | None = None,
 ) -> dict:
     """
     Run Captum Layer Integrated Gradients on texts[:n_captum].
+
+    top_k caps how many classes get an IG pass per example (cost scales ~linearly
+    with it); None means all classes. word_attn/class_order rows only cover the
+    top_k most confident classes when capped — fine for reports that only ever
+    show the predicted/true class, not a full per-class selector.
 
     Returns a dict with arrays ready to be saved via np.savez:
         texts, words, word_attn, class_order, y_true, y_pred
     """
     n_captum  = min(n_captum, len(texts))
-    n_classes = clf.pytorch_model.num_classes
+    n_classes = top_k or clf.pytorch_model.num_classes
 
     all_words     = []
     all_word_attn = []
@@ -525,6 +531,7 @@ def main(cfg: DictConfig) -> None:
 
     n_captum            = cfg.get("n_captum", 200)
     captum_batch_sz     = cfg.get("captum_batch_size", 4)
+    captum_top_k        = cfg.get("captum_top_k", None)
     batch_sz            = cfg.get("batch_size", 32)
     n_self_attn         = cfg.get("n_self_attn", 50)
     n_faithfulness      = cfg.get("n_faithfulness", 50)
@@ -568,7 +575,7 @@ def main(cfg: DictConfig) -> None:
         artifacts: dict[str, dict] = {}
 
         # 1. Captum Layer Integrated Gradients — signed, both models, directly comparable
-        captum_data = _run_captum(clf, texts, y_sample, n_captum, captum_batch_sz, label)
+        captum_data = _run_captum(clf, texts, y_sample, n_captum, captum_batch_sz, label, captum_top_k)
         artifacts["captum.npz"] = captum_data
 
         # 2. Label-attention internals — only the Label Attention model has this mechanism

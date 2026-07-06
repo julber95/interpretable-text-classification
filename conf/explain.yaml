@@ -8,6 +8,8 @@ run_id_pooling: "???"                                  # best Transformer (mean 
 n_captum: 200          # examples for Captum IG (slow: ~n_steps × batch forward passes)
 captum_batch_size: 4   # smaller batch: Captum multiplies by n_steps internally
 batch_size: 32         # plain forward passes: label attention, self-attention, faithfulness
+captum_top_k: null     # classes to run IG on per example (null = all classes; cost scales
+                       # ~linearly with this, so cap it for datasets with many classes)
 
 n_self_attn: 50        # examples for seq_len × seq_len self-attention matrices
 
