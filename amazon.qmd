@@ -597,7 +597,7 @@ import numpy as np, urllib.request
 STAR_LABELS  = ["1★", "2★", "3★", "4★", "5★"]
 
 # Public MinIO links — no MLflow credentials needed, so the report renders for anyone
-PRED_BUCKET  = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions"
+PRED_BUCKET  = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions/amazon"
 ARCH_FILES   = {
     "FastText":                          "fasttext.npz",
     "FastText + Label Attention":        "fasttext_labatt.npz",
@@ -999,40 +999,33 @@ Five complementary instruments are used throughout:
 ```{python}
 #| label: load-explain-artifacts
 
-import os
-import tempfile
+import urllib.request
 from pathlib import Path
 from collections import defaultdict
 
-os.environ["MLFLOW_ENABLE_ARTIFACTS_PROGRESS_BAR"] = "false"
-
-import mlflow
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+EXPLAIN_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/explanations/amazon"
 EXPLAIN_RUN_LABATT  = "8cb23a624c674c80a5f1fe0274706e8e"
 EXPLAIN_RUN_POOLING = "2e44179b11ef413eb144984c4e0d9b03"
 
 _ARTIFACT_NAMES = ["captum.npz", "label_attn.npz", "class_vectors.npz", "self_attn.npz", "faithfulness.npz"]
 _NOT_APPLICABLE = {(EXPLAIN_RUN_POOLING, "label_attn.npz")}  # mean pooling has no label attention mechanism
+_RUN_LABEL = {EXPLAIN_RUN_LABATT: "labatt", EXPLAIN_RUN_POOLING: "pooling"}
 
 def _load_artifact(run_id: str, name: str):
-    """Download (and cache) one explainability artifact for run_id; None if unavailable."""
+    """Fetch (and cache) one explainability artifact for run_id; None if unavailable."""
     if not run_id or run_id.startswith("?") or (run_id, name) in _NOT_APPLICABLE:
         return None
-    _RUN_LABEL = {EXPLAIN_RUN_LABATT: "labatt", EXPLAIN_RUN_POOLING: "pooling"}
-    cache_dir = Path("results/amazon/explain") / _RUN_LABEL.get(run_id, run_id[:8])
+    method = _RUN_LABEL.get(run_id, run_id[:8])
+    cache_dir = Path("results/amazon/explain") / method
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache = cache_dir / name
-    if cache.exists():
-        return np.load(cache, allow_pickle=True)
     try:
-        client = mlflow.MlflowClient()
-        with tempfile.TemporaryDirectory() as tmp:
-            local = client.download_artifacts(run_id, f"explainability/{name}", dst_path=tmp)
-            d = np.load(local, allow_pickle=True)
-            np.savez(str(cache), **{k: d[k] for k in d.files})
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{EXPLAIN_BUCKET}/{method}/{name}", cache)
         return np.load(cache, allow_pickle=True)
     except Exception:
         return None

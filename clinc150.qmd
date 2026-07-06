@@ -474,7 +474,7 @@ import json, urllib.request, os
 import numpy as np
 from pathlib import Path
 
-PRED_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions"
+PRED_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions/clinc150_nooos"
 ARCH_FILES  = {
     "FastText":                     "cl150nooos_fasttext.npz",
     "FastText + Label Attention":   "cl150nooos_fasttext_labatt.npz",
@@ -491,9 +491,10 @@ if not PREDS_DIR.is_dir():
 preds_by_arch = {}
 for arch, fname in ARCH_FILES.items():
     cache = PREDS_DIR / fname
+    remote_name = fname.removeprefix("cl150nooos_")
     try:
         if not cache.exists():
-            urllib.request.urlretrieve(f"{PRED_BUCKET}/{fname}", cache)
+            urllib.request.urlretrieve(f"{PRED_BUCKET}/{remote_name}", cache)
         d = np.load(cache, allow_pickle=True)
         preds_by_arch[arch] = {
             "y_test": d["y_test"].astype(int),
@@ -929,6 +930,7 @@ This section compares the two training regimes head-to-head: models trained on t
 ```{python}
 #| label: load-oos-preds
 
+OOS_PRED_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions/clinc150"
 OOS_ARCH_FILES = {
     "FastText":                     "cl150_fasttext.npz",
     "FastText + Label Attention":   "cl150_fasttext_labatt.npz",
@@ -943,9 +945,10 @@ IN_SCOPE_150  = list(range(150))
 preds_oos = {}
 for arch, fname in OOS_ARCH_FILES.items():
     cache = PREDS_DIR / fname
+    remote_name = fname.removeprefix("cl150_")
     try:
         if not cache.exists():
-            urllib.request.urlretrieve(f"{PRED_BUCKET}/{fname}", cache)
+            urllib.request.urlretrieve(f"{OOS_PRED_BUCKET}/{remote_name}", cache)
         d = np.load(cache, allow_pickle=True)
         y_test_full = d["y_test"].astype(int)
         y_pred_full = d["y_pred"].astype(int)
@@ -1228,40 +1231,33 @@ Four complementary instruments are used throughout:
 ```{python}
 #| label: load-explain-artifacts
 
-import os
-import tempfile
+import urllib.request
 from pathlib import Path
 from collections import defaultdict
 
-os.environ["MLFLOW_ENABLE_ARTIFACTS_PROGRESS_BAR"] = "false"
-
-import mlflow
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+EXPLAIN_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/explanations/clinc150"
 EXPLAIN_RUN_LABATT  = "fb8ab8ee46654d2bbec71c756b6552bc"
 EXPLAIN_RUN_POOLING = "1c9439a33bb1470d9aaed4b0fb810e96"
 
 _ARTIFACT_NAMES = ["captum.npz", "label_attn.npz", "class_vectors.npz", "self_attn.npz", "faithfulness.npz"]
 _NOT_APPLICABLE = {(EXPLAIN_RUN_POOLING, "label_attn.npz")}  # mean pooling has no label attention mechanism
+_RUN_LABEL = {EXPLAIN_RUN_LABATT: "labatt", EXPLAIN_RUN_POOLING: "pooling"}
 
 def _load_artifact(run_id: str, name: str):
-    """Download (and cache) one explainability artifact for run_id; None if unavailable."""
+    """Fetch (and cache) one explainability artifact for run_id; None if unavailable."""
     if not run_id or run_id.startswith("?") or (run_id, name) in _NOT_APPLICABLE:
         return None
-    _RUN_LABEL = {EXPLAIN_RUN_LABATT: "labatt", EXPLAIN_RUN_POOLING: "pooling"}
-    cache_dir = Path("results/clinc150/explain") / _RUN_LABEL.get(run_id, run_id[:8])
+    method = _RUN_LABEL.get(run_id, run_id[:8])
+    cache_dir = Path("results/clinc150/explain") / method
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache = cache_dir / name
-    if cache.exists():
-        return np.load(cache, allow_pickle=True)
     try:
-        client = mlflow.MlflowClient()
-        with tempfile.TemporaryDirectory() as tmp:
-            local = client.download_artifacts(run_id, f"explainability/{name}", dst_path=tmp)
-            d = np.load(local, allow_pickle=True)
-            np.savez(str(cache), **{k: d[k] for k in d.files})
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{EXPLAIN_BUCKET}/{method}/{name}", cache)
         return np.load(cache, allow_pickle=True)
     except Exception:
         return None
