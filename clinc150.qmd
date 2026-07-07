@@ -1674,8 +1674,6 @@ Both architectures are built on the **same transformer backbone** : they only di
 #| label: fig-explain-selfattn-example
 #| fig-cap: "Self-attention matrices per head and per layer, for a sampled utterance. One column per model. Use the ← / → arrows to switch between examples."
 
-import textwrap
-
 HAS_SA       = HAS_LA and all(SELF_ATTN.get(k) is not None for k in MODEL_KEYS)
 HAS_PER_HEAD = HAS_SA and all("self_attn_per_head" in SELF_ATTN[k].files for k in MODEL_KEYS)
 
@@ -1692,8 +1690,7 @@ else:
     # Take the minimum across models: the LA model may store extra label-attention heads
     n_layers_ph = min(SELF_ATTN[k]["self_attn_per_head"][cand_idx[0]].shape[0] for k in MODEL_KEYS)
     n_heads_ph  = min(SELF_ATTN[k]["self_attn_per_head"][cand_idx[0]].shape[1] for k in MODEL_KEYS)
-    n_cols = len(MODEL_KEYS)
-    n_rows = n_layers_ph * n_heads_ph
+    n_models    = len(MODEL_KEYS)
 
     def _tokens_for(idx, L):
         if HAS_TOKENS:
@@ -1714,111 +1711,123 @@ else:
                 f"{MODEL_LABELS[key]} → "
                 f"<span style='color:{col};font-weight:700;'>{CLASS_NAMES[y_pred]} {mark}</span>"
             )
-        header = f'Per-head self-attention — "{text}"'
-        lines  = textwrap.wrap(header, width=70) + [" · ".join(bits)]
-        return "<br>".join(lines)
+        return f'Per-head self-attention — "{text}"<br>' + " · ".join(bits)
 
-    def _frame_for(idx):
+    def _layer_frame(idx, layer):
+        """z/x/y for one layer, rows=models, cols=heads."""
         per_head = {k: SELF_ATTN[k]["self_attn_per_head"][idx] for k in MODEL_KEYS}
         L_ref = per_head[MODEL_KEYS[0]].shape[-1]
         tok_ref = _tokens_for(idx, L_ref)
         z_list, x_list, y_list = [], [], []
-        for ri in range(n_rows):
-            l, h = divmod(ri, n_heads_ph)
-            for key in MODEL_KEYS:
-                mat = per_head[key][l, h]
+        for key in MODEL_KEYS:
+            for h in range(n_heads_ph):
+                mat = per_head[key][layer, h]
                 L_k = mat.shape[-1]
                 # If a model has fewer tokens than the reference, strip from the front ([CLS])
                 tok_k = tok_ref[L_ref - L_k:] if L_k < L_ref else tok_ref[:L_k]
                 z_list.append(mat)
                 x_list.append(tok_k)
                 y_list.append(tok_k)
-        return z_list, x_list, y_list, _title_for(idx)
+        return z_list, x_list, y_list
 
-    vspace = 0.025
-    row_h  = (1 - vspace * (n_rows - 1)) / n_rows
+    def _frame_for(idx):
+        layers = []
+        for layer in range(n_layers_ph):
+            z_l, x_l, y_l = _layer_frame(idx, layer)
+            layers.append({"z": [zz.tolist() for zz in z_l], "x": x_l, "y": y_l})
+        return {"title": _title_for(idx), "layers": layers}
 
-    def row_domain(r):
-        top = 1 - (r - 1) * (row_h + vspace)
-        return top, top - row_h
+    frame0 = _frame_for(cand_idx[0])
 
-    fig_ph = make_subplots(
-        rows=n_rows, cols=n_cols,
-        column_titles=[MODEL_LABELS[k] for k in MODEL_KEYS],
-        horizontal_spacing=0.05, vertical_spacing=vspace,
-    )
+    cell_px = 17
+    tok_n   = len(frame0["layers"][0]["x"][0])
+    plot_sz = tok_n * cell_px
 
-    z0, x0, y0, title0 = _frame_for(cand_idx[0])
-    trace_i = 0
-    for ri in range(n_rows):
-        l, h   = divmod(ri, n_heads_ph)
-        row    = ri + 1
-        show_x = (row == n_rows)
+    div_ids = [f"selfattn-fig-l{layer + 1}" for layer in range(n_layers_ph)]
+    fig_blocks_html = []
+    for layer in range(n_layers_ph):
+        fig_l = make_subplots(
+            rows=n_models, cols=n_heads_ph,
+            column_titles=[f"Head {h + 1}" for h in range(n_heads_ph)],
+            row_titles=[MODEL_LABELS[k] for k in MODEL_KEYS],
+            horizontal_spacing=0.04, vertical_spacing=0.14,
+        )
+        z_l = frame0["layers"][layer]["z"]
+        x_l = frame0["layers"][layer]["x"]
+        y_l = frame0["layers"][layer]["y"]
+        trace_i = 0
+        for ri, key in enumerate(MODEL_KEYS):
+            row    = ri + 1
+            show_x = (row == n_models)
+            for h in range(n_heads_ph):
+                col    = h + 1
+                idx_sp = (row - 1) * n_heads_ph + col
+                xref   = "x" if idx_sp == 1 else f"x{idx_sp}"
+                fig_l.add_trace(go.Heatmap(
+                    z=z_l[trace_i], x=x_l[trace_i], y=y_l[trace_i],
+                    coloraxis="coloraxis",
+                    hovertemplate="key=%{x}<br>query=%{y}<br>weight=%{z:.3f}"
+                                  + f"<extra>{MODEL_LABELS[key]} L{layer + 1} H{h + 1}</extra>",
+                ), row=row, col=col)
+                trace_i += 1
+                fig_l.update_xaxes(
+                    tickangle=-90, tickfont=dict(size=9),
+                    showticklabels=show_x, row=row, col=col,
+                )
+                fig_l.update_yaxes(
+                    autorange="reversed", showticklabels=False,
+                    scaleanchor=xref, scaleratio=1, row=row, col=col,
+                )
 
-        for ci, key in enumerate(MODEL_KEYS):
-            col  = ci + 1
-            idx  = (row - 1) * n_cols + col
-            xref = "x" if idx == 1 else f"x{idx}"
-            fig_ph.add_trace(go.Heatmap(
-                z=z0[trace_i], x=x0[trace_i], y=y0[trace_i],
-                coloraxis="coloraxis",
-                hovertemplate="key=%{x}<br>query=%{y}<br>weight=%{z:.3f}"
-                              + f"<extra>{MODEL_LABELS[key]} L{l + 1} H{h + 1}</extra>",
-            ), row=row, col=col)
-            trace_i += 1
-            fig_ph.update_xaxes(
-                tickangle=-90, tickfont=dict(size=9),
-                showticklabels=show_x, row=row, col=col,
-            )
-            fig_ph.update_yaxes(
-                autorange="reversed", showticklabels=False,
-                scaleanchor=xref, scaleratio=1, row=row, col=col,
-            )
+        for ann in fig_l.layout.annotations:
+            ann.font.size = 11
 
-        top, bottom = row_domain(row)
-        fig_ph.add_annotation(
-            xref="paper", yref="paper",
-            x=-0.04, y=(top + bottom) / 2,
-            text=f"Head {h + 1}", showarrow=False,
-            font=dict(size=10), xanchor="right", yanchor="middle",
+        fig_height = plot_sz * n_models + 155
+        fig_l.update_layout(
+            width=plot_sz * n_heads_ph + 230,
+            height=fig_height,
+            paper_bgcolor="white", plot_bgcolor="white",
+            margin=dict(t=50, b=75, l=30, r=150),
+            coloraxis=dict(colorscale="Viridis", cmin=0, colorbar=dict(title="weight", len=0.8, thickness=14)),
+            showlegend=False,
         )
 
-        if h == n_heads_ph - 1:
-            top1, _ = row_domain(ri - n_heads_ph + 2)
-            _, bot2 = row_domain(row)
-            x_tick, x_bar = -0.10, -0.13
-            fig_ph.add_shape(
-                type="path",
-                path=f"M {x_tick},{top1} L {x_bar},{top1} L {x_bar},{bot2} L {x_tick},{bot2}",
-                xref="paper", yref="paper", line=dict(color="black", width=1),
-            )
-            fig_ph.add_annotation(
-                xref="paper", yref="paper",
-                x=-0.18, y=(top1 + bot2) / 2,
-                text=f"<b>Layer {l + 1}</b>", showarrow=False,
-                font=dict(size=11), textangle=-90,
-                xanchor="center", yanchor="middle",
-            )
+        # "Layer N" + bracket, drawn using Plotly's own computed x-domains for the
+        # first/last head columns, so it lines up with the matrices exactly instead
+        # of relying on hand-computed pixel widths that drift from the real layout.
+        # The y-offsets above the column titles (y=1.0) are expressed in pixels and
+        # converted via this figure's own height, since a fixed y-fraction would
+        # correspond to very different pixel gaps depending on the token count.
+        x0_dom = fig_l.layout.xaxis.domain[0]
+        last_xaxis = "xaxis" if n_heads_ph == 1 else f"xaxis{n_heads_ph}"
+        x1_dom = fig_l.layout[last_xaxis].domain[1]
+        y_bracket_bot = 1 + 20 / fig_height
+        y_bracket_top = 1 + 25 / fig_height
+        y_label       = 1 + 29 / fig_height
+        fig_l.add_shape(
+            type="path",
+            path=f"M {x0_dom},{y_bracket_bot} L {x0_dom},{y_bracket_top} "
+                 f"L {x1_dom},{y_bracket_top} L {x1_dom},{y_bracket_bot}",
+            xref="paper", yref="paper", line=dict(color="#999", width=1),
+        )
+        fig_l.add_annotation(
+            xref="paper", yref="paper",
+            x=(x0_dom + x1_dom) / 2, y=y_label,
+            text=f"<b>Layer {layer + 1}</b>", showarrow=False,
+            font=dict(size=12), xanchor="center", yanchor="bottom",
+        )
 
-    cell_px = 35
-    plot_sz = len(x0[0]) * cell_px
-    fig_ph.update_layout(
-        width=plot_sz * n_cols + 260,
-        height=plot_sz * n_rows + 230,
-        paper_bgcolor="white", plot_bgcolor="white",
-        margin=dict(t=150, b=110, l=160, r=90),
-        coloraxis=dict(colorscale="Viridis", cmin=0, colorbar=dict(title="weight", x=1.18, len=0.8)),
-        title_text=title0, title_font_size=13,
-        title_x=0.5, title_y=0.96, title_yanchor="top",
+        fig_blocks_html.append(
+            fig_l.to_html(full_html=False, include_plotlyjs=False, div_id=div_ids[layer])
+        )
+
+    frames = [_frame_for(idx) for idx in cand_idx]
+
+    title_id = "sa-title"
+    blocks_html = "".join(
+        f'<div style="margin-top:{18 if layer == 0 else 0}px;">{fig_blocks_html[layer]}</div>'
+        for layer in range(n_layers_ph)
     )
-
-    frames = []
-    for idx in cand_idx:
-        z_i, x_i, y_i, title_i = _frame_for(idx)
-        frames.append({"z": [zz.tolist() for zz in z_i], "x": x_i, "y": y_i, "title": title_i})
-
-    div_id    = "selfattn-fig"
-    plot_html = fig_ph.to_html(full_html=False, include_plotlyjs=False, div_id=div_id)
 
     nav_html = f"""
 <style>
@@ -1828,22 +1837,32 @@ else:
                border-radius:5px; cursor:pointer; font-size:13px; }}
   .sa-btn:hover {{ background:#e0e0e0; }}
   .sa-count {{ font-size:12px; color:#999; }}
+  .sa-title {{ text-align:center; font-size:13px; line-height:1.5; margin-bottom:6px; }}
+  .sa-blocks {{ overflow-x:auto; }}
 </style>
 <div class="sa-nav">
   <button class="sa-btn" onclick="selfAttnNav(-1)">← Prev</button>
   <span class="sa-count" id="sa-count"></span>
   <button class="sa-btn" onclick="selfAttnNav(1)">Next →</button>
 </div>
-{plot_html}
+<div class="sa-title" id="{title_id}">{frame0["title"]}</div>
+<div class="sa-blocks">
+{blocks_html}
+</div>
 <script>
 (function() {{
-  const FRAMES = {json.dumps(frames)};
+  const FRAMES  = {json.dumps(frames)};
+  const DIV_IDS = {json.dumps(div_ids)};
   let cur = 0;
   window.selfAttnNav = function(d) {{
     cur = (cur + d + FRAMES.length) % FRAMES.length;
-    const f  = FRAMES[cur];
-    const gd = document.getElementById("{div_id}");
-    Plotly.update(gd, {{z: f.z, x: f.x, y: f.y}}, {{"title.text": f.title}});
+    const f = FRAMES[cur];
+    document.getElementById("{title_id}").innerHTML = f.title;
+    DIV_IDS.forEach(function(divId, layer) {{
+      const gd = document.getElementById(divId);
+      const l  = f.layers[layer];
+      Plotly.update(gd, {{z: l.z, x: l.x, y: l.y}}, {{}});
+    }});
     document.getElementById("sa-count").textContent = (cur + 1) + " / " + FRAMES.length;
   }};
   document.getElementById("sa-count").textContent = "1 / " + FRAMES.length;
@@ -1853,11 +1872,15 @@ else:
     display(HTML(nav_html))
 ```
 
+Mean Pooling develops a strong, recurring attention-sink column across almost every head and layer**, while Label Attention stays comparatively diffuse, without a single dominant token. This asymmetry makes sense given how each head aggregates information downstream: Mean Pooling averages tokens uniformly, so the encoder itself has to concentrate the relevant signal onto a few tokens beforehand; Label Attention performs its own learned weighting on top of the encoder, so self-attention doesn't need to pre-compress information into a hub token.
+
 **Label attention heads.** The label-attention module has 4 heads, each producing its own (class × word) attention matrix; these are then averaged into the single aggregated matrix used as the architecture's built-in explanation elsewhere in this section. For one example utterance, the figure below shows all 4 heads' matrices alongside the aggregated matrix. Given that label attention *hurts* on CLINC150, it is worth checking whether the heads have learned anything meaningful or whether their attention is diffuse and unstructured.
 
 ```{python}
 #| label: fig-explain-labatt-heads
 #| fig-cap: "Label-attention weights for one example utterance: each of the 4 heads' (class × word) attention matrix, and the aggregated matrix (mean over heads, bottom row). Use the ← / → arrows to switch between examples."
+
+import textwrap
 
 HAS_LAT = HAS_LA and lat_la is not None
 
@@ -1892,6 +1915,21 @@ else:
 
     _TOP_K_LAH = 10
 
+    def _wrap_class_label(name, max_len=12):
+        # Long snake_case class names ("restaurant_reservation") overflow into
+        # neighbouring panels when 5 heatmaps sit side by side; wrapping onto two
+        # lines near the middle keeps the full name readable in half the width.
+        text = name.replace("_", " ")
+        if len(text) <= max_len:
+            return text
+        mid = len(text) // 2
+        left  = text.rfind(" ", 0, mid)
+        right = text.find(" ", mid)
+        split_at = left if (left != -1 and (right == -1 or mid - left <= right - mid)) else right
+        if split_at == -1:
+            return text
+        return text[:split_at] + "<br>" + text[split_at + 1:]
+
     def _frame_for_lab(idx):
         words     = [str(w) for w in lat_la["words"][idx]]
         head_attn = lat_la["head_word_attn"][idx]
@@ -1913,44 +1951,42 @@ else:
             selected = sorted(selected, key=lambda c: -mat[c].mean())
             z_list.append(mat[selected])
             x_list.append(words)
-            y_list.append([CLASS_NAMES[c] for c in selected])
+            y_list.append([_wrap_class_label(CLASS_NAMES[c]) for c in selected])
         return z_list, x_list, y_list, _title_for_lab(idx)
 
     z0, x0, y0, title0 = _frame_for_lab(lab_idx_list[0])
 
-    # 2×2 grid for 4 heads + mean spanning full width below
+    # One row of 5 same-sized panels (4 heads + mean) instead of a 2x2 grid with
+    # a mismatched full-width row below, which produced a very flat "mean" panel.
+    n_words_lah   = len(x0[0])
+    n_classes_lah = max(len(yy) for yy in y0)
+    cell_px_lah   = 22
+    panel_labels  = ["Head 1", "Head 2", "Head 3", "Head 4", "Mean over heads"]
+
     fig_lah = make_subplots(
-        rows=3, cols=2,
-        specs=[
-            [{"type": "heatmap"}, {"type": "heatmap"}],
-            [{"type": "heatmap"}, {"type": "heatmap"}],
-            [{"colspan": 2, "type": "heatmap"}, None],
-        ],
-        subplot_titles=["Head 1", "Head 2", "Head 3", "Head 4", "Mean over heads"],
-        vertical_spacing=0.08,
+        rows=1, cols=5,
+        subplot_titles=panel_labels,
         horizontal_spacing=0.06,
     )
-    # Traces 0-3: heads in row-major order; trace 4: mean
-    head_positions = [(1,1),(1,2),(2,1),(2,2)]
-    for hi, (row, col) in enumerate(head_positions):
+    for i in range(5):
         fig_lah.add_trace(go.Heatmap(
-            z=z0[hi], x=x0[hi], y=y0[hi], coloraxis="coloraxis",
+            z=z0[i], x=x0[i], y=y0[i], coloraxis="coloraxis",
             hovertemplate="word=%{x}<br>class=%{y}<br>weight=%{z:.3f}<extra></extra>",
-        ), row=row, col=col)
-    fig_lah.add_trace(go.Heatmap(
-        z=z0[4], x=x0[4], y=y0[4], coloraxis="coloraxis",
-        hovertemplate="word=%{x}<br>class=%{y}<br>weight=%{z:.3f}<extra></extra>",
-    ), row=3, col=1)
+        ), row=1, col=i + 1)
 
-    fig_lah.update_xaxes(tickangle=-45, tickfont=dict(size=10), showticklabels=False)
-    fig_lah.update_xaxes(showticklabels=True, row=3, col=1)
-    fig_lah.update_yaxes(tickfont=dict(size=10))
+    fig_lah.update_xaxes(tickangle=-45, tickfont=dict(size=8))
+    fig_lah.update_yaxes(tickfont=dict(size=7))
+
+    for ann in fig_lah.layout.annotations:
+        ann.font.size = 11
+
     fig_lah.update_layout(
-        height=850,
-        coloraxis=dict(colorscale="Viridis", colorbar=dict(title="weight", x=1.05)),
+        width=cell_px_lah * n_words_lah * 5 + 260,
+        height=cell_px_lah * n_classes_lah + 170,
+        coloraxis=dict(colorscale="Viridis", colorbar=dict(title="weight", x=1.02, thickness=14)),
         paper_bgcolor="white", plot_bgcolor="white",
-        margin=dict(t=90, b=80, l=10, r=110),
-        title_text=title0, title_font_size=13,
+        margin=dict(t=70, b=90, l=10, r=90),
+        title_text=title0, title_font_size=12,
         title_x=0.5, title_y=0.98, title_yanchor="top",
     )
 
