@@ -60,11 +60,22 @@ else:
 
 ## Hyperparameter sweep
 
-This section explores the results across five complementary angles: model capacity, data efficiency and robustness; the effect of vocabulary size and embedding dimension; the effect of the number of attention heads; training time; and the interaction between embedding dimension and vocabulary size.
+This section explores the results across five complementary angles: model capacity and robustness; the effect of vocabulary size and embedding dimension; the effect of the number of attention heads; training time; and the interaction between embedding dimension and vocabulary size.
 
-### Capacity, data efficiency & robustness
+All these angles are read off a single grid search covering 960 configurations in total. For FastText (`n_layers=0`), `n_head` is not applicable; without label attention this yields $4 \times 4 \times 3 = 48$ runs, and with label attention another $4 \times 4 \times 3 = 48$ runs, for a FastText subtotal of 96. For transformer architectures (`n_layers` ∈ {1, 2, 4}), the full grid gives $4 \times 3 \times 3 \times 2 \times 4 \times 3 = 864$ runs.
 
-This section examines three complementary dimensions of the hyperparameter sweep. The first tab plots validation loss against model size, revealing the performance frontier each architecture can reach for a given parameter budget. The second tab studies how performance degrades when only a fraction of the training data is available, probing each architecture's data efficiency. The third tab looks at the spread of validation loss across all runs for a fixed architecture, measuring how sensitive each model is to the choice of hyperparameters.
+| Hyperparameter | Values | Applies to |
+|---|---|---|
+| Embedding dimension | 64, 128, 256, 512 | All |
+| Number of layers (`n_layers`) | 0, 1, 2, 4 | All |
+| Vocabulary size | 2,000 / 5,000 / 10,000 / 20,000 | All |
+| Learning rate | 0.0001, 0.0005, 0.001 | All |
+| Attention heads (`n_head`) | 2, 4, 8 | `n_layers` ≥ 1 |
+| Label attention (`n_heads_label_attention`) | none, 4 | All |
+
+### Capacity & robustness
+
+This section examines two complementary dimensions of the hyperparameter sweep. The first tab plots validation loss against model size, revealing the performance frontier each architecture can reach for a given parameter budget. The second tab looks at the spread of validation loss across all runs for a fixed architecture, measuring how sensitive each model is to the choice of hyperparameters.
 
 ::: {.panel-tabset}
 ### Val loss vs. parameters
@@ -144,118 +155,6 @@ fig.show()
 
 Both FastText variants plateau regardless of model size — FastText around 0.93–0.94 and FastText + Label Attention slightly lower at ~0.92 — confirming that the mean-pooling bottleneck sets a hard performance ceiling that extra parameters cannot overcome. FATE architectures improve steadily with capacity: FATE (L=4) reaches the lowest validation loss (~0.845) and dominates across all parameter budgets, followed by FATE (L=2) and then FATE (L=1) at ~0.88–0.90. Adding label attention to FATE does not systematically change the frontier, suggesting that the transformer blocks already capture most of the relevant context.
 
-### Effect of training set size
-
-Each curve shows the best validation loss (over `n_head` and `lr`) for a given architecture and parameter count, repeated across fractions of the training set. This reveals how quickly each architecture saturates with data and how sensitive it is to data scarcity.
-
-```{python}
-#| label: fig-train-eff
-#| fig-cap: "Min. validation loss vs. number of parameters, for varying training set fractions. Dot size and opacity are proportional to the fraction of training data used."
-
-from pathlib import Path
-
-CACHE_PATH_EFF = Path("results/amazon/train_eff.csv")
-
-if CACHE_PATH_EFF.exists():
-    df_eff = pd.read_csv(CACHE_PATH_EFF)
-else:
-    df_eff = mlflow.search_runs(experiment_names=["amazon_train_eff"], max_results=2000)
-    df_eff = df_eff[df_eff["status"] == "FINISHED"].copy()
-    df_eff = df_eff.rename(columns={
-        "params.train_fraction":           "train_fraction",
-        "params.emb_dim":                  "emb_dim",
-        "params.n_layers":                 "n_layers",
-        "params.n_heads_label_attention":  "n_heads_label_attn",
-        "metrics.num_params":              "num_params",
-    })
-
-    client = mlflow.MlflowClient()
-    def _min_val_eff(run_id):
-        h = client.get_metric_history(run_id, "val_loss")
-        return min(m.value for m in h) if h else None
-
-    df_eff["min_val_loss"] = df_eff["run_id"].apply(_min_val_eff)
-
-    for col in ["emb_dim", "n_layers", "num_params"]:
-        df_eff[col] = pd.to_numeric(df_eff[col], errors="coerce")
-    df_eff["train_fraction"] = df_eff["train_fraction"].astype(float)
-
-    def _arch_eff(row):
-        la = str(row["n_heads_label_attn"]) == "4"
-        if row["n_layers"] == 0:
-            return "FastText + Label Attention" if la else "FastText"
-        suffix = " + Label Attention" if la else ""
-        return f"FATE (L={int(row['n_layers'])}){suffix}"
-    df_eff["architecture"] = df_eff.apply(_arch_eff, axis=1)
-    df_eff.to_csv(CACHE_PATH_EFF, index=False)
-
-df_eff_c = (
-    df_eff.dropna(subset=["min_val_loss", "num_params"])
-    .groupby(["architecture", "train_fraction", "num_params"], as_index=False)["min_val_loss"].min()
-    .sort_values(["architecture", "train_fraction", "num_params"])
-)
-
-FRAC_SIZES   = {0.1: 7, 0.2: 10, 0.5: 14, 1.0: 19}
-FRAC_OPACITY = {0.1: 0.40, 0.2: 0.55, 0.5: 0.75, 1.0: 1.0}
-fractions    = sorted(df_eff_c["train_fraction"].unique())
-
-fig = go.Figure()
-
-# Lines per train_fraction connecting all architectures sorted by num_params
-for frac, grp_line in df_eff_c.groupby("train_fraction"):
-    grp_line = grp_line.sort_values("num_params")
-    fig.add_trace(go.Scatter(
-        x=grp_line["num_params"],
-        y=grp_line["min_val_loss"],
-        mode="lines",
-        showlegend=False,
-        line=dict(color="grey", width=1.2, dash="dot"),
-        opacity=FRAC_OPACITY.get(frac, 0.6),
-        hoverinfo="skip",
-    ))
-
-# Dots per (architecture, train_fraction)
-seen_arch = set()
-for (arch, frac), grp in df_eff_c.groupby(["architecture", "train_fraction"]):
-    color = COLORS.get(arch, "grey")
-    show  = arch not in seen_arch
-    seen_arch.add(arch)
-    fig.add_trace(go.Scatter(
-        x=grp["num_params"],
-        y=grp["min_val_loss"],
-        mode="markers",
-        name=arch,
-        legendgroup=arch,
-        showlegend=show,
-        marker=dict(size=FRAC_SIZES.get(frac, 9), color=color, opacity=FRAC_OPACITY.get(frac, 0.7)),
-        hovertemplate=(
-            f"<b>{arch}</b><br>"
-            f"train fraction: {frac}<br>"
-            "params=%{x:,}<br>val_loss=%{y:.4f}<extra></extra>"
-        ),
-    ))
-
-for frac in fractions:
-    fig.add_trace(go.Scatter(
-        x=[None], y=[None],
-        mode="markers",
-        name=f"{int(frac * 100)}% of train set",
-        legendgroup=f"frac_{frac}",
-        marker=dict(size=FRAC_SIZES.get(frac, 9), color="grey", opacity=FRAC_OPACITY.get(frac, 0.7)),
-    ))
-
-fig.update_layout(
-    xaxis_title="Number of parameters",
-    yaxis_title="Min. validation loss",
-    legend_title="Architecture / Train set",
-    height=450,
-    xaxis=dict(type="log", tickformat=".2s"),
-)
-fig.show()
-```
-
-TODO
-
 ### Stability
 
 The violin plot shows the **distribution of validation loss across all runs** for each architecture. A narrow violin indicates that the architecture is robust to hyperparameter choice, while a wide one signals high sensitivity.
@@ -309,7 +208,7 @@ fig.update_layout(
 fig.show()
 ```
 
-The two FastText variants are by far the most stable: their violins are narrow and tightly concentrated (FastText ~0.94, FastText + Label Attention ~0.93), meaning hyperparameter choice has almost no impact on the outcome. FATE (L=1) shows a moderate spread centered around 0.90. FATE (L=2) exhibits wider distributions (~0.86–0.92). FATE (L=4) achieves the best median loss (~0.845) but also shows a spread, with the label-attention variant reaching the lowest tails. The trade-off is clear: the most capable architectures achieve the best performance but require more careful tuning.
+The two FastText variants are by far the most stable: their violins are narrow and tightly concentrated (FastText ~0.94, FastText + Label Attention ~0.93), meaning hyperparameter choice has almost no impact on the outcome. FATE (L=1) shows a moderate spread centered around 0.90. FATE (L=2) exhibits wider distributions (~0.86–0.92). FATE (L=4) achieves the best minimum loss (~0.845) but also shows a spread, with the plain (non-label-attention) variant reaching the lowest tails. The trade-off is clear: the most capable architectures achieve the best performance but require more careful tuning.
 
 :::
 
@@ -585,9 +484,11 @@ fig.update_layout(height=290 * n_rows_hm, autosize=True, margin=dict(l=50, r=20,
 fig.show()
 ```
 
-Across most matrices, the top-right corner (high emb_dim, large vocab) is consistently lighter, indicating that both axes contribute to lower validation loss. The gradient is clearest for **FATE (L=1)**: the emb_dim=64 row stands out as noticeably darker, and loss decreases as vocabulary grows. For **FastText** the effect is subtler but still present. **FATE (L=2) and (L=4)** show flatter matrices overall, suggesting diminishing returns from these two hyperparameters as the architecture gains depth. Label attention shifts the entire color range slightly lighter without changing which corner performs best.
+Across most matrices, the top-right corner (high emb_dim, large vocab) is consistently lighter, indicating that both axes contribute to lower validation loss. **FATE (L=1), (L=2) and (L=4)** all show essentially the same pattern: the emb_dim=64 row stands out as noticeably darker, and loss decreases as vocabulary grows, with no sign of this gradient fading as the architecture gains depth. For **FastText** the effect is subtler but still present. Label attention leaves the color range roughly unchanged for FATE architectures and without changing which corner performs best; for **FastText**, however, it noticeably lightens the whole matrix, improving loss across the board.
 
 ## Prediction analysis
+
+For this section, we take the best-performing model of each architecture on the test set and look at its predictions.
 
 ```{python}
 #| label: load-predictions-amazon
@@ -821,6 +722,8 @@ fig2.update_layout(
 fig2.show()
 ```
 
+Across all eight architectures, the vast majority of predictions land within one star of the truth, and off-by-3+ errors stay under 8%. Correctness rises modestly with capacity (~59% for FastText vs. ~62–63% for the deeper FATE variants), but the gap is small next to the shared ±1-star error bucket. No architecture shows a strong systematic bias either: net bias stays within ±1.4% at ±2 stars and beyond, and even the largest ±1-star biases (FATE (L=1) at +1.8%, FATE (L=4) + Label Attention at −2.5%) are modest relative to the ~30% of examples that fall in that bucket.
+
 ### Model agreement
 
 Rather than asking *which* model is wrong, this view asks a deeper question: when the eight architectures disagree, is that because some of them are simply weaker or because the example itself is ambiguous (e.g. a "mixed" review that a human would also struggle to rate)? For each test example, we count how many distinct star ratings the eight models collectively predict, then look at (a) how often the **majority vote** is actually correct at each agreement level, and (b) which true ratings dominate the disagreement zone.
@@ -880,7 +783,7 @@ fig.update_layout(
 fig.show()
 ```
 
-**Reading the rendered chart**: the eight architectures agree unanimously on a portion of the test set, and there the majority vote is right most of the time. Agreement collapses quickly past that point — once predictions split into 2 distinct labels, majority-vote accuracy drops significantly, then flattens for 3+ distinct labels. The right panel explains why: the share of extreme ratings (1★ and 5★) shrinks steadily as disagreement grows, replaced by middle ratings (2★–4★), exactly the boundary cases where a human annotator would also hesitate between adjacent stars. This backs the **label-ambiguity** reading — a meaningful share of the remaining error sits in inherently fuzzy middle-rating reviews, a ceiling that no architecture change is likely to break — while the error rate that persists even where all eight models agree points to a smaller pool of genuinely hard or mislabeled examples shared across architectures.
+The eight architectures agree unanimously on a portion of the test set, and there the majority vote is right most of the time. Agreement collapses quickly once predictions split into 2 distinct labels and majority-vote accuracy drops significantly. The right panel explains why by looking, within each disagreement group, at the *true* rating of its examples (not what the models predicted): the share of extreme ratings (1★ and 5★) shrinks significantly as disagreement grows, replaced by middle ratings (2★–4★): exactly the boundary cases where a human annotator would also hesitate between adjacent stars. This backs the label-ambiguity reading: a meaningful share of the remaining error sits in middle-rating reviews, a ceiling that no architecture change is likely to break.
 
 ### Examples
 
@@ -993,7 +896,7 @@ Five complementary instruments are used throughout:
 - **Layer Integrated Gradients (Captum)** : a gradient-based, post-hoc attribution method that assigns every input word a *signed* score for every class: positive = pushes the prediction toward that star rating, negative = pushes away. It only needs a forward+backward pass through the model, so it can be computed identically for both architectures which is exactly what makes the comparison fair.
 - **Label-attention weights** : for the Label Attention model only: the *raw cross-attention weights* between each class query and the sentence's tokens. An explanation that's *built into* the architecture, rather than reconstructed after the fact.
 - **Self-attention matrices** : both models are built on the same transformer backbone, so we can also peek at how the encoder itself distributes attention across the sentence, layer by layer, before any classification happens.
-- **Class direction vectors** : we compare two 5×256 matrices, one per model: the label-attention queries from the Label Attention model, and the weight matrix of the linear classification head from the Mean Pooling model. Each contains one vector per star rating (1★ to 5★), but the two sit at very different points in the network. `linear_weight` is the final decision rule : each row is dotted directly with the sentence embedding to produce that class's logit. `label_embeds` is used earlier in the pipeline, before classification: it's the attention query that shapes the per-class representation, which is only afterwards passed through a separate (shared) classification layer to produce the logit. We compare how the five class vectors are arranged relative to each other in each matrix, to see what this reveals about how each architecture organises the five star ratings internally.
+- **Class direction vectors** : we compare two 5×emb_dim matrices, one per model: the label-attention queries from the Label Attention model, and the weight matrix of the linear classification head from the Mean Pooling model. Each contains one vector per star rating (1★ to 5★), but the two sit at very different points in the network. `linear_weight` is the final decision rule : each row is dotted directly with the sentence embedding to produce that class's logit. `label_embeds` is used earlier in the pipeline, before classification: it's the attention query that shapes the per-class representation, which is only afterwards passed through a separate (shared) classification layer to produce the logit. We compare how the five class vectors are arranged relative to each other in each matrix, to see what this reveals about how each architecture organises the five star ratings internally.
 - **A faithfulness (word-deletion) stress test** : attribution scores are only useful if they reflect what the model *actually* relies on, so we test this directly: delete the highest-scoring words and watch the predicted probability collapse (or not).
 
 ```{python}
@@ -1055,6 +958,8 @@ else:
 ```
 
 ### Word attributions
+
+*Method: Captum (Integrated Gradients)*
 
 The fastest way to *trust* or distrust an explanation is to look at it on a real sentence. The figure below renders a handful of test reviews as **highlighted text**: each word's background is shaded in proportion to its Captum attribution score for the **selected class** : use the star buttons to switch class. **Green = pushes toward the selected rating, red = pushes away from it**, with colour intensity proportional to `|score| / max|score|` within that review. By default the selected class is the model's predicted one, but you can inspect any class, including those not predicted, to see what evidence the model associates with each star rating. Both architectures see the *same* review, so you can directly compare which words each one leans on.
 
@@ -1218,6 +1123,8 @@ display(out)
 
 ### Corpus-level word importance
 
+*Method: Captum (Integrated Gradients)*
+
 Zooming out from individual reviews : which words does each architecture rely on *in general* to recognise a 1★ vs. a 5★ review? For every one of the 200 sampled reviews, Captum produces a signed attribution for each word and each class; here we average these scores across all occurrences of each word, keeping only words seen at least 5 times, to avoid one-off noise and display the twelve most positively-attributed words per star rating.
 
 ```{python}
@@ -1302,12 +1209,13 @@ else:
 
     layout_extra = {}
     if HAS_BOTH:
+        CAPTUM_BUTTON_LABELS = {key: f"Captum: {MODEL_LABELS[key]} Architecture" for key in MODEL_KEYS}
         vis = {key: [j // n_tr == ki for j in range(n_tr * len(MODEL_KEYS))]
                for ki, key in enumerate(MODEL_KEYS)}
         layout_extra = dict(
             updatemenus=[dict(
                 type="buttons", direction="right", active=0,
-                buttons=[dict(label=MODEL_LABELS[key], method="restyle",
+                buttons=[dict(label=CAPTUM_BUTTON_LABELS[key], method="restyle",
                               args=[{"visible": vis[key]}])
                          for key in MODEL_KEYS],
                 x=0.5, xanchor="center", y=1.05, yanchor="bottom",
@@ -1346,6 +1254,8 @@ else:
 ```
 
 ### Distinctiveness of per-class explanations
+
+*Method: Captum (Integrated Gradients)*
 
 A genuinely useful per-class explanation should look *different* depending on which class it explains, otherwise the model (or Captum) is essentially saying "this word is generically important", which is far less actionable than "this word specifically signals a 5★ review".
 
@@ -1390,6 +1300,8 @@ else:
 ```
 
 ### Self-attention and label attention: how each mechanism reads the sentence
+
+*Method: raw self-attention weights*
 
 Both architectures are built on the **same transformer backbone** : they only differ in how its token-level outputs get turned into a single classification decision. So before looking at how each model aggregates information, it's worth checking whether they end up encoding the sentence **the same way internally**: for the same short review, we extract every layer's **per-head self-attention matrices**, for both models, so individual heads can be compared side by side.
 
@@ -1591,9 +1503,15 @@ else:
     display(HTML(nav_html))
 ```
 
-In Layer 1, both architectures show similarly diffuse, low-contrast attention on both heads, suggesting that early-layer processing is largely independent of how the sentence will later be aggregated. The two models diverge in Layer 2: Label Attention develops a strong diagonal (tokens attend mostly to themselves and their neighbours, a local, syntax-like pattern), whereas Mean Pooling develops pronounced vertical stripes on both heads, an attention-sink pattern where most tokens funnel their attention onto a handful of the most salient, content-bearing tokens of the sentence. A plausible explanation is that Mean Pooling has to pre-aggregate the sentence's information into a handful of "hub" tokens before the unweighted average is taken, whereas Label Attention can leave that selection to its dedicated cross-attention step and instead use its transformer layers for more local, contextual refinement.
+In Layer 1, both architectures stay diffuse on both heads — attention spread thinly across the sentence, no clear focus yet. Layer 2 is where things happen, and where the two mechanisms start to differ.
 
-**Label attention heads.** The label-attention module has 4 heads, each producing its own (class × word) attention matrix; these are then averaged into the single aggregated matrix used as the architecture's built-in explanation elsewhere in this report (compared against Captum later in this report). For one example review, the figure below shows all 4 heads' matrices alongside this aggregated, mean-over-heads matrix.
+For Label Attention, the two heads end up doing visibly different jobs, like two experts splitting the work: Head 1 locks onto a strong, tight diagonal (each token mostly attends to itself and its neighbours, a local, syntax-like pattern), while Head 2 stays more diffuse, spreading its attention across a wider span of the sentence.
+
+For Mean Pooling, the signature pattern is different: vertical bands, i.e. most tokens funnelling attention onto a handful of the same "hub" words — usually in Layer 2, though it sometimes already appears in Layer 1. The two heads don't split as cleanly as in Label Attention, but they still differ: Head 1 tends to hammer on one or two hub words almost exclusively, whereas Head 2 spreads a bit further and pulls in extra words that also seem to matter, rather than concentrating on the same one or two tokens.
+
+A plausible explanation is that Mean Pooling has to pre-aggregate the sentence's information into a handful of "hub" tokens before the unweighted average is taken, whereas Label Attention can leave that selection to its dedicated cross-attention step and instead use its transformer layers for more local, contextual refinement.
+
+**Label attention heads.** The label-attention module has 4 heads, each producing its own (class × word) attention matrix; these are then averaged into the single aggregated matrix used as the architecture's built-in explanation. Note that this averaging is done purely for the explanation: the model's actual sentence embedding concatenates the 4 heads' outputs rather than averaging them, so the mean-over-heads matrix shown here never feeds back into the network — it is a post-hoc summary for human reading, not a computation the model itself performs. For one example review, the figure below shows all 4 heads' matrices alongside this aggregated, mean-over-heads matrix.
 
 ```{python}
 #| label: fig-explain-labatt-heads
@@ -1716,15 +1634,19 @@ else:
 
 ### Class representations: label queries vs. linear-head directions
 
+*Method: weight/embedding geometry*
+
 At the very last step, both architectures reduce a review to a decision by comparing some representation of the sentence against **one reference vector per star rating**:
 
 - Label Attention learns five **query embeddings** (`label_embeds`, one per class) that directly drive the cross-attention : they *are* the model's notion of "what a 1★ review looks like", "what a 5★ review looks like", and so on.
 - Mean Pooling instead learns a plain **linear classification head**; each of its five weight rows (`linear_weight`) plays the same role : the direction in embedding space onto which the pooled sentence vector is projected for that class.
 
-`label_embeds` and `linear_weight` happen to be matrices of the **exact same shape** (5 classes × 256-dim embedding), which makes a side-by-side comparison tempting. But same shape does not mean same role, and it's worth being explicit about how different these two objects are before reading anything into their geometry:
+`label_embeds` and `linear_weight` happen to be matrices of the **exact same shape** (5 classes × emb_dim), which makes a side-by-side comparison tempting. But same shape does not mean same role, and it's worth being explicit about how different these two objects are before reading anything into their geometry:
 
 - `linear_weight` rows are **decision-boundary normals**: the predicted class is `argmax_c (w_c · x)`, so the five rows live in a *competitive* space: pushing the sentence representation toward one row's direction mechanically pushes it away from the others. Geometric relationships between rows (e.g. opposite directions for opposite ratings) directly shape the decision boundary.
 - `label_embeds` rows are **attention queries**: each is projected through `W_Q`, dotted with the *token* keys (not with each other), and softmax-normalised independently per class. Class *c*'s query never directly competes with class *c′*'s query: only their attention outputs do, several steps downstream, after going through their own value projections and the post-attention RMSNorm. The raw embedding directions are free to take whatever shape is convenient for *retrieval*, with no pressure to encode inter-class geometry.
+
+Put differently, the two architectures place the competition between classes at opposite ends of the pipeline: **Mean Pooling has one shared representation and five competing judges** (the five `linear_weight` rows, which must spread apart in embedding space since they all score the *same* pooled vector `x`), whereas **Label Attention has five different representations and one shared judge** (the single classification-head vector, applied identically to each `y_c` — it needs no per-class specialisation, since the classes are already told apart upstream, by which tokens each query attended to).
 
 So while comparing their geometry is a legitimate, mechanism-agnostic probe of "how does this architecture represent the five star ratings internally?", a difference in pattern between the two should not be read as one architecture being more or less "structured" in some absolute sense: it mostly reflects that one matrix's geometry *is* the decision rule, while the other's geometry is several non-linear steps removed from it.
 
@@ -1765,7 +1687,7 @@ else:
     fig_cos.show()
 ```
 
-**(b) 2D PCA projection**: a visual complement to (a). We project the five 256-dimensional vectors onto their first two principal components and connect them in rating order (1★→2★→…→5★). Again, **only the shape matters, not the absolute coordinates**: a smooth arc or line suggests an ordinal layout; a tight, undifferentiated cluster suggests the model leans more on *magnitude* (how far the sentence representation sits from a boundary) than on *direction* to separate ratings; an erratic zig-zag would be the most surprising and most interesting finding of all.
+**(b) 2D PCA projection**: a visual complement to (a). We project the five emb_dim-dimensional vectors onto their first two principal components and connect them in rating order (1★→2★→…→5★). Again, **only the shape matters, not the absolute coordinates**: a smooth arc or line suggests an ordinal layout; a tight, undifferentiated cluster suggests the model leans more on *magnitude* (how far the sentence representation sits from a boundary) than on *direction* to separate ratings; an erratic zig-zag would be the most surprising and most interesting finding of all.
 
 ```{python}
 #| label: fig-explain-class-pca
@@ -1793,6 +1715,8 @@ else:
 ```
 
 ### Inside label attention: does the mechanism agree with post-hoc explanations?
+
+*Method: Captum (Integrated Gradients) vs. label-attention weights*
 
 Label Attention is special: it doesn't *need* a post-hoc method like Captum to explain itself — its cross-attention weights (one query per class, attending over the sentence) are *already* a built-in, "by design" account of which words drove each class's score. This raises a natural question: does this **architectural** explanation agree with the **gradient-based** one? If it does, that's reassuring triangulation — two very different ways of probing the model converging on the same answer. If it doesn't, at least one of the two views is misleading, and it's worth knowing which.
 
@@ -2039,6 +1963,8 @@ The overall distribution (left) is concentrated between 0.5 and 1.0, with a mean
 
 ### Are these explanations faithful? A word-deletion stress test
 
+*Method: Captum (Integrated Gradients)*
+
 All the analyses so far take attribution scores at face value but a high attribution score is only meaningful if the model would *actually* change its mind were that word removed. This is the **faithfulness** question, and the standard way to test it the "comprehensiveness" test from the ERASER benchmark : progressively delete the words Captum ranked as most important for the predicted class, and watch how fast that class's predicted probability collapses. As a control, we also delete the *same number* of **randomly chosen** words, averaged over 3 draws, isolating the effect of *which* words are removed from the trivial effect of mutilating the sentence at all.
 
 How to read it:
@@ -2068,11 +1994,11 @@ else:
             fig_fai.add_trace(go.Scatter(
                 x=np.concatenate([fr, fr[::-1]]), y=np.concatenate([m + s, (m - s)[::-1]]),
                 fill="toself", fillcolor=f"rgba({rgb},0.10)", line=dict(width=0),
-                showlegend=False, hoverinfo="skip",
+                mode="lines", showlegend=False, hoverinfo="skip",
             ))
             fig_fai.add_trace(go.Scatter(
                 x=fr, y=m, mode="lines+markers", name=f"{MODEL_LABELS[key]} — {name}",
-                line=dict(color=color, dash=dash, width=2.5), marker=dict(size=6),
+                line=dict(color=color, dash=dash, width=2.5), marker=dict(size=6, color=color),
             ))
     fig_fai.update_layout(
         xaxis_title="Fraction of words removed", yaxis_title="Mean retained probability of the predicted class",

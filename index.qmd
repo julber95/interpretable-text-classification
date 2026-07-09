@@ -27,15 +27,15 @@ The main objectives are:
 
 ### Datasets
 
-The benchmark covers three datasets of increasing number of classes, designed as a progression towards the target application: automatic NAF coding, which involves more than 700 classes.
+The benchmark covers three datasets of increasing number of classes, designed as a progression towards the target application: automatic NAF coding, which involves around 700 classes.
 
 **Amazon Reviews** (`amazon_reviews_multi`, English) is the Multilingual Amazon Reviews Corpus (MARC). The English split contains 200,000 training and 5,000 test product reviews, each rated from 1 to 5 stars. The input combines the review title and body. The 5-class ordinal nature of the task makes it harder than binary sentiment.
 
 **CLINC150** (`clinc_oos`) is an intent detection dataset. It contains 150 intent classes covering everyday conversational domains (banking, travel, home automation, etc.), with 100 training examples per class. The large number of classes and the short, colloquial nature of utterances make it a natural intermediate step between Amazon and NAF.
 
-**NAF** is the target application: automatic coding of business creation declarations against the *Nomenclature des Activités Françaises*, with more than 700 classes. Results on this dataset constitute the core deliverable of the internship.
+**NAF** is the target application: automatic coding of business creation declarations against the *Nomenclature des Activités Françaises*, with around 700 classes. Results on this dataset constitute the core deliverable of the internship.
 
-In our experiments, 5,000 (Amazon) and 3,100 (CLINC150) training examples are held out as a validation set.
+The class counts and train/val/test splits used in our experiments are summarised below.
 
 | Dataset | Classes | Train | Val | Test | SOTA (acc.) |
 |---|---|---|---|---|---|
@@ -858,15 +858,4 @@ All three architectures use a **WordPiece tokenizer** trained on the training da
 
 ### Experimental Setup
 
-All experiments are tracked with **MLflow** and run on GPU via **Argo Workflows** on the INSEE datalab infrastructure. Each configuration is trained for up to 40 epochs with early stopping (patience = 5).
-
-The grid search covers 960 configurations in total. For FastText (`n_layers=0`), `n_head` is not applicable; without label attention this yields $4 \times 4 \times 3 = 48$ runs, and with label attention another $4 \times 4 \times 3 = 48$ runs, for a FastText subtotal of 96. For transformer architectures (`n_layers` ∈ {1, 2, 4}), the full grid gives $4 \times 3 \times 3 \times 2 \times 4 \times 3 = 864$ runs.
-
-| Hyperparameter | Values | Applies to |
-|---|---|---|
-| Embedding dimension | 64, 128, 256, 512 | All |
-| Number of layers (`n_layers`) | 0, 1, 2, 4 | All |
-| Vocabulary size | 2,000 / 5,000 / 10,000 / 20,000 | All |
-| Learning rate | 0.0001, 0.0005, 0.001 | All |
-| Attention heads (`n_head`) | 2, 4, 8 | `n_layers` ≥ 1 |
-| Label attention (`n_heads_label_attention`) | none, 4 | All |
+All experiments are tracked with **MLflow** and run on GPU via **Argo Workflows** on the INSEE datalab infrastructure. For each dataset, a grid search is run over the relevant hyperparameters (embedding dimension, number of layers, vocabulary size, learning rate, attention heads, label attention); the exact grid and number of configurations vary by dataset and are detailed in the corresponding dataset's "Hyperparameter sweep" section.

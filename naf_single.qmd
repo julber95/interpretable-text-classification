@@ -1571,11 +1571,11 @@ else:
             fig_fai_naf.add_trace(go.Scatter(
                 x=np.concatenate([fr, fr[::-1]]), y=np.concatenate([m + s, (m - s)[::-1]]),
                 fill="toself", fillcolor=f"rgba({rgb},0.10)", line=dict(width=0),
-                showlegend=False, hoverinfo="skip",
+                mode="lines", showlegend=False, hoverinfo="skip",
             ))
             fig_fai_naf.add_trace(go.Scatter(
                 x=fr, y=m, mode="lines+markers", name=f"{MODEL_LABELS[key]} — {name}",
-                line=dict(color=color, dash=dash, width=2.5), marker=dict(size=6),
+                line=dict(color=color, dash=dash, width=2.5), marker=dict(size=6, color=color),
             ))
     fig_fai_naf.update_layout(
         xaxis_title="Fraction of words removed",
