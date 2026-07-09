@@ -37,15 +37,19 @@ def load_naf(cfg: dict, seed: int):
     df_val   = df_rem.iloc[len(df_rem) - n_val:]
     df_train = df_rem.iloc[:len(df_rem) - n_val]
 
-    fraction = cfg.get("train_fraction", 1.0)
-    if fraction < 1.0:
-        df_train = df_train.iloc[:max(1, int(len(df_train) * fraction))]
-
+    # Fit encoders on the full dataset (not just df_train) so that classes absent
+    # from a train_fraction-subsampled training split — but present in val/test —
+    # still have a valid encoding. NAF codes are a fixed, known nomenclature, so
+    # this isn't a data leak in the usual sense, just building a stable index.
     encoders: dict[str, SKLabelEncoder] = {}
     for name, _ in NACE_LEVELS:
         le = SKLabelEncoder()
-        le.fit(df_train[name].astype(str))
+        le.fit(df[name].astype(str))
         encoders[name] = le
+
+    fraction = cfg.get("train_fraction", 1.0)
+    if fraction < 1.0:
+        df_train = df_train.iloc[:max(1, int(len(df_train) * fraction))]
 
     def encode(split):
         X = split["libelle_cleaned"].values
