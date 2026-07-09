@@ -167,10 +167,14 @@ class MultiLevelCrossEntropyLoss(nn.Module):
     def __init__(self, num_classes: Optional[list[int]] = None):
         super().__init__()
         self.num_classes = num_classes
-        self.loss_fn = nn.CrossEntropyLoss()
+        self.reduction = "none"
+        self.loss_fn = nn.CrossEntropyLoss(reduction="none")
 
     def forward(self, outputs: list[torch.Tensor], labels: torch.Tensor) -> torch.Tensor:
-        """Compute the weighted average loss.
+        """Compute the per-sample weighted-average loss across levels.
+
+        Behaves like a ``reduction="none"`` loss: ``TextClassificationModule``
+        applies ``sample_weights`` and reduces the batch itself.
 
         Args:
             outputs: List of logit tensors ``(batch, num_classes_i)`` returned
@@ -179,9 +183,9 @@ class MultiLevelCrossEntropyLoss(nn.Module):
                 Column ``i`` contains the ground-truth label for level ``i``.
 
         Returns:
-            Scalar loss tensor.
+            Per-sample loss tensor of shape ``(batch,)``.
         """
-        total_loss = torch.tensor(0.0, device=outputs[0].device)
+        total_loss = torch.zeros(outputs[0].shape[0], device=outputs[0].device)
         for idx, output in enumerate(outputs):
             label = labels[:, idx]
             weight = self.num_classes[idx] if self.num_classes is not None else 1
