@@ -6,7 +6,7 @@ title: "NAF — Single-level classification"
 
 The model predicts only the finest-grained **sub-class** code (679 classes in the training split) directly, in a single pass, with no auxiliary hierarchy levels — this is the baseline the [Multi-level classification](naf_multilevel.qmd) page is compared against.
 
-The `naf` MLflow experiment mixes runs from two different `train_fraction` sweeps over the same hyperparameter grid: an earlier one at **0.13** (163,615 examples) and a later, larger one at **0.26** (314,230 examples) of the 2.3M-observation corpus. The rest of this section uses **0.26** only (the larger, more recent sweep) — the figure below is the exception, comparing both to isolate the effect of training-data size itself.
+The `naf` MLflow experiment mixes runs from three different `train_fraction` sweeps over the same hyperparameter grid: an earlier one at **0.13** (163,615 examples), a later one at **0.26** (314,230 examples), and the latest, largest one at **0.52** (628,461 examples). The corpus itself has 2.3M observations, but only ~1.3M carry a cleaned `libelle` usable as model input — `train_fraction` is taken against that ~1.3M subset, not the raw 2.3M. The rest of this section uses **0.52** only (the largest, most recent sweep) — the figure below is the exception, comparing all three to isolate the effect of training-data size itself.
 
 ```{python}
 #| label: fetch-mlflow-naf
@@ -54,13 +54,16 @@ def fetch_runs(experiment_name: str, cache_path: Path, train_fraction: float) ->
     raw.to_csv(cache_path, index=False)
     return raw
 
-# train_fraction=0.13 — earlier, smaller sweep
+# train_fraction=0.13 — earliest, smallest sweep
 df_frac13 = fetch_runs("naf", Path("results/naf/runs_frac13.csv"), train_fraction=0.13)
 
-# train_fraction=0.26 — later, larger sweep — used as the main dataset below
+# train_fraction=0.26 — intermediate sweep
 df_frac26 = fetch_runs("naf", Path("results/naf/runs_frac26.csv"), train_fraction=0.26)
 
-df = df_frac26
+# train_fraction=0.52 — latest, largest sweep — used as the main dataset below
+df_frac52 = fetch_runs("naf", Path("results/naf/runs_frac52.csv"), train_fraction=0.52)
+
+df = df_frac52
 ```
 
 ```{python}
@@ -72,43 +75,36 @@ import plotly.graph_objects as go
 COLORS = {
     "FastText":                          "#2196F3",
     "FastText + Label Attention":        "#00BCD4",
-    "FATE (L=1)":                        "#FFC107",
-    "FATE (L=1) + Label Attention":      "#FF8C00",
 }
-N_TRAIN = {0.13: 163615, 0.26: 314230}
+N_TRAIN = {0.13: 163615, 0.26: 314230, 0.52: 628461}
 
 common_archs = ["FastText", "FastText + Label Attention"]
 means13 = df_frac13[df_frac13["architecture"].isin(common_archs)].groupby("architecture")["min_val_loss"].mean()
 means26 = df_frac26[df_frac26["architecture"].isin(common_archs)].groupby("architecture")["min_val_loss"].mean()
+means52 = df_frac52[df_frac52["architecture"].isin(common_archs)].groupby("architecture")["min_val_loss"].mean()
 
 fig = go.Figure()
 for arch in common_archs:
     fig.add_trace(go.Scatter(
-        x=[N_TRAIN[0.13], N_TRAIN[0.26]], y=[means13[arch], means26[arch]],
+        x=[N_TRAIN[0.13], N_TRAIN[0.26], N_TRAIN[0.52]],
+        y=[means13[arch], means26[arch], means52[arch]],
         mode="lines+markers", name=arch,
         line=dict(color=COLORS[arch], width=2), marker=dict(size=9),
         hovertemplate="train size=%{x:,}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
     ))
 
-# FATE (L=1): a single run exists at train_fraction=0.13, none yet at 0.26
-fate13 = df_frac13[df_frac13["architecture"] == "FATE (L=1)"]
-if not fate13.empty:
-    fig.add_trace(go.Scatter(
-        x=[N_TRAIN[0.13]], y=[fate13["min_val_loss"].mean()],
-        mode="markers", name="FATE (L=1) (single run)",
-        marker=dict(color=COLORS["FATE (L=1)"], size=11, symbol="diamond"),
-        hovertemplate="train size=%{x:,}<br>val_loss=%{y:.4f}<extra>FATE (L=1), n=1</extra>",
-    ))
-
 fig.update_layout(
     xaxis_title="Training set size", yaxis_title="Mean validation loss",
-    xaxis=dict(tickvals=[N_TRAIN[0.13], N_TRAIN[0.26]], ticktext=["163,615", "314,230"]),
+    xaxis=dict(
+        tickvals=[N_TRAIN[0.13], N_TRAIN[0.26], N_TRAIN[0.52]],
+        ticktext=["163,615", "314,230", "628,461"],
+    ),
     legend_title="Architecture", height=430,
 )
 fig.show()
 ```
 
-Doubling the training data (163,615 → 314,230 examples) improves mean validation loss for both architectures — FastText from ≈0.63 to ≈0.57, FastText + Label Attention from ≈0.76 to ≈0.63 — with the label-attention variant benefiting proportionally more, consistent with it needing more examples per class to learn meaningful per-class query vectors. The single `FATE (L=1)` run available (only at 163,615 examples) already beats FastText at the same size, but with no sweep to confirm robustness.
+Growing the training data (163,615 → 314,230 → 628,461 examples) steadily improves mean validation loss for both architectures — FastText from ≈0.63 to ≈0.57 to ≈0.51, FastText + Label Attention from ≈0.76 to ≈0.63 to ≈0.53 — with the label-attention variant benefiting more at each step, consistent with it needing more examples per class to learn meaningful per-class query vectors; the gap between the two architectures narrows from ≈0.13 at 163,615 examples to ≈0.02 at 628,461.
 
 ### Capacity & robustness
 
@@ -172,7 +168,7 @@ fig.update_layout(
 fig.show()
 ```
 
-Label attention consistently **hurts** on NAF, mirroring CLINC150 rather than Amazon, but the gap is far narrower here (mean val loss ≈0.57 for FastText vs. ≈0.63 for FastText + Label Attention, compared to a 2–4× gap on CLINC150). With ~300k training examples (`train_fraction=0.13` of the 2.3M corpus) spread across 679 classes, each label-attention query gets more signal per class than on CLINC150's 100-example intents, but still not enough to fully match Mean Pooling.
+Label attention consistently **hurts** on NAF, mirroring CLINC150 rather than Amazon, but the gap is far narrower here (mean val loss ≈0.51 for FastText vs. ≈0.53 for FastText + Label Attention, compared to a 2–4× gap on CLINC150). With ~630k training examples (`train_fraction=0.52` of the ~1.3M cleaned-`libelle` subset) spread across 679 classes, each label-attention query gets more signal per class than on CLINC150's 100-example intents, and at this data size it nearly closes the gap with Mean Pooling.
 
 #### Stability
 
@@ -271,7 +267,7 @@ fig.update_layout(
 fig.show()
 ```
 
-Both architectures degrade slightly as vocabulary grows (FastText: 0.551→0.585, FastText + Label Attention: 0.601→0.662 from 2,000 to 20,000 tokens) — the same sparse-coverage effect as CLINC150, though milder here since NAF's larger corpus provides more gradient signal per token even at 20,000 vocab.
+Both architectures degrade slightly as vocabulary grows (FastText: 0.507→0.518, FastText + Label Attention: 0.519→0.545 from 2,000 to 20,000 tokens) — the same sparse-coverage effect as CLINC150, though milder here since NAF's larger corpus provides more gradient signal per token even at 20,000 vocab, and milder still than at the smaller `train_fraction` sweeps for the same reason.
 
 #### Embedding dimension
 
@@ -325,7 +321,7 @@ fig.update_layout(
 fig.show()
 ```
 
-FastText is essentially flat across embedding dimension (best at 128, ≈0.555), while FastText + Label Attention improves monotonically from 64 to 512 (0.653→0.624) — the extra label-attention parameters benefit from a richer token representation even though they never catch up to Mean Pooling.
+FastText is essentially flat across embedding dimension (best at 128, ≈0.502), while FastText + Label Attention improves from 64 to 128 (0.537→0.527) and then holds roughly flat through 512 (≈0.531) — unlike at the smaller `train_fraction` sweeps, where it kept improving all the way to 512, more data lets it find its optimum at a smaller embedding size instead of needing the extra capacity.
 
 :::
 
@@ -411,7 +407,7 @@ fig.update_layout(
 fig.show()
 ```
 
-Unlike CLINC150 — where label attention trained *faster* due to early stopping on a stalled loss — on NAF it trains markedly **slower** (mean ≈5,750s vs. ≈2,120s for FastText): with enough data to keep improving, label-attention runs keep going instead of stopping early, at real extra compute cost for a worse result.
+Unlike CLINC150 — where label attention trained *faster* due to early stopping on a stalled loss — on NAF it trains markedly **slower** (mean ≈14,570s vs. ≈5,780s for FastText, an even wider gap than at the smaller `train_fraction` sweeps): with enough data to keep improving, label-attention runs keep going instead of stopping early, at real extra compute cost for a result that — at this data size — is now nearly on par.
 
 ### Interaction: embedding dimension × vocabulary size
 

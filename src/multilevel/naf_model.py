@@ -1,9 +1,6 @@
 """NAF-specific model components for multi-level classification."""
 
-import torch
-
 from torchTextClassifiers.model.components import (
-    CategoricalForwardType,
     ClassificationHead,
     SentenceEmbedder,
     TokenEmbedder,
@@ -15,20 +12,6 @@ from torchTextClassifiers.model.components.text_embedder import (
 )
 
 from src.multilevel import MultiLevelTextClassificationModel
-
-
-class _ZeroCatNetForward(torch.nn.Module):
-    """No-op categorical net — supports categorical vars but none are used for NAF."""
-
-    def __init__(self, emb_dim: int):
-        super().__init__()
-        self.categorical_vocabulary_sizes = []
-        self.forward_type = CategoricalForwardType.SUM_TO_TEXT
-        self.output_dim = emb_dim
-        self._emb_dim = emb_dim
-
-    def forward(self, x=None):
-        return None
 
 
 class NAFMultiLevelModel(MultiLevelTextClassificationModel):
@@ -92,5 +75,5 @@ def build_model(
         token_embedder=token_embedder,
         sentence_embedders=sentence_embedders,
         classification_heads=classification_heads,
-        categorical_variable_net=_ZeroCatNetForward(emb_dim),
+        categorical_variable_net=None,
     )
