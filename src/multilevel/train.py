@@ -20,6 +20,7 @@ import mlflow
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
+from pytorch_lightning.loggers import MLFlowLogger
 from sklearn.metrics import accuracy_score, f1_score
 
 from torchTextClassifiers import TrainingConfig, torchTextClassifiers
@@ -83,6 +84,8 @@ def main(cfg: DictConfig):
     model = build_model(tokenizer, num_classes_per_level, emb_dim, n_heads_label_attn)
     clf   = torchTextClassifiers.from_model(tokenizer=tokenizer, pytorch_model=model)
 
+    save_path = str(RESULTS_DIR / "models" / "naf_multilevel")
+
     training_config = TrainingConfig(
         num_epochs=t.num_epochs,
         batch_size=t.batch_size,
@@ -92,31 +95,8 @@ def main(cfg: DictConfig):
         accelerator=accelerator,
         raw_labels=False,
         loss=MultiLevelCrossEntropyLoss(num_classes=num_classes_per_level),
-        save_path=str(RESULTS_DIR / "models" / "naf_multilevel"),
+        save_path=save_path,
     )
-
-    t0 = time.time()
-    clf.train(X_train=X_train, y_train=y_train, X_val=X_val, y_val=y_val,
-              training_config=training_config)
-    train_time = time.time() - t0
-
-    model.eval()
-    device = torch.device("cuda" if accelerator == "cuda" else "cpu")
-    model.to(device)
-
-    def batch_predict_multilevel(X, batch_size=512):
-        all_preds = [[] for _ in NACE_LEVELS]
-        for i in range(0, len(X), batch_size):
-            batch_texts = X[i:i + batch_size].tolist()
-            enc = tokenizer.tokenize(batch_texts)
-            with torch.no_grad():
-                logits_list = model(input_ids=enc.input_ids.to(device),
-                                    attention_mask=enc.attention_mask.to(device))
-            for lvl, logits in enumerate(logits_list):
-                all_preds[lvl].append(logits.argmax(dim=-1).cpu().numpy())
-        return [np.concatenate(p) for p in all_preds]
-
-    preds_per_level = batch_predict_multilevel(X_test)
 
     with mlflow.start_run():
         mlflow.log_params({
@@ -133,6 +113,42 @@ def main(cfg: DictConfig):
             "n_val":                   len(X_val),
             "n_test":                  len(X_test),
         })
+
+        mlf_logger = MLFlowLogger(
+            experiment_name=cfg.get("experiment_name", "naf_multilevel"),
+            tracking_uri=tracking_uri or "mlruns",
+            run_id=mlflow.active_run().info.run_id,
+        )
+        steps_per_epoch = max(1, len(X_train) // t.batch_size)
+        training_config.trainer_params = {"logger": mlf_logger, "log_every_n_steps": steps_per_epoch}
+
+        t0 = time.time()
+        clf.train(X_train=X_train, y_train=y_train, X_val=X_val, y_val=y_val,
+                  training_config=training_config)
+        train_time = time.time() - t0
+
+        # clf.train() leaves cached/fragmented CUDA memory from the optimizer and
+        # scheduler state reloaded with the checkpoint; release it before predicting.
+        if accelerator == "cuda":
+            torch.cuda.empty_cache()
+
+        model.eval()
+        device = torch.device("cuda" if accelerator == "cuda" else "cpu")
+        model.to(device)
+
+        def batch_predict_multilevel(X, batch_size=512):
+            all_preds = [[] for _ in NACE_LEVELS]
+            for i in range(0, len(X), batch_size):
+                batch_texts = X[i:i + batch_size].tolist()
+                enc = tokenizer.tokenize(batch_texts)
+                with torch.no_grad():
+                    logits_list = model(input_ids=enc.input_ids.to(device),
+                                        attention_mask=enc.attention_mask.to(device))
+                for lvl, logits in enumerate(logits_list):
+                    all_preds[lvl].append(logits.argmax(dim=-1).cpu().numpy())
+            return [np.concatenate(p) for p in all_preds]
+
+        preds_per_level = batch_predict_multilevel(X_test)
 
         for (name, _), n_cls, preds in zip(NACE_LEVELS, num_classes_per_level, preds_per_level):
             y_true = y_test[:, NACE_LEVELS.index((name, _))]
@@ -153,6 +169,8 @@ def main(cfg: DictConfig):
                  **{f"y_pred_{name}": p for (name, _), p in zip(NACE_LEVELS, preds_per_level)})
         mlflow.log_artifact(str(preds_path), artifact_path="predictions")
         preds_path.unlink()
+
+        mlflow.log_artifacts(save_path, artifact_path="model")
 
     print(f"\nDone in {train_time:.0f}s")
 
