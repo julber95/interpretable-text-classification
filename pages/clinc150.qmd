@@ -76,7 +76,7 @@ This section explores the results across four complementary angles: model capaci
 
 A key observation is that **`n_head` and `lr` do not affect `num_params`**. In a standard transformer, the total size of the attention matrices is $4 \times d^2$ regardless of how many heads are used, since $d_{\text{head}} = d / n_{\text{head}}$. Similarly, `lr` is a training hyperparameter with no effect on architecture. As a result, for any fixed combination of `(emb_dim, n_layers, vocab_size)`, FATE architectures have exactly $3 \times 3 = 9$ runs sharing the same `num_params` (3 values of `n_head` × 3 values of `lr`), while FastText has only $3$ runs. This motivates two complementary views:
 
-- **Scatter plot**: all 504 runs, showing the full spread of achievable val_loss for a given parameter budget.
+- **Scatter plot**: all 504 runs, each point being that run's `min_val_loss` (the minimum over its training epochs), showing the full spread of achievable val_loss for a given parameter budget.
 - **Curve plot**: for each `(architecture, emb_dim, vocab_size)` group, take the `min(val_loss)` over `n_head` and `lr`, tracing the performance frontier as model capacity grows.
 
 ```{python}
@@ -1045,13 +1045,15 @@ HTML(html)
 
 Same format as the confusion matrix in the Predictions section, with an extra "OOS" row (true OOS examples) and "OOS" column (examples predicted as OOS). The diagonal entry of the OOS row shows how well the model identifies actual out-of-scope utterances; the OOS column reveals which in-scope domains are most contaminated.
 
+Label attention brings no in-domain upside to offset its OOS cost: the mean in-scope diagonal is if anything slightly *lower* with label attention than without — it loses on both axes, not just OOS recall. The real differentiator is OOS recall (the OOS→OOS cell): FATE without label attention detects out-of-scope utterances best (56% at L=2, 52% at L=1), FATE+LA falls markedly (38% at L=2, 20% at L=1), and FastText struggles regardless of label attention (25% plain, 19% with LA) — a plain mean-pooling model with no self-attention layers at all appears to lack the contextual signal needed to recognise atypical utterances, so weak OOS detection isn't purely a label-attention problem.
+
 #### Global accuracy
 
 ```{python}
 #| label: fig-oos-accuracy
 #| fig-cap: "Test accuracy on in-scope classes: with OOS training vs. without"
 
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score
 
 records = []
 for arch in ARCHS_AVAIL:
@@ -1060,41 +1062,33 @@ for arch in ARCHS_AVAIL:
                                   preds_by_arch[arch]["y_pred"])
         acc_oos  = accuracy_score(preds_oos[arch]["y_test"],
                                   preds_oos[arch]["y_pred"])
-        f1_noos  = f1_score(preds_by_arch[arch]["y_test"],
-                            preds_by_arch[arch]["y_pred"], average="macro")
-        f1_oos   = f1_score(preds_oos[arch]["y_test"],
-                            preds_oos[arch]["y_pred"], average="macro")
-        records.append({"arch": arch,
-                        "acc_noos": acc_noos, "acc_oos": acc_oos,
-                        "f1_noos":  f1_noos,  "f1_oos":  f1_oos})
+        records.append({"arch": arch, "acc_noos": acc_noos, "acc_oos": acc_oos})
 
 df_cmp = pd.DataFrame(records)
 
-fig = make_subplots(rows=1, cols=2, subplot_titles=["Accuracy", "Macro F1"],
-                    shared_yaxes=False, horizontal_spacing=0.12)
-
-for col, (metric, label) in enumerate([("acc", "Accuracy"), ("f1", "Macro F1")], start=1):
-    fig.add_trace(go.Bar(
-        name="Without OOS", x=df_cmp["arch"],
-        y=df_cmp[f"{metric}_noos"],
-        marker_color="#2196F3", showlegend=(col == 1),
-        hovertemplate="%{x}<br>" + label + " (no OOS): %{y:.3f}<extra></extra>",
-    ), row=1, col=col)
-    fig.add_trace(go.Bar(
-        name="With OOS", x=df_cmp["arch"],
-        y=df_cmp[f"{metric}_oos"],
-        marker_color="#FF8C00", showlegend=(col == 1),
-        hovertemplate="%{x}<br>" + label + " (with OOS): %{y:.3f}<extra></extra>",
-    ), row=1, col=col)
+fig = go.Figure()
+fig.add_trace(go.Bar(
+    name="Without OOS", x=df_cmp["arch"], y=df_cmp["acc_noos"],
+    marker_color="#2196F3",
+    hovertemplate="%{x}<br>Accuracy (no OOS): %{y:.3f}<extra></extra>",
+))
+fig.add_trace(go.Bar(
+    name="With OOS", x=df_cmp["arch"], y=df_cmp["acc_oos"],
+    marker_color="#FF8C00",
+    hovertemplate="%{x}<br>Accuracy (with OOS): %{y:.3f}<extra></extra>",
+))
 
 fig.update_layout(
-    barmode="group", template="simple_white", height=420,
-    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.18, yanchor="top"),
-    margin=dict(t=40, b=100, r=20, l=60),
-    xaxis=dict(tickangle=-20), xaxis2=dict(tickangle=-20),
+    barmode="group", template="simple_white", height=460,
+    yaxis_title="Accuracy",
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.35, yanchor="top"),
+    margin=dict(t=40, b=140, r=20, l=60),
+    xaxis=dict(tickangle=-20),
 )
 fig.show()
 ```
+
+Training with OOS barely moves in-scope accuracy for any architecture — the with/without pairs are nearly identical, deltas stay within ±0.02 in either direction (FATE (L=1)+LA is the only one that improves, +0.02). The dominant pattern in this chart isn't the OOS regime at all: it's label attention. Every label-attention variant sits 5–9 points below its non-LA counterpart, regardless of whether OOS was included in training — confirming that label attention's cost is structural, not something introduced or worsened by the OOS class.
 
 #### OOS contamination & accuracy impact
 
@@ -1226,7 +1220,6 @@ Four complementary instruments are used throughout:
 - **Label-attention weights** : for the Label Attention model only: the *raw cross-attention weights* between each class query and the utterance's tokens — an explanation built into the architecture, rather than reconstructed after the fact.
 - **Self-attention matrices** : both models are built on the same transformer backbone, so we can also peek at how the encoder itself distributes attention across the utterance, layer by layer, before any classification happens.
 - **Class direction vectors** : we compare two 150×256 matrices, one per model: the label-attention queries from the Label Attention model, and the weight matrix of the linear classification head from the Mean Pooling model. We examine how the 150 intent class vectors are arranged relative to each other in each matrix, to see what each architecture's internal geometry reveals about the intent space.
-- **A faithfulness (word-deletion) stress test** : attribution scores are only useful if they reflect what the model *actually* relies on, so we test this directly: delete the highest-scoring words and watch the predicted probability collapse (or not).
 
 ```{python}
 #| label: load-explain-artifacts
@@ -1294,6 +1287,8 @@ else:
 ```
 
 ### Word attributions
+
+*Method: Captum (Integrated Gradients)*
 
 The fastest way to *trust* or distrust an explanation is to look at it on a real utterance. The figure below renders a handful of test utterances as **highlighted text**: each word's background is shaded in proportion to its Captum attribution score. **Green = pushes toward the selected intent, red = pushes away from it**, with colour intensity proportional to `|score| / max|score|` within that utterance. When a model predicts incorrectly, you can toggle between **predicted** and **true** class to compare what the model *thought* it was reading versus what it should have read.
 
@@ -1438,6 +1433,8 @@ display(out)
 
 ### Corpus-level word importance
 
+*Method: Captum (Integrated Gradients)*
+
 Zooming out from individual utterances: which words does each architecture rely on *in general* for each **domain**? Rather than displaying 150 per-class charts, we aggregate the Captum scores across all classes within each of the 10 CLINC150 domains, keeping only words seen at least 3 times. This gives a compact view of the vocabulary each domain relies on — and whether the two architectures agree on what matters.
 
 ```{python}
@@ -1543,6 +1540,8 @@ else:
 
 
 ### Distinctiveness of per-class explanations
+
+*Method: Captum (Integrated Gradients)*
 
 A raw 150×150 correlation matrix is unreadable. A more informative approach is to *select* the most interesting classes according to a precise criterion. Two views are shown below, each answering a different question about the attribution profiles. Use the buttons to switch between the two models.
 
@@ -1665,6 +1664,8 @@ else:
 
 
 ### Self-attention and label attention: how each mechanism reads the utterance
+
+*Method: raw self-attention weights*
 
 Both architectures are built on the **same transformer backbone** : they only differ in how its token-level outputs get turned into a classification decision. For the same short utterance, we extract every layer's **per-head self-attention matrices**, for both models, side by side.
 
@@ -2033,6 +2034,8 @@ else:
 
 ### Class representations: label queries vs. linear-head directions
 
+*Method: weight/embedding geometry*
+
 At the very last step, both architectures reduce an utterance to a decision by comparing some representation of the utterance against **one reference vector per class**:
 
 - Label Attention learns 150 **query embeddings** (`label_embeds`) that drive the cross-attention: they are the model's notion of "what a `book_flight` utterance sounds like", "what a `balance` utterance sounds like", etc.
@@ -2110,6 +2113,8 @@ else:
 ```
 
 ### Inside label attention: does the mechanism agree with post-hoc explanations?
+
+*Method: Captum (Integrated Gradients) vs. label-attention weights*
 
 Label Attention's built-in explanation — cross-attention weights, one query per class over the utterance — can be compared directly against the gradient-based Captum scores. If the two agree, it is reassuring triangulation: the model's internal routing mechanism and the post-hoc attribution converge on the same words. If they disagree, the label-attention weights are not a faithful account of what drives the prediction.
 
@@ -2343,6 +2348,8 @@ else:
 ```
 
 ### Are these explanations faithful? A word-deletion stress test
+
+*Method: Captum (Integrated Gradients)*
 
 Attribution scores are only meaningful if the model would *actually* change its mind were those words removed. We test this directly: progressively delete the words Captum ranked as most important for the predicted class, and watch how fast that class's predicted probability collapses. As a control, we delete the *same number* of **randomly chosen** words, averaged over 3 draws, isolating the effect of *which* words are removed from the trivial effect of mutilating the utterance.
 

@@ -168,7 +168,9 @@ fig.update_layout(
 fig.show()
 ```
 
-Label attention consistently **hurts** on NAF, mirroring CLINC150 rather than Amazon, but the gap is far narrower here (mean val loss ≈0.51 for FastText vs. ≈0.53 for FastText + Label Attention, compared to a 2–4× gap on CLINC150). With ~630k training examples (`train_fraction=0.52` of the ~1.3M cleaned-`libelle` subset) spread across 679 classes, each label-attention query gets more signal per class than on CLINC150's 100-example intents, and at this data size it nearly closes the gap with Mean Pooling.
+There's no clean pareto frontier here — loss doesn't fall monotonically with parameter count, since `num_params` mixes together several hyperparameters (vocabulary size, embedding dimension) whose individual effects pull in different directions. The figures further down break each one out separately to make sense of the zigzag.
+
+Label attention consistently **hurts** across this whole grid, mirroring CLINC150 rather than Amazon, but the gap is far narrower here (mean val loss ≈0.51 for FastText vs. ≈0.53 for FastText + Label Attention, compared to a 2–4× gap on CLINC150). With ~630k training examples (`train_fraction=0.52` of the ~1.3M cleaned-`libelle` subset) spread across 679 classes, each label-attention query gets more signal per class than on CLINC150's 100-example intents, and at this data size it nearly closes the gap with Mean Pooling.
 
 #### Stability
 
@@ -206,6 +208,8 @@ fig.update_layout(
 )
 fig.show()
 ```
+
+FastText is also more stable, not just better on average: its results cluster tightly (std ≈0.014) while Label Attention spreads more than twice as wide (std ≈0.032), with a handful of runs tailing up past 0.60 — some hyperparameter combinations clearly suit label attention much worse than others.
 
 :::
 
@@ -321,63 +325,9 @@ fig.update_layout(
 fig.show()
 ```
 
-FastText is essentially flat across embedding dimension (best at 128, ≈0.502), while FastText + Label Attention improves from 64 to 128 (0.537→0.527) and then holds roughly flat through 512 (≈0.531) — unlike at the smaller `train_fraction` sweeps, where it kept improving all the way to 512, more data lets it find its optimum at a smaller embedding size instead of needing the extra capacity.
+FastText is essentially flat across embedding dimension (best at 128, ≈0.502), while FastText + Label Attention improves from 64 to 128 (0.537→0.527) and then holds roughly flat through 512 (≈0.531).
 
 :::
-
-### Effect of number of attention heads
-
-```{python}
-#| label: fig-nhead-naf
-#| fig-cap: "Effect of number of attention heads on validation loss"
-
-import numpy as np
-
-df_attn = df[df["n_layers"] > 0].copy()
-
-if df_attn.empty:
-    print("No FATE (n_layers > 0) runs available yet for NAF — this figure will populate once those sweeps complete.")
-else:
-    df_attn["n_head"] = pd.to_numeric(df_attn["n_head"], errors="coerce")
-    head_vals = sorted(df_attn["n_head"].dropna().unique())
-
-    df_head_mean = (
-        df_attn.groupby(["architecture", "n_head"], as_index=False)["min_val_loss"].mean()
-        .sort_values("n_head")
-    )
-
-    fate_archs = [a for a in ARCHS_PRESENT if a.startswith("FATE")]
-    fig = go.Figure()
-    for arch in fate_archs:
-        fig.add_trace(go.Scatter(
-            x=[None], y=[None], mode="markers",
-            name=arch, legendgroup=arch, showlegend=True,
-            marker=dict(color=COLORS[arch], size=8, opacity=1.0),
-        ))
-    for arch, group in df_attn.groupby("architecture"):
-        fig.add_trace(go.Scatter(
-            x=group["n_head"], y=group["min_val_loss"],
-            mode="markers", name=arch, legendgroup=arch, showlegend=False,
-            marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
-            hovertemplate="n_head=%{customdata}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
-            customdata=group["n_head"],
-        ))
-    for arch, group in df_head_mean.groupby("architecture"):
-        fig.add_trace(go.Scatter(
-            x=group["n_head"], y=group["min_val_loss"],
-            mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
-            line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=6),
-            hovertemplate="n_head=%{customdata}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
-            customdata=group["n_head"],
-        ))
-    fig.update_layout(
-        xaxis_title="Number of attention heads", yaxis_title="Validation loss",
-        xaxis=dict(tickvals=head_vals, ticktext=[str(int(v)) for v in head_vals]),
-        legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
-        height=420,
-    )
-    fig.show()
-```
 
 ### Training time
 
@@ -385,24 +335,34 @@ else:
 #| label: fig-train-time-naf
 #| fig-cap: "Validation loss vs. training time"
 
+SYMBOLS = {"FastText": "circle", "FastText + Label Attention": "diamond"}
+
 fig = go.Figure()
 for arch in ARCHS_PRESENT:
     fig.add_trace(go.Scatter(
         x=[None], y=[None], mode="markers",
         name=arch, legendgroup=arch, showlegend=True,
-        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+        marker=dict(color=COLORS[arch], size=8, symbol=SYMBOLS.get(arch, "circle"), opacity=1.0),
     ))
 for arch, group in df.groupby("architecture"):
     fig.add_trace(go.Scatter(
         x=group["train_time_s"], y=group["min_val_loss"],
         mode="markers", name=arch, legendgroup=arch, showlegend=False,
-        marker=dict(color=COLORS.get(arch, "grey"), size=6, opacity=0.5),
+        marker=dict(
+            color=COLORS.get(arch, "grey"), size=7,
+            symbol=SYMBOLS.get(arch, "circle"),
+            opacity=0.65, line=dict(width=0.5, color="white"),
+        ),
         hovertemplate="time=%{x:.0f}s<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
     ))
 fig.update_layout(
     xaxis_title="Training time (s)", yaxis_title="Validation loss",
     legend_title="Architecture", height=430,
-    xaxis=dict(type="log"),
+    xaxis=dict(
+        type="log",
+        tickvals=[1000, 2000, 5000, 10000, 20000, 50000],
+        ticktext=["1k", "2k", "5k", "10k", "20k", "50k"],
+    ),
 )
 fig.show()
 ```
@@ -415,6 +375,7 @@ Unlike CLINC150 — where label attention trained *faster* due to early stopping
 #| label: fig-heatmap-naf
 #| fig-cap: "Mean validation loss by embedding dimension and vocabulary size"
 
+import numpy as np
 from plotly.subplots import make_subplots
 
 vmin = df.groupby(["architecture", "emb_dim", "vocab_size"])["min_val_loss"].mean().min()
@@ -433,35 +394,54 @@ for idx, arch in enumerate(ARCHS_PRESENT):
         .unstack("vocab_size")
         .reindex(index=emb_vals, columns=vocab_vals)
     )
-    fig.add_trace(go.Heatmap(
-        z=pivot.values,
-        x=[f"{v:,}" for v in vocab_vals],
-        y=[str(v) for v in emb_vals],
-        colorscale="Viridis_r",
-        zmin=vmin, zmax=vmax,
-        text=[[f"{v:.3f}" if not np.isnan(v) else "" for v in row_] for row_ in pivot.values],
-        texttemplate="%{text}",
-        textfont=dict(color="#555555"),
-        showscale=(idx == 0),
-        colorbar=dict(title="Mean val loss", orientation="h", x=0.5, xanchor="center",
-                      y=-0.18, yanchor="top", len=0.5, thickness=18, title_side="bottom") if idx == 0 else None,
-        hovertemplate="vocab=%{x}<br>emb_dim=%{y}<br>val_loss=%{z:.4f}<extra>" + arch + "</extra>",
-    ), row=row + 1, col=col + 1)
-    fig.update_yaxes(title_text="Embedding dim" if col == 0 else "", row=row + 1, col=col + 1)
+    x_labels = [f"{v // 1000}k" for v in vocab_vals]
+    y_labels = [str(v) for v in emb_vals]
+
+    # go.Heatmap's textfont.color can't take a per-cell array, so contrast-aware
+    # labels (white on dark cells, dark on light cells) are drawn as two masked
+    # heatmap traces sharing one colorscale/zmin/zmax — each only "owns" the
+    # cells matching its text color, NaN elsewhere so they tile into one heatmap.
+    is_dark = (pivot.values - vmin) / (vmax - vmin) > 0.65
+    for mask, text_color, show_scale in [(~is_dark, "#333333", idx == 0), (is_dark, "#ffffff", False)]:
+        z_masked = np.where(mask, pivot.values, np.nan)
+        fig.add_trace(go.Heatmap(
+            z=z_masked,
+            x=x_labels,
+            y=y_labels,
+            colorscale="Viridis_r",
+            zmin=vmin, zmax=vmax,
+            text=[[f"{v:.3f}" if not np.isnan(v) else "" for v in row_] for row_ in z_masked],
+            texttemplate="%{text}",
+            textfont=dict(color=text_color),
+            showscale=show_scale,
+            colorbar=dict(title="Mean val loss", orientation="h", x=0.5, xanchor="center",
+                          y=-0.38, yanchor="top", len=0.5, thickness=18, title_side="bottom") if show_scale else None,
+            hovertemplate="vocab=%{x}<br>emb_dim=%{y}<br>val_loss=%{z:.4f}<extra>" + arch + "</extra>",
+        ), row=row + 1, col=col + 1)
+    fig.update_yaxes(
+        title_text="Embedding dim" if col == 0 else "",
+        range=[-0.5, len(y_labels) - 0.5], row=row + 1, col=col + 1,
+    )
+    fig.update_xaxes(
+        title_text="Vocabulary size", title_font=dict(size=12), tickangle=0,
+        range=[-0.5, len(x_labels) - 0.5], row=row + 1, col=col + 1,
+    )
+    # force square cells — scaleanchor ties this subplot's y-axis pixel scale to its own x-axis
+    xaxis_id = "x" if idx == 0 else f"x{idx + 1}"
+    fig.update_yaxes(scaleanchor=xaxis_id, scaleratio=1, constrain="domain", row=row + 1, col=col + 1)
+    fig.update_xaxes(constrain="domain", row=row + 1, col=col + 1)
 
 for ann in fig.layout.annotations:
     ann.update(font=dict(size=12))
-fig.add_annotation(
-    text="Vocabulary size", xref="paper", yref="paper",
-    x=0.5, y=-0.12, showarrow=False, font=dict(size=15),
-)
-fig.update_layout(height=290 * n_rows_hm, autosize=True, margin=dict(l=50, r=20, t=40, b=80))
+fig.update_layout(height=500, width=790, margin=dict(l=50, r=20, t=40, b=130))
 fig.show()
 ```
 
+The two knobs don't interact much for FastText — the best cell (emb_dim=128, vocab=2,000, 0.494) and worst (emb_dim=512, vocab=20,000, 0.529) are both corner cases, and the grid is fairly flat in between. Label Attention is more sensitive to vocabulary size, and it compounds with embedding dimension: at emb_dim=64, growing the vocab from 2,000 to 20,000 alone pushes the loss from 0.518 to 0.559 — the single worst cell in the whole grid, and a much bigger swing than the same vocab change produces at emb_dim=128 (0.515→0.541).
+
 ## Prediction analysis
 
-This section examines what the models actually predict, using the best (`train_fraction=0.26`) run of each architecture available so far. Only `FastText` and `FastText + Label Attention` have predictions today — `FATE (L=1)` will be added once its sweep on `train_fraction=0.26` completes. With 679 sub-class targets, a full per-class confusion matrix or example view (as used for Amazon's 5 classes and CLINC150's 150) would be unreadable — figures below are adapted to this scale: the confusion matrix is aggregated to the 21 **sections** (the coarsest NAF level), and confused pairs / examples show the actual sub-class code and its official label rather than a bare class index.
+This section examines what the models actually predict, using the best (`train_fraction=0.26`) run of each architecture available so far. Only `FastText` and `FastText + Label Attention` have predictions today — `FATE (L=1)` will be added once its sweep on `train_fraction=0.26` completes. With 679 sub-class targets, a full per-class confusion matrix or example view (as used for Amazon's 5 classes and CLINC150's 150) would be unreadable — figures below are adapted to this scale: errors are aggregated to the 21 **sections** (the coarsest NAF level) wherever a per-class view would be unreadable, and examples show the actual sub-class code and its official label rather than a bare class index.
 
 ```{python}
 #| label: load-predictions-naf
@@ -469,7 +449,9 @@ This section examines what the models actually predict, using the best (`train_f
 import json
 import urllib.request
 import numpy as np
+from collections import defaultdict
 from pathlib import Path
+from IPython.display import HTML
 
 PRED_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions/naf"
 ARCH_FILES  = {
@@ -519,118 +501,212 @@ def class_code(idx: int) -> str:
 def code_section(code: str) -> str:
     return DIVISION_TO_SECTION.get(code[:2], "?")
 
+def code_division(code: str) -> str:
+    return code[:2]
+
+def code_groupe(code: str) -> str:
+    return code[:2] + "." + code[2:3]
+
+def code_classe(code: str) -> str:
+    return code[:2] + "." + code[2:4]
+
 def code_label(code: str) -> str:
     dotted = code[:2] + "." + code[2:]
     return SOUSCLASSE_LABEL.get(dotted, code)
+
+SECTION_COLOR = {s["id"]: s["color"] for s in _naf_struct["sections"]}
 ```
 
 ::: {.panel-tabset}
 
-### Confusion matrix
+### Accuracy vs. class support
+
+With 679 sub-classes drawn from a corpus that is nowhere near uniform across them, a natural question is: **do errors concentrate in the sub-classes that simply have the fewest training examples?** Each point below is one sub-class; x is how many test examples it has (log scale), y is the model's accuracy restricted to that sub-class.
 
 ```{python}
-#| label: fig-confusion-naf
-#| fig-cap: "Section-level confusion matrix (rows = true section, columns = predicted section, normalised by row). With 679 sub-classes, individual-level display would be unreadable."
+#| label: fig-support-acc-naf
+#| fig-cap: "Per-sub-class accuracy vs. number of test examples for that sub-class (log x-axis)"
 
-from sklearn.metrics import confusion_matrix as sk_cm
-from IPython.display import HTML
-
-n_archs = len(ARCHS_AVAIL)
-fig = go.Figure()
-
-for i, arch in enumerate(ARCHS_AVAIL):
-    d = preds_by_arch[arch]
-    true_sections = [code_section(class_code(y)) for y in d["y_test"]]
-    pred_sections = [code_section(class_code(y)) for y in d["y_pred"]]
-    cm = sk_cm(true_sections, pred_sections, labels=SECTION_ORDER).astype(float)
-    row_sums = cm.sum(axis=1, keepdims=True)
-    row_sums[row_sums == 0] = 1
-    cm_norm = cm / row_sums
-    fig.add_trace(go.Heatmap(
-        z=cm_norm,
-        x=SECTION_ORDER, y=SECTION_ORDER,
-        colorscale="Viridis_r", zmin=0, zmax=1,
-        text=[[f"{v:.2f}" for v in row] for row in cm_norm],
-        texttemplate="%{text}",
-        textfont=dict(size=9),
-        colorbar=dict(title="Fraction", thickness=14),
-        hovertemplate="True=%{y}<br>Pred=%{x}<br>%{z:.3f}<extra></extra>",
-        visible=(i == 0),
-    ))
-
-options = "".join(f'<option value="{i}">{arch}</option>' for i, arch in enumerate(ARCHS_AVAIL))
-fig.update_layout(
-    xaxis=dict(title="Predicted section", tickangle=0),
-    yaxis=dict(title="True section", autorange="reversed"),
-    height=560, width=620,
-    margin=dict(t=20, b=50, l=60, r=20),
-)
-fig_html = fig.to_html(include_plotlyjs=False, div_id="cm-naf", full_html=False)
-
-html = f"""
-<div style="display:flex;flex-direction:column;align-items:center;">
-  <div style="font-family:sans-serif;margin-bottom:0.75rem;">
-    <label for="cm-naf-select" style="font-size:13px;font-weight:600;margin-right:8px;">Model:</label>
-    <select id="cm-naf-select" onchange="cmNafChange(this.value)"
-      style="font-size:13px;padding:4px 8px;border:1px solid #ccc;border-radius:4px;background:#fff;">
-      {options}
-    </select>
-  </div>
-  {fig_html}
-</div>
-<script>
-(function(){{
-  var N={n_archs};
-  window.cmNafChange=function(val){{
-    var idx=parseInt(val), vis=Array(N).fill(false); vis[idx]=true;
-    Plotly.restyle("cm-naf",{{visible:vis}});
-  }};
-}})();
-</script>
-"""
-HTML(html)
-```
-
-### Top confused pairs
-
-```{python}
-#| label: fig-confused-naf
-#| fig-cap: "Top 25 most confused sub-class pairs — bubble size proportional to error count"
-
-import pandas as pd
-
-N_PAIRS = 25
 COLORS = {"FastText": "#2196F3", "FastText + Label Attention": "#00BCD4"}
 
-def top_confused_pairs(y_true, y_pred, n=N_PAIRS):
-    rows = []
-    for t, p in zip(y_true, y_pred):
+fig = go.Figure()
+for arch in ARCHS_AVAIL:
+    d = preds_by_arch[arch]
+    y_test_a, y_pred_a = d["y_test"], d["y_pred"]
+    classes_present = np.unique(y_test_a)
+    support = np.array([(y_test_a == c).sum() for c in classes_present])
+    accuracy = np.array([
+        (y_pred_a[y_test_a == c] == c).mean() for c in classes_present
+    ])
+    hover_codes = [class_code(c) for c in classes_present]
+    hover_labels = [code_label(c) for c in hover_codes]
+    fig.add_trace(go.Scatter(
+        x=support, y=accuracy * 100, mode="markers", name=arch,
+        marker=dict(color=COLORS.get(arch, "grey"), size=6, opacity=0.55,
+                    line=dict(width=0.5, color="white")),
+        customdata=np.stack([hover_codes, hover_labels], axis=1),
+        hovertemplate="<b>%{customdata[0]} — %{customdata[1]}</b><br>"
+                      "test support=%{x}<br>accuracy=%{y:.1f}%<extra>" + arch + "</extra>",
+    ))
+
+TICK_VALS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+TICK_TEXT = ["1", "2", "5", "10", "20", "50", "100", "200", "500", "1k", "2k", "5k", "10k"]
+
+fig.update_layout(
+    xaxis_title="Test-set support for this sub-class (log scale)",
+    yaxis_title="Accuracy on this sub-class (%)",
+    xaxis=dict(type="log", tickvals=TICK_VALS, ticktext=TICK_TEXT),
+    yaxis=dict(range=[-2, 102]),
+    legend_title="Architecture", height=450,
+)
+fig.show()
+```
+
+The funnel shape confirms the hypothesis: below roughly 20 test examples, accuracy swings anywhere from 0% to 100%, but past a few hundred examples it tightens firmly into the 80–100% band. Errors concentrate in the least-represented sub-classes, and the model gets both more accurate and more stable once a sub-class clears a few hundred examples.
+
+### Hierarchical accuracy
+
+The 679-way exact-match accuracy used everywhere else is the strictest possible reading of a wrong prediction — a sub-class miss can still land in the right section, division, group, or class. The two views below unpack this using the NAF hierarchy.
+
+```{python}
+#| label: fig-hierarchy-cascade-naf
+#| fig-cap: "Accuracy by required hierarchy level"
+
+LEVELS = [
+    ("Section",   code_section),
+    ("Division",  code_division),
+    ("Group",     code_groupe),
+    ("Class",     code_classe),
+    ("Sub-class", lambda c: c),
+]
+
+cascade_err = {}  # arch -> [error rate at each LEVELS entry, coarse to fine]
+for arch in ARCHS_AVAIL:
+    d = preds_by_arch[arch]
+    true_codes = [class_code(c) for c in d["y_test"]]
+    pred_codes = [class_code(c) for c in d["y_pred"]]
+    cascade_err[arch] = [
+        100 - np.mean([fn(t) == fn(p) for t, p in zip(true_codes, pred_codes)]) * 100
+        for _, fn in LEVELS
+    ]
+
+fig = go.Figure()
+for arch in ARCHS_AVAIL:
+    fig.add_trace(go.Scatter(
+        x=[lvl for lvl, _ in LEVELS], y=cascade_err[arch], mode="lines+markers", name=arch,
+        line=dict(color=COLORS.get(arch, "grey"), width=2.5), marker=dict(size=10),
+        hovertemplate="%{x}<br>error rate=%{y:.1f}%<extra>" + arch + "</extra>",
+    ))
+
+fig.update_layout(
+    template="simple_white",
+    xaxis_title="Required level of agreement", yaxis_title="Error rate (%)",
+    yaxis=dict(rangemode="tozero"),
+    legend_title="Architecture", height=430,
+)
+fig.show()
+```
+
+As expected, the error rate stays low and climbs only gradually as the required match gets stricter: ≈7% wrong at section level, rising to ≈14–15% wrong requiring the exact sub-class — most predictions are precise enough that relaxing the granularity doesn't recover much extra accuracy. Plotting the error rate instead of the accuracy also means the y-axis can start at a meaningful zero without truncating anything, so the small-but-real climb is actually visible instead of being flattened against a 0–100% accuracy scale.
+
+```{python}
+#| label: fig-hierarchy-errors-naf
+#| fig-cap: "Among wrong predictions, the coarsest NAF level at which they still land correctly"
+
+ERROR_BUCKETS = ["Class", "Group", "Division", "Section", "No match"]
+BUCKET_COLORS = {
+    "Class":      "#66BB6A",
+    "Group":      "#FFCA28",
+    "Division":   "#FB8C00",
+    "Section":    "#E53935",
+    "No match":   "#7B0000",
+}
+
+
+def _finest_match(true_code: str, pred_code: str) -> str:
+    for name, fn in reversed(LEVELS):
+        if fn(true_code) == fn(pred_code):
+            return name
+    return "No match"
+
+
+error_shares = {}  # arch -> {bucket: pct of errors}
+overall_acc = {}  # arch -> exact-match accuracy, for the x-axis subtitle
+for arch in ARCHS_AVAIL:
+    d = preds_by_arch[arch]
+    true_codes = [class_code(c) for c in d["y_test"]]
+    pred_codes = [class_code(c) for c in d["y_pred"]]
+    buckets = [_finest_match(t, p) for t, p in zip(true_codes, pred_codes)]
+    overall_acc[arch] = (pd.Series(buckets) == "Sub-class").mean() * 100
+    errors = [b for b in buckets if b != "Sub-class"]
+    counts = pd.Series(errors).value_counts()
+    error_shares[arch] = {b: counts.get(b, 0) / len(errors) * 100 for b in ERROR_BUCKETS}
+
+x_labels = [
+    f"{arch}<br><i>({100 - overall_acc[arch]:.1f}% of test set is wrong)</i>"
+    for arch in ARCHS_AVAIL
+]
+
+fig = go.Figure()
+for bucket in ERROR_BUCKETS:
+    vals = [error_shares[arch][bucket] for arch in ARCHS_AVAIL]
+    fig.add_trace(go.Bar(
+        x=x_labels, y=vals, name=bucket,
+        marker=dict(color=BUCKET_COLORS[bucket]),
+        text=[f"{v:.1f}%" for v in vals],
+        textposition="inside", insidetextfont=dict(color="white", size=11),
+        hovertemplate="%{x}<br>" + bucket + ": %{y:.1f}% of errors<extra></extra>",
+    ))
+
+fig.update_layout(
+    template="simple_white", barmode="stack",
+    xaxis_title=None, yaxis_title="Share of wrong predictions (%)",
+    yaxis=dict(range=[0, 100]),
+    legend_title="Coarsest level where<br>the miss still lands right", height=480,
+)
+fig.show()
+```
+
+Zooming into the wrong predictions only, that small gap hides a less reassuring story: only ≈8% of errors stay within the correct **class**, while the single largest bucket by far — **≈48–50%** — is "No match", missing even the broad section. The model's overall accuracy looks stable across granularity, but that's an average masking two very different failure modes: most predictions are exactly right, and most of the rest are wildly wrong.
+
+### Top section confusions
+
+The accuracy-vs-support and hierarchical-accuracy views above show that errors happen and roughly how far off they land, but not *which* sections bleed into which. With 21 sections, a full flow diagram between all of them turns into an unreadable tangle — this view instead ranks the single biggest **misclassification flows** (correct predictions excluded): which true section, predicted as which other section, accounts for the most errors.
+
+```{python}
+#| label: fig-topflows-naf
+#| fig-cap: "Top misclassification flows between NAF sections (true section → predicted section)"
+
+N_FLOWS = 15
+
+
+def _top_flows(arch):
+    d = preds_by_arch[arch]
+    true_sec = [code_section(class_code(y)) for y in d["y_test"]]
+    pred_sec = [code_section(class_code(y)) for y in d["y_pred"]]
+    flow_counts = defaultdict(int)
+    for t, p in zip(true_sec, pred_sec):
         if t != p:
-            rows.append((code_label(class_code(t)), code_label(class_code(p))))
-    s = pd.Series(rows).value_counts().head(n).reset_index()
-    s.columns = ["pair", "count"]
-    s[["true_lbl", "pred_lbl"]] = pd.DataFrame(s["pair"].tolist(), index=s.index)
-    return s
+            flow_counts[(t, p)] += 1
+    top = sorted(flow_counts.items(), key=lambda kv: kv[1], reverse=True)[:N_FLOWS]
+    return top[::-1]  # reversed: largest ends up at the top of the horizontal bar
+
 
 n_archs = len(ARCHS_AVAIL)
 fig = go.Figure()
 
 for i, arch in enumerate(ARCHS_AVAIL):
-    d = preds_by_arch[arch]
-    df_pairs = top_confused_pairs(d["y_test"], d["y_pred"])
-    fig.add_trace(go.Scatter(
-        x=df_pairs["pred_lbl"],
-        y=df_pairs["true_lbl"],
-        mode="markers",
-        marker=dict(
-            size=df_pairs["count"] * 4,
-            color=COLORS.get(arch, "grey"),
-            opacity=0.7,
-            line=dict(width=1, color="white"),
-            sizemode="area",
-        ),
-        text=df_pairs["count"],
-        hovertemplate="True: <b>%{y}</b><br>Predicted: <b>%{x}</b><br>Count: %{text}<extra></extra>",
+    top = _top_flows(arch)
+    labels = [f"{t} → {p}" for (t, p), _ in top]
+    counts = [cnt for _, cnt in top]
+    colors = [SECTION_COLOR.get(t, "#888888") for (t, p), _ in top]
+    hover = [f"{SECTION_LABEL.get(t, t)} → {SECTION_LABEL.get(p, p)}" for (t, p), _ in top]
+    fig.add_trace(go.Bar(
+        x=counts, y=labels, orientation="h",
+        marker=dict(color=colors),
+        customdata=hover,
+        text=[str(c) for c in counts], textposition="outside",
+        hovertemplate="<b>%{customdata}</b><br>%{x} misclassifications<extra></extra>",
         visible=(i == 0),
     ))
 
@@ -640,61 +716,15 @@ buttons = [dict(
 ) for i, arch in enumerate(ARCHS_AVAIL)]
 
 fig.update_layout(
-    xaxis=dict(title="Predicted sub-class", tickangle=-35, automargin=True, tickfont=dict(size=9)),
-    yaxis=dict(title="True sub-class", automargin=True, tickfont=dict(size=9)),
-    height=620,
-    margin=dict(l=20, r=20, t=60, b=20),
+    xaxis_title="Number of misclassifications (true → predicted section)",
+    yaxis_title=None,
+    height=550, margin=dict(l=10, r=40, t=60, b=40),
     updatemenus=[dict(
         type="dropdown", buttons=buttons,
-        x=0.5, xanchor="center", y=1.1, yanchor="top",
+        x=0.5, xanchor="center", y=1.08, yanchor="top",
         showactive=True, bgcolor="#f0f0f0", bordercolor="#ccc",
         font=dict(size=12),
     )],
-)
-fig.show()
-```
-
-### Model agreement
-
-Rather than asking *which* model is wrong, this view asks: when models disagree, is that because one is simply weaker, or because the description itself is ambiguous (a business activity that genuinely straddles two sub-classes)? For each test example, we count how many distinct sub-classes the available models collectively predict, then check how often the **majority vote** is correct at each agreement level.
-
-```{python}
-#| label: fig-agreement-naf
-#| fig-cap: "Model agreement vs. correctness"
-
-preds_matrix = np.array([preds_by_arch[a]["y_pred"] for a in ARCHS_AVAIL])
-y_true       = preds_by_arch[ARCHS_AVAIL[0]]["y_test"]
-n_test       = preds_matrix.shape[1]
-n_models     = len(ARCHS_AVAIL)
-
-n_distinct  = np.array([len(set(preds_matrix[:, i])) for i in range(n_test)])
-# argmax breaks ties by lowest class index — majority vote is undefined when all models disagree
-maj_pred    = np.array([np.bincount(preds_matrix[:, i], minlength=679).argmax() for i in range(n_test)])
-maj_correct = (maj_pred == y_true)
-
-levels  = sorted(np.unique(n_distinct).tolist())
-xlabels = ["All agree"] + [f"{k} distinct" for k in levels if k > 1]
-
-share = [(n_distinct == k).mean() * 100 for k in levels]
-acc   = [maj_correct[n_distinct == k].mean() * 100 for k in levels]
-
-fig = go.Figure()
-fig.add_trace(go.Bar(
-    x=xlabels, y=share, name="% of test set", marker_color="#90A4AE",
-    hovertemplate="%{x}<br>%{y:.1f}% of test set<extra></extra>",
-))
-fig.add_trace(go.Scatter(
-    x=xlabels, y=acc, name="Majority-vote accuracy", mode="lines+markers",
-    marker=dict(size=10, color="#C62828"), line=dict(width=3, color="#C62828"),
-    yaxis="y2",
-    hovertemplate="%{x}<br>accuracy: %{y:.1f}%<extra></extra>",
-))
-fig.update_layout(
-    template="simple_white", height=420,
-    yaxis=dict(title="% of test set", range=[0, 100]),
-    yaxis2=dict(title="Majority-vote accuracy (%)", overlaying="y", side="right", range=[0, 100]),
-    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.18, yanchor="top"),
-    margin=dict(t=20, b=80),
 )
 fig.show()
 ```
@@ -798,7 +828,7 @@ HTML(html)
 
 This section turns the spotlight on *why* the models predict what they predict, not just *how often* they're right. The analysis is built around a focused comparison: **FastText** against **FastText + Label Attention** (identical architecture and hyperparameters, mean pooling vs. label attention as the sole difference). Both models are probed with an identical battery of analyses on the *same* 200 sampled test descriptions, so every figure below is a direct, paired comparison rather than two separate reports glued together.
 
-NAF differs from Amazon (5 classes) and CLINC150 (150 classes) in one important way: **679 sub-classes**. Several views used on those pages (a full class × class correlation matrix, one line per class, etc.) would simply be unreadable at this scale, so the figures below either aggregate up to the 21 NAF **sections** (the same coarsest level used for the confusion matrix above) or select a representative subset of sub-classes. There is also no self-attention view here: Amazon and CLINC150 are built on a transformer backbone, but the NAF models compared here are **FastText** and **FastText + Label Attention** — bag-of-embeddings architectures with no self-attention layer, so that instrument doesn't apply.
+NAF differs from Amazon (5 classes) and CLINC150 (150 classes) in one important way: **679 sub-classes**. Several views used on those pages (a full class × class correlation matrix, one line per class, etc.) would simply be unreadable at this scale, so the figures below either aggregate up to the 21 NAF **sections** (the same coarsest level used in Prediction analysis above) or select a representative subset of sub-classes. There is also no self-attention view here: Amazon and CLINC150 are built on a transformer backbone, but the NAF models compared here are **FastText** and **FastText + Label Attention** — bag-of-embeddings architectures with no self-attention layer, so that instrument doesn't apply.
 
 Four complementary instruments are used throughout:
 
@@ -811,7 +841,6 @@ Four complementary instruments are used throughout:
 #| label: load-explain-artifacts-naf
 
 import urllib.request
-from collections import defaultdict
 
 EXPLAIN_BUCKET_NAF  = "https://minio.lab.sspcloud.fr/projet-text-classif/explanations/naf"
 _ARTIFACT_NAMES_NAF = ["captum.npz", "label_attn.npz", "class_vectors.npz", "faithfulness.npz"]

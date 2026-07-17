@@ -1,6 +1,7 @@
 project:
   type: website
   output-dir: _site
+  execute-dir: project
 
 website:
   title: "Interpretable Text Classification at INSEE"
@@ -9,13 +10,13 @@ website:
     left:
       - href: index.qmd
         text: "Intro & Setup"
-      - href: amazon.qmd
+      - href: pages/amazon.qmd
         text: "Amazon"
-      - href: clinc150.qmd
+      - href: pages/clinc150.qmd
         text: "CLINC150"
-      - href: naf.qmd
+      - href: pages/naf.qmd
         text: "NAF"
-      - href: concepts.qmd
+      - href: pages/concepts.qmd
         text: "Concepts"
 
 format:

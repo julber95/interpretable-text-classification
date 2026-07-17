@@ -82,7 +82,7 @@ This section examines two complementary dimensions of the hyperparameter sweep. 
 
 A key observation is that **`n_head` and `lr` do not affect `num_params`**. In a standard transformer, the total size of the attention matrices is $4 \times d^2$ regardless of how many heads are used, since $d_{\text{head}} = d / n_{\text{head}}$. Similarly, `lr` is a training hyperparameter with no effect on architecture. As a result, for any fixed combination of `(emb_dim, n_layers, vocab_size)`, FATE architectures have exactly $3 \times 3 = 9$ runs sharing the same `num_params` (3 values of `n_head` × 3 values of `lr`), while FastText has only $3$ runs (3 values of `lr`, since `n_head` does not apply). This motivates two complementary views:
 
-- **Scatter plot**: all 960 runs, showing the full spread of achievable val_loss for a given parameter budget.
+- **Scatter plot**: all 960 runs, each point being that run's `min_val_loss` (the minimum over its training epochs), showing the full spread of achievable val_loss for a given parameter budget.
 - **Curve plot**: for each `(architecture, emb_dim, vocab_size)` group, take the `min(val_loss)` over `n_head` and `lr`, collapsing the 9 (FATE) or 3 (FastText) runs into a single best-case point, tracing the performance frontier as model capacity grows.
 
 ```{python}
