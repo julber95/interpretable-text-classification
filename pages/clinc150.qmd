@@ -1288,15 +1288,17 @@ else:
 
 ### Word attributions
 
-*Method: Captum (Integrated Gradients)*
+*Method: Captum (Integrated Gradients) vs. label-attention weights*
 
-The fastest way to *trust* or distrust an explanation is to look at it on a real utterance. The figure below renders a handful of test utterances as **highlighted text**: each word's background is shaded in proportion to its Captum attribution score. **Green = pushes toward the selected intent, red = pushes away from it**, with colour intensity proportional to `|score| / max|score|` within that utterance. When a model predicts incorrectly, you can toggle between **predicted** and **true** class to compare what the model *thought* it was reading versus what it should have read.
+The fastest way to *trust* or distrust an explanation is to look at it on a real utterance. Each card below renders one test utterance as **highlighted text**: Mean Pooling's and Label Attention's Captum scores, shaded **green = pushes toward the selected intent, red = pushes away from it**. Comparing these two rows tells you whether the two architectures rely on the same words.
+
+Label Attention also produces its own built-in explanation — cross-attention weights, one query per class over the utterance — shown as a third row (blue intensity = share of attention received). Comparing it against Label Attention's own Captum row tells you whether this built-in mechanism agrees with the post-hoc explanation of *itself* — a meaningful check given that label attention *hurts* on CLINC150, where 100 training examples per class may not be enough for its 150 query vectors to converge to discriminative directions. All three rows share one class selector (top-10 by the model's own confidence ranking, true intent always included), so switching class updates every row at once.
 
 The selection covers four informative cases: utterances where the two architectures **disagree** on the predicted intent; a couple where they **agree and are correct**; cases where **both are wrong**; and cases where **Mean Pooling is correct but Label Attention is not**.
 
 ```{python}
 #| label: fig-explain-highlight
-#| fig-cap: "Highlighted-text view of Captum attributions. When pred ≠ true, toggle between predicted and true class."
+#| fig-cap: "Highlighted-text view combining Mean Pooling's and Label Attention's Captum IG scores with Label Attention's own attention weights. Use the dropdown to switch class."
 import json
 from IPython.display import HTML, display
 
@@ -1327,102 +1329,175 @@ else:
         rng.shuffle(ok)
         picks = ok[:5].tolist()
 
+    HAS_LAT = HAS_LA and lat_la is not None
+    if HAS_LAT:
+        _sample = np.concatenate([lat_la["word_attn"][i].ravel()
+                                   for i in range(min(len(lat_la["word_attn"]), 100))])
+        HAS_LAT = bool(_sample.std() > 1e-9)
+
     examples_explain = []
     for i in picks:
         i = int(i)
         y_true_i = int(cap_la["y_true"][i])
-        words = [str(w) for w in list(cap_la["words"][i])[:40]]
-        entry = {
+        la_pred_i = int(cap_la["y_pred"][i])
+        cap_la_mat = _class_sorted(cap_la, i)
+
+        nw_candidates = [cap_la_mat.shape[1]]
+        if HAS_BOTH:
+            cap_pl_mat = _class_sorted(cap_pl, i)
+            nw_candidates.append(cap_pl_mat.shape[1])
+        if HAS_LAT:
+            lat_mat = lat_la["word_attn"][i]
+            nw_candidates.append(lat_mat.shape[1])
+        nw = min(nw_candidates + [40])
+        words = [str(w) for w in list(cap_la["words"][i])[:nw]]
+
+        # Class dropdown: true + both predicted intents, filled to 10 with the
+        # classes Label Attention's own final softmax score ranked highest —
+        # same class_order-based criterion used for the label-attention heads
+        # figure, so the selection stays consistent across the report.
+        must = {la_pred_i, y_true_i}
+        if HAS_BOTH:
+            must.add(int(cap_pl["y_pred"][i]))
+        top_classes = list(must)
+        for c in [int(c) for c in cap_la["class_order"][i]]:
+            if len(top_classes) >= 10:
+                break
+            if c not in top_classes:
+                top_classes.append(c)
+
+        rows = []
+        if HAS_BOTH:
+            pred = int(cap_pl["y_pred"][i])
+            rows.append({
+                "name": "Mean Pooling — Captum IG", "pred": pred, "kind": "signed",
+                "scores": [cap_pl_mat[c][:nw].tolist() for c in range(N_CLS)],
+            })
+        rows.append({
+            "name": "Label Attention — Captum IG", "pred": la_pred_i, "kind": "signed",
+            "scores": [cap_la_mat[c][:nw].tolist() for c in range(N_CLS)],
+        })
+        if HAS_LAT:
+            rows.append({
+                "name": "Label Attention — attention weights", "pred": la_pred_i, "kind": "unsigned",
+                "scores": [lat_mat[c][:nw].tolist() for c in range(N_CLS)],
+            })
+
+        examples_explain.append({
             "y_true": y_true_i,
             "text":   str(cap_la["texts"][i])[:200],
-            "models": [],
-        }
-        for key in MODEL_KEYS:
-            cap  = CAPTUM[key]
-            pred = int(cap["y_pred"][i])
-            mat  = _class_sorted(cap, i)
-            nw   = len(words)
-            entry["models"].append({
-                "name":        MODEL_LABELS[key],
-                "pred":        pred,
-                "words":       words,
-                "pred_scores": mat[pred][:nw].tolist(),
-                "true_scores": mat[y_true_i][:nw].tolist() if pred != y_true_i else None,
-            })
-        examples_explain.append(entry)
-
-    def _spans_html(words, scores):
-        amax = max((abs(s) for s in scores), default=1) or 1
-        parts = []
-        for j, w in enumerate(words):
-            s = scores[j] if j < len(scores) else 0
-            t = abs(s) / amax
-            rgb = "57,255,20" if s >= 0 else "255,30,30"
-            alpha = round(0.10 + 0.65 * t, 2)
-            parts.append(
-                f'<span style="background-color:rgba({rgb},{alpha});'
-                f'padding:1px 3px;margin:0 1px;line-height:2.3;">{w}</span>'
-            )
-        return " ".join(parts)
-
-    cards_html = []
-    for ex in examples_explain:
-        y_true = ex["y_true"]
-        meta = (
-            f'<div style="font-size:13px;color:#444;margin-bottom:10px;">'
-            f'<b>true intent:</b> <span style="font-weight:700;">{CLASS_NAMES[y_true]}</span>'
-            f' &mdash; <i>&ldquo;{ex["text"]}&rdquo;</i></div>'
-        )
-        models_html = ""
-        for m in ex["models"]:
-            ok  = m["pred"] == y_true
-            bc  = "#2E7D32" if ok else "#B71C1C"
-            mark = "✓ correct" if ok else "✗ incorrect"
-            models_html += (
-                f'<div style="margin:6px 0 12px 0;">'
-                f'<div style="font-size:12.5px;color:#555;margin-bottom:4px;">'
-                f'<b>{m["name"]}</b> → predicts '
-                f'<span style="color:#222;font-weight:700;">{CLASS_NAMES[m["pred"]]}</span> '
-                f'<span style="color:{bc};font-size:11px;">({mark})</span>'
-                f'</div>'
-            )
-            models_html += (
-                f'<div style="font-size:11px;color:#777;margin-bottom:2px;">predicted class</div>'
-                f'<div style="line-height:2.5;">{_spans_html(m["words"], m["pred_scores"])}</div>'
-            )
-            if m["true_scores"] is not None:
-                models_html += (
-                    f'<div style="font-size:11px;color:#777;margin:6px 0 2px 0;">true class</div>'
-                    f'<div style="line-height:2.5;">{_spans_html(m["words"], m["true_scores"])}</div>'
-                )
-            models_html += "</div>"
-        cards_html.append(
-            f'<div style="border:1px solid #e2e2e2;border-radius:8px;padding:14px 16px;'
-            f'background:#fcfcfc;">{meta}{models_html}</div>'
-        )
+            "words":  words,
+            "top_classes": top_classes,
+            "default_class": la_pred_i,
+            "rows": rows,
+        })
 
     nav_id = "hl-nav-clinc"
-    n_cards = len(cards_html)
+    n_cards = len(examples_explain)
     hl_html = f"""
-<div style="font-family:sans-serif;font-size:14px;">
-  <div style="display:flex;align-items:center;gap:12px;justify-content:center;margin-bottom:12px;">
-    <button style="padding:6px 18px;background:#f0f0f0;border:1px solid #ccc;border-radius:5px;cursor:pointer;font-size:13px;"
-            onclick="hlNavClinc(-1)">← Prev</button>
-    <span id="{nav_id}-cnt" style="font-size:12px;color:#999;">1 / {n_cards}</span>
-    <button style="padding:6px 18px;background:#f0f0f0;border:1px solid #ccc;border-radius:5px;cursor:pointer;font-size:13px;"
-            onclick="hlNavClinc(1)">Next →</button>
+<style>
+  .hl-wrap  {{ font-family:sans-serif; font-size:14px; }}
+  .hl-nav   {{ display:flex; align-items:center; gap:12px; justify-content:center; margin-bottom:12px; }}
+  .hl-btn   {{ padding:6px 18px; background:#f0f0f0; border:1px solid #ccc;
+               border-radius:5px; cursor:pointer; font-size:13px; }}
+  .hl-btn:hover {{ background:#e0e0e0; }}
+  .hl-count {{ font-size:12px; color:#999; }}
+  .hl-card  {{ border:1px solid #e2e2e2; border-radius:8px; padding:14px 16px; background:#fcfcfc; }}
+  .hl-meta  {{ font-size:13px; color:#444; margin-bottom:10px; }}
+  .hl-row   {{ margin:6px 0 14px 0; }}
+  .hl-rlbl  {{ font-size:12.5px; color:#555; margin-bottom:4px; }}
+  .hl-words {{ line-height:2.5; }}
+  .hl-sel   {{ padding:4px 8px; font-size:12px; border-radius:4px; border:1px solid #bbb;
+               background:#fff; cursor:pointer; }}
+</style>
+
+<div class="hl-wrap">
+  <div class="hl-nav">
+    <button class="hl-btn" onclick="hlNavClinc(-1)">← Prev</button>
+    <span class="hl-count" id="{nav_id}-cnt"></span>
+    <button class="hl-btn" onclick="hlNavClinc(1)">Next →</button>
   </div>
-  <div id="{nav_id}">{cards_html[0] if cards_html else ""}</div>
+  <div class="hl-card">
+    <div class="hl-meta" id="{nav_id}-meta"></div>
+    <div id="{nav_id}-rows"></div>
+  </div>
 </div>
+
 <script>
 (function() {{
-  window._hlCards = {json.dumps(cards_html)};
-  window._hlCur   = 0;
-  window.hlNavClinc = function(d) {{
-    window._hlCur = (window._hlCur + d + window._hlCards.length) % window._hlCards.length;
-    document.getElementById('{nav_id}').innerHTML = window._hlCards[window._hlCur];
-    document.getElementById('{nav_id}-cnt').textContent = (window._hlCur + 1) + ' / ' + window._hlCards.length;
+  const EX = {json.dumps(examples_explain)};
+  const CN = {json.dumps(CLASS_NAMES)};
+  let cur  = 0;
+  let selC = {{}};
+
+  function esc(s) {{
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }}
+
+  function spansSigned(words, scores) {{
+    const amax = Math.max.apply(null, scores.map(function(x){{ return Math.abs(x); }})) || 1;
+    return words.map(function(w, j) {{
+      const s     = j < scores.length ? scores[j] : 0;
+      const t     = Math.abs(s) / amax;
+      const rgb   = s >= 0 ? '57,255,20' : '255,30,30';
+      const alpha = (0.10 + 0.65 * t).toFixed(2);
+      return '<span style="background-color:rgba(' + rgb + ',' + alpha + ');'
+           + 'padding:1px 3px;margin:0 1px;line-height:2.3;">' + esc(w) + '</span>';
+    }}).join(' ');
+  }}
+
+  function spansUnsigned(words, scores) {{
+    const amax = Math.max.apply(null, scores.map(function(x){{ return Math.abs(x); }})) || 1;
+    return words.map(function(w, j) {{
+      const s     = j < scores.length ? scores[j] : 0;
+      const t     = Math.abs(s) / amax;
+      const alpha = (0.10 + 0.65 * t).toFixed(2);
+      return '<span style="background-color:rgba(21,101,192,' + alpha + ');'
+           + 'padding:1px 3px;margin:0 1px;line-height:2.3;">' + esc(w) + '</span>';
+    }}).join(' ');
+  }}
+
+  function buildSelect(exIdx) {{
+    const e = EX[exIdx];
+    const c = selC[exIdx] !== undefined ? selC[exIdx] : e.default_class;
+    let opts = e.top_classes.map(function(k) {{
+      return '<option value="' + k + '"' + (k === c ? ' selected' : '') + '>' + CN[k] + '</option>';
+    }}).join('');
+    return '<select class="hl-sel" onchange="hlSelClass(' + exIdx + ',+this.value)">' + opts + '</select>';
+  }}
+
+  function render(i) {{
+    const e = EX[i];
+    document.getElementById('{nav_id}-cnt').textContent = (i + 1) + ' / ' + EX.length;
+    document.getElementById('{nav_id}-meta').innerHTML =
+      '<b>true intent:</b> <span style="font-weight:700;">' + esc(CN[e.y_true]) + '</span>'
+      + ' &mdash; <i>&ldquo;' + esc(e.text) + '&rdquo;</i>';
+
+    const c = selC[i] !== undefined ? selC[i] : e.default_class;
+    let h = '<div style="margin-bottom:8px;"><span style="font-size:11px;color:#888;">attributions for (top-10 by model confidence):</span> '
+          + buildSelect(i) + '</div>';
+    e.rows.forEach(function(r) {{
+      const ok   = r.pred === e.y_true;
+      const bc   = ok ? '#2E7D32' : '#B71C1C';
+      const mark = ok ? '✓' : '✗';
+      const spans = r.kind === 'signed'
+          ? spansSigned(e.words, r.scores[c])
+          : spansUnsigned(e.words, r.scores[c]);
+      h += '<div class="hl-row">'
+         + '<div class="hl-rlbl"><b>' + r.name + '</b> &mdash; predicts '
+         + '<span style="color:' + bc + ';font-weight:700;">' + esc(CN[r.pred]) + ' ' + mark + '</span></div>'
+         + '<div class="hl-words">' + spans + '</div>'
+         + '</div>';
+    }});
+    document.getElementById('{nav_id}-rows').innerHTML = h;
+  }}
+
+  window.hlSelClass = function(exIdx, classIdx) {{
+    selC[exIdx] = classIdx;
+    render(cur);
   }};
+  window.hlNavClinc = function(d) {{ cur = (cur + d + EX.length) % EX.length; render(cur); }};
+  render(0);
 }})();
 </script>
 """
@@ -1518,13 +1593,14 @@ else:
     layout_extra = {}
     if HAS_BOTH:
         n_tr = N_DOM
+        CAPTUM_BUTTON_LABELS = {key: f"Captum: {MODEL_LABELS[key]} Architecture" for key in MODEL_KEYS}
         vis  = {key: [j // n_tr == ki for j in range(n_tr * len(MODEL_KEYS))]
                 for ki, key in enumerate(MODEL_KEYS)}
         layout_extra = dict(updatemenus=[dict(
             type="buttons", direction="right", active=0,
-            buttons=[dict(label=MODEL_LABELS[k], method="restyle",
+            buttons=[dict(label=CAPTUM_BUTTON_LABELS[k], method="restyle",
                           args=[{"visible": vis[k]}]) for k in MODEL_KEYS],
-            x=0.5, xanchor="center", y=1.06, yanchor="bottom",
+            x=0.5, xanchor="center", y=1.05, yanchor="bottom",
             showactive=True, bgcolor="#f5f5f5", bordercolor="#ddd", borderwidth=1,
             font=dict(size=12, color="#222"), pad=dict(l=8, r=8, t=4, b=4),
         )])
@@ -1543,7 +1619,7 @@ else:
 
 *Method: Captum (Integrated Gradients)*
 
-A raw 150×150 correlation matrix is unreadable. A more informative approach is to *select* the most interesting classes according to a precise criterion. Two views are shown below, each answering a different question about the attribution profiles. Use the buttons to switch between the two models.
+For each architecture, every intent's per-word mean IG scores (from the previous section) form a length-|vocabulary| profile vector; the Pearson $r$ between every pair of these 150 vectors gives a full 150×150 correlation matrix. That matrix is unreadable as a heatmap, so we *select* 20 intents according to a precise criterion and display only that 20×20 slice. Two such selections are shown below, each answering a different question. Use the buttons to switch between the two architectures.
 
 ```{python}
 #| label: fig-explain-class-correlation-shared
@@ -1578,6 +1654,7 @@ _N_SEL = 20
 
 def _full_corr_fig(sel_indices, sel_labels):
     n_keys = len(MODEL_KEYS)
+    CAPTUM_BUTTON_LABELS = {key: f"Captum: {MODEL_LABELS[key]} Architecture" for key in MODEL_KEYS}
     fig = go.Figure()
     for ki, key in enumerate(MODEL_KEYS):
         sub = _cls_corrs[key][np.ix_(sel_indices, sel_indices)]
@@ -1591,23 +1668,23 @@ def _full_corr_fig(sel_indices, sel_labels):
         ))
     fig.update_layout(
         updatemenus=[dict(
-            type="buttons", direction="right",
-            x=0.0, xanchor="left", y=1.0, yanchor="bottom",
-            pad=dict(b=8),
+            type="buttons", direction="right", active=0,
             buttons=[
-                dict(label=MODEL_LABELS[k],
+                dict(label=CAPTUM_BUTTON_LABELS[k],
                      method="update",
                      args=[{"visible": [ki2 == ki for ki2 in range(n_keys)]}])
                 for ki, k in enumerate(MODEL_KEYS)
             ],
-            bgcolor="white", bordercolor="#888", borderwidth=1,
-            font=dict(size=12),
+            x=0.5, xanchor="center", y=1.05, yanchor="bottom",
+            showactive=True,
+            bgcolor="#f5f5f5", bordercolor="#ddd", borderwidth=1,
+            font=dict(size=12, color="#222"), pad=dict(l=8, r=8, t=4, b=4),
         )],
         yaxis=dict(autorange="reversed"),
         xaxis=dict(tickangle=-40, tickfont=dict(size=9), side="bottom"),
         yaxis_tickfont=dict(size=9),
         height=700,
-        margin=dict(t=50, b=80, l=10, r=90),
+        margin=dict(t=80, b=80, l=10, r=90),
         paper_bgcolor="white", plot_bgcolor="white",
     )
     return fig
@@ -1665,6 +1742,8 @@ else:
 
 ### Self-attention and label attention: how each mechanism reads the utterance
 
+#### Self-attention
+
 *Method: raw self-attention weights*
 
 Both architectures are built on the **same transformer backbone** : they only differ in how its token-level outputs get turned into a classification decision. For the same short utterance, we extract every layer's **per-head self-attention matrices**, for both models, side by side.
@@ -1685,18 +1764,49 @@ else:
 
     n_align  = min(len(SELF_ATTN[k]["texts"]) for k in MODEL_KEYS)
     lengths  = [SELF_ATTN[MODEL_KEYS[0]]["self_attn"][i].shape[-1] for i in range(n_align)]
-    mid_idx  = [i for i, L in enumerate(lengths) if 8 <= L <= 18]
-    cand_idx = mid_idx[:8] if mid_idx else [int(np.argmax(lengths))]
+    mid_idx  = np.array([i for i, L in enumerate(lengths) if 8 <= L <= 18])
+
+    rng = np.random.default_rng(11)
+    cand_idx: list = []
+
+    if len(mid_idx) == 0:
+        cand_idx = [int(np.argmax(lengths))]
+    elif HAS_BOTH:
+        y_true_ref = SELF_ATTN[MODEL_KEYS[0]]["y_true"].astype(int)[mid_idx]
+        y_pred_a   = SELF_ATTN[MODEL_KEYS[0]]["y_pred"].astype(int)[mid_idx]
+        y_pred_b   = SELF_ATTN[MODEL_KEYS[1]]["y_pred"].astype(int)[mid_idx]
+
+        def _pick(mask, k):
+            pool = mid_idx[mask].tolist()
+            rng.shuffle(pool)
+            added = 0
+            for i in pool:
+                if i in cand_idx:
+                    continue
+                cand_idx.append(int(i))
+                added += 1
+                if added >= k:
+                    break
+
+        _pick(y_pred_a != y_pred_b, 2)                                # disagree
+        _pick((y_pred_a == y_pred_b) & (y_pred_a == y_true_ref), 2)   # both correct
+        _pick((y_pred_a != y_true_ref) & (y_pred_b != y_true_ref), 2) # both wrong
+        _pick((y_pred_b == y_true_ref) & (y_pred_a != y_true_ref), 1) # MODEL_KEYS[1] right, MODEL_KEYS[0] wrong
+        _pick((y_pred_a == y_true_ref) & (y_pred_b != y_true_ref), 1) # MODEL_KEYS[0] right, MODEL_KEYS[1] wrong
+        if not cand_idx:
+            cand_idx = mid_idx[:8].tolist()
+    else:
+        cand_idx = mid_idx[:8].tolist()
 
     # Take the minimum across models: the LA model may store extra label-attention heads
     n_layers_ph = min(SELF_ATTN[k]["self_attn_per_head"][cand_idx[0]].shape[0] for k in MODEL_KEYS)
     n_heads_ph  = min(SELF_ATTN[k]["self_attn_per_head"][cand_idx[0]].shape[1] for k in MODEL_KEYS)
     n_models    = len(MODEL_KEYS)
 
-    def _tokens_for(idx, L):
+    def _tokens_for(key, idx, L):
         if HAS_TOKENS:
-            return list(SELF_ATTN[MODEL_KEYS[0]]["tokens"][idx])[:L]
-        raw = str(SELF_ATTN[MODEL_KEYS[0]]["texts"][idx]).split()
+            return list(SELF_ATTN[key]["tokens"][idx])[:L]
+        raw = str(SELF_ATTN[key]["texts"][idx]).split()
         return (raw + [""] * L)[:L]
 
     def _title_for(idx):
@@ -1717,16 +1827,13 @@ else:
     def _layer_frame(idx, layer):
         """z/x/y for one layer, rows=models, cols=heads."""
         per_head = {k: SELF_ATTN[k]["self_attn_per_head"][idx] for k in MODEL_KEYS}
-        L_ref = per_head[MODEL_KEYS[0]].shape[-1]
-        tok_ref = _tokens_for(idx, L_ref)
         z_list, x_list, y_list = [], [], []
         for key in MODEL_KEYS:
+            mat_layer = per_head[key][layer]
+            L_k  = mat_layer.shape[-1]
+            tok_k = _tokens_for(key, idx, L_k)
             for h in range(n_heads_ph):
-                mat = per_head[key][layer, h]
-                L_k = mat.shape[-1]
-                # If a model has fewer tokens than the reference, strip from the front ([CLS])
-                tok_k = tok_ref[L_ref - L_k:] if L_k < L_ref else tok_ref[:L_k]
-                z_list.append(mat)
+                z_list.append(mat_layer[h])
                 x_list.append(tok_k)
                 y_list.append(tok_k)
         return z_list, x_list, y_list
@@ -1759,9 +1866,9 @@ else:
         trace_i = 0
         for ri, key in enumerate(MODEL_KEYS):
             row    = ri + 1
-            show_x = (row == n_models)
             for h in range(n_heads_ph):
                 col    = h + 1
+                show_y = (col == 1)
                 idx_sp = (row - 1) * n_heads_ph + col
                 xref   = "x" if idx_sp == 1 else f"x{idx_sp}"
                 fig_l.add_trace(go.Heatmap(
@@ -1772,11 +1879,11 @@ else:
                 ), row=row, col=col)
                 trace_i += 1
                 fig_l.update_xaxes(
-                    tickangle=-90, tickfont=dict(size=9),
-                    showticklabels=show_x, row=row, col=col,
+                    tickangle=-90, tickfont=dict(size=9), dtick=1,
+                    showticklabels=True, row=row, col=col,
                 )
                 fig_l.update_yaxes(
-                    autorange="reversed", showticklabels=False,
+                    autorange="reversed", showticklabels=show_y, tickfont=dict(size=9), dtick=1,
                     scaleanchor=xref, scaleratio=1, row=row, col=col,
                 )
 
@@ -1785,10 +1892,10 @@ else:
 
         fig_height = plot_sz * n_models + 155
         fig_l.update_layout(
-            width=plot_sz * n_heads_ph + 230,
+            width=plot_sz * n_heads_ph + 180,
             height=fig_height,
             paper_bgcolor="white", plot_bgcolor="white",
-            margin=dict(t=50, b=75, l=30, r=150),
+            margin=dict(t=50, b=75, l=30, r=100),
             coloraxis=dict(colorscale="Viridis", cmin=0, colorbar=dict(title="weight", len=0.8, thickness=14)),
             showlegend=False,
         )
@@ -1873,9 +1980,19 @@ else:
     display(HTML(nav_html))
 ```
 
-Mean Pooling develops a strong, recurring attention-sink column across almost every head and layer**, while Label Attention stays comparatively diffuse, without a single dominant token. This asymmetry makes sense given how each head aggregates information downstream: Mean Pooling averages tokens uniformly, so the encoder itself has to concentrate the relevant signal onto a few tokens beforehand; Label Attention performs its own learned weighting on top of the encoder, so self-attention doesn't need to pre-compress information into a hub token.
+In Label Attention, Layer 1 stays diffuse across all four heads, with no consistent token to settle on. By Layer 2, a couple of heads start to sharpen and lean toward content words, but the rest stay diffuse — the architecture never fully commits to a hub token.
 
-**Label attention heads.** The label-attention module has 4 heads, each producing its own (class × word) attention matrix; these are then averaged into the single aggregated matrix used as the architecture's built-in explanation elsewhere in this section. For one example utterance, the figure below shows all 4 heads' matrices alongside the aggregated matrix. Given that label attention *hurts* on CLINC150, it is worth checking whether the heads have learned anything meaningful or whether their attention is diffuse and unstructured.
+Mean Pooling shows the same progression, only earlier. Already in Layer 1, three of the four heads behave like dedicated summarizers, fixating on the utterance's key content word almost regardless of what the sentence is about — only Head 4 stays diffuse, rarely settling on a single token, much like Label Attention's heads. By Layer 2, everything converges: all four heads now share this same content-focused behaviour.
+
+A plausible explanation is that Mean Pooling has to pre-aggregate the utterance's information onto a handful of tokens before the unweighted average is taken, whereas Label Attention can leave that selection to its own dedicated cross-attention step downstream and instead use its self-attention layers for more local, contextual refinement — which is why its self-attention rarely needs to commit to a single hub token. This matches the same asymmetry observed on Amazon: the same underlying mechanism drives both datasets.
+
+#### Label attention
+
+*Method: raw label-attention weights*
+
+The label-attention module has 4 heads, each producing its own (class × number of words in the utterance) attention matrix. The mean over heads shown below is purely a visualisation aid for this explanation — it is not a computation the model itself performs. Given that label attention *hurts* on CLINC150, it is worth checking whether the heads have learned anything meaningful or whether their attention is diffuse and unstructured.
+
+With 150 intents, each figure below only shows the **10** most relevant: the predicted and true intent, plus the classes the model's final softmax score ranked highest for this utterance — i.e. the classes the model *actually considered*, rather than classes picked from the attention weights themselves. Unlike an attention-based ranking, this selection doesn't depend on the head, so the same 10 classes appear in all 5 panels (4 heads + mean), making them directly comparable.
 
 ```{python}
 #| label: fig-explain-labatt-heads
@@ -1935,21 +2052,18 @@ else:
         words     = [str(w) for w in lat_la["words"][idx]]
         head_attn = lat_la["head_word_attn"][idx]
         agg_attn  = lat_la["word_attn"][idx]
-        y_pred_i  = int(cap_la["y_pred"][idx])
         y_true_i  = int(cap_la["y_true"][idx])
-        must      = {y_pred_i, y_true_i}
+
+        # Rank by the model's final softmax confidence (class_order[0] == y_pred),
+        # not by attention weight: ties the selection to which classes the model
+        # actually considered, and is identical across heads/mean by construction.
+        ranked   = [int(c) for c in cap_la["class_order"][idx]]
+        selected = ranked[:_TOP_K_LAH]
+        if y_true_i not in selected:
+            selected = selected[:-1] + [y_true_i]
+
         z_list, x_list, y_list = [], [], []
         for mat in [head_attn[h] for h in range(n_heads_lah)] + [agg_attn]:
-            ranked = np.argsort(mat.mean(axis=1))[::-1].tolist()
-            # Start with must-include classes, then fill with top-ranked
-            selected = list(must)
-            for c in ranked:
-                if len(selected) >= _TOP_K_LAH:
-                    break
-                if c not in must:
-                    selected.append(c)
-            # Re-sort by attention weight descending for consistent display
-            selected = sorted(selected, key=lambda c: -mat[c].mean())
             z_list.append(mat[selected])
             x_list.append(words)
             y_list.append([_wrap_class_label(CLASS_NAMES[c]) for c in selected])
@@ -1957,36 +2071,45 @@ else:
 
     z0, x0, y0, title0 = _frame_for_lab(lab_idx_list[0])
 
-    # One row of 5 same-sized panels (4 heads + mean) instead of a 2x2 grid with
-    # a mismatched full-width row below, which produced a very flat "mean" panel.
+    # Single row of 5 equal-ish panels (4 heads + mean). Class labels (y-axis)
+    # are shown only once, on the leftmost panel; word labels (x-axis) are
+    # shown under every panel. The mean panel gets a touch more width and a
+    # bolder title to stand out slightly from the 4 individual heads.
     n_words_lah   = len(x0[0])
     n_classes_lah = max(len(yy) for yy in y0)
-    cell_px_lah   = 22
-    panel_labels  = ["Head 1", "Head 2", "Head 3", "Head 4", "Mean over heads"]
+    cell_px_lah   = 21
+    COLS_LAH      = 5
+    subplot_titles_lah = ["Head 1", "Head 2", "Head 3", "Head 4", "Mean over heads"]
 
     fig_lah = make_subplots(
-        rows=1, cols=5,
-        subplot_titles=panel_labels,
-        horizontal_spacing=0.06,
+        rows=1, cols=COLS_LAH,
+        subplot_titles=subplot_titles_lah,
+        column_widths=[0.19, 0.19, 0.19, 0.19, 0.24],
+        horizontal_spacing=0.05,
     )
-    for i in range(5):
+    for i in range(COLS_LAH):
         fig_lah.add_trace(go.Heatmap(
             z=z0[i], x=x0[i], y=y0[i], coloraxis="coloraxis",
             hovertemplate="word=%{x}<br>class=%{y}<br>weight=%{z:.3f}<extra></extra>",
         ), row=1, col=i + 1)
 
     fig_lah.update_xaxes(tickangle=-45, tickfont=dict(size=8))
-    fig_lah.update_yaxes(tickfont=dict(size=7))
+    for col in range(1, COLS_LAH + 1):
+        fig_lah.update_yaxes(showticklabels=(col == 1), tickfont=dict(size=7), row=1, col=col)
 
-    for ann in fig_lah.layout.annotations:
-        ann.font.size = 11
+    for i, ann in enumerate(fig_lah.layout.annotations):
+        ann.font.size = 13 if i == COLS_LAH - 1 else 11
 
     fig_lah.update_layout(
-        width=cell_px_lah * n_words_lah * 5 + 260,
-        height=cell_px_lah * n_classes_lah + 170,
-        coloraxis=dict(colorscale="Viridis", colorbar=dict(title="weight", x=1.02, thickness=14)),
+        width=cell_px_lah * n_words_lah * 5.3 + 40,
+        height=cell_px_lah * n_classes_lah + 260,
+        coloraxis=dict(colorscale="Viridis", colorbar=dict(
+            title="weight", orientation="h",
+            x=0.5, xanchor="center", y=-0.35, yanchor="top",
+            len=0.5, thickness=12,
+        )),
         paper_bgcolor="white", plot_bgcolor="white",
-        margin=dict(t=70, b=90, l=10, r=90),
+        margin=dict(t=90, b=140, l=110, r=10),
         title_text=title0, title_font_size=12,
         title_x=0.5, title_y=0.98, title_yanchor="top",
     )
@@ -2007,13 +2130,16 @@ else:
                 border-radius:5px; cursor:pointer; font-size:13px; }}
   .lah-btn:hover {{ background:#e0e0e0; }}
   .lah-count {{ font-size:12px; color:#999; }}
+  .lah-center {{ display:flex; justify-content:center; }}
 </style>
 <div class="lah-nav">
   <button class="lah-btn" onclick="labattHeadsNav(-1)">← Prev</button>
   <span class="lah-count" id="lah-count"></span>
   <button class="lah-btn" onclick="labattHeadsNav(1)">Next →</button>
 </div>
+<div class="lah-center">
 {lab_plot_html}
+</div>
 <script>
 (function() {{
   const FRAMES = {json.dumps(lab_frames)};
@@ -2030,321 +2156,6 @@ else:
 </script>
 """
     display(HTML(lab_nav_html))
-```
-
-### Class representations: label queries vs. linear-head directions
-
-*Method: weight/embedding geometry*
-
-At the very last step, both architectures reduce an utterance to a decision by comparing some representation of the utterance against **one reference vector per class**:
-
-- Label Attention learns 150 **query embeddings** (`label_embeds`) that drive the cross-attention: they are the model's notion of "what a `book_flight` utterance sounds like", "what a `balance` utterance sounds like", etc.
-- Mean Pooling learns a plain **linear classification head**; each of its 150 weight rows (`linear_weight`) plays the same role: the direction in embedding space onto which the pooled sentence vector is projected for that class.
-
-Both are 150×256 matrices. The same caveats as for Amazon apply: `linear_weight` rows live in a *competitive* space (each row is dotted directly with the sentence embedding to produce a logit, so rows must spread out), whereas `label_embeds` rows are *attention queries* whose geometry has no direct competitive pressure and is several non-linear steps removed from the final decision.
-
-**(a) Cosine similarity matrix**: how aligned are the 150 class vectors with one another, within each model? Visible block structure would reveal clusters of intents whose internal representations are close — semantically similar intents like "book_flight" and "book_hotel" might occupy nearby directions.
-
-```{python}
-#| label: fig-explain-class-cosine
-#| fig-cap: "Cosine similarity between the 150 per-class vectors, per model."
-
-def _cosine_sim(vecs: np.ndarray) -> np.ndarray:
-    n = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-12)
-    return n @ n.T
-
-def _pca_2d(vecs: np.ndarray) -> np.ndarray:
-    centered = vecs - vecs.mean(axis=0, keepdims=True)
-    _, _, Vt = np.linalg.svd(centered, full_matrices=False)
-    return centered @ Vt[:2].T
-
-HAS_CV = HAS_LA and all(CLASS_VECS.get(k) is not None for k in MODEL_KEYS)
-
-if not HAS_CV:
-    print("Class-vector artifacts not yet available.")
-else:
-    titles = [f"{MODEL_LABELS[k]}<br><sub>({str(CLASS_VECS[k]['kind'])})</sub>" for k in MODEL_KEYS]
-    fig_cos = make_subplots(rows=1, cols=len(MODEL_KEYS), subplot_titles=titles)
-    for ci, key in enumerate(MODEL_KEYS):
-        vecs = CLASS_VECS[key]["class_vectors"]
-        sim  = _cosine_sim(vecs)
-        fig_cos.add_trace(go.Heatmap(
-            z=sim, x=CLASS_NAMES, y=CLASS_NAMES, zmin=-1, zmax=1, colorscale="RdBu_r",
-            showscale=(ci == len(MODEL_KEYS) - 1), colorbar=dict(title="cos"),
-            hovertemplate="x=%{x}<br>y=%{y}<br>cos=%{z:.3f}<extra></extra>",
-        ), row=1, col=ci + 1)
-    fig_cos.update_yaxes(autorange="reversed")
-    fig_cos.update_xaxes(tickfont=dict(size=7), tickangle=-90)
-    fig_cos.update_yaxes(tickfont=dict(size=7))
-    fig_cos.update_layout(
-        height=700, paper_bgcolor="white", plot_bgcolor="white",
-        margin=dict(t=60, b=100, l=100, r=10),
-    )
-    fig_cos.show()
-```
-
-**(b) 2D PCA projection**: we project the 150 class vectors onto their first two principal components. Each point is a class, coloured by its index. A tight, undifferentiated cloud suggests the model relies primarily on magnitude rather than direction; visible clusters would confirm that the model has organised the intent space geometrically. Unlike the 5-class Amazon case, there is no natural ordinal ordering to trace, so we simply show the 150 points as a scatter.
-
-```{python}
-#| label: fig-explain-class-pca
-#| fig-cap: "2D PCA projection of the 150 per-class vectors."
-
-if not HAS_CV:
-    print("Class-vector artifacts not yet available.")
-else:
-    fig_pca = make_subplots(rows=1, cols=len(MODEL_KEYS), subplot_titles=titles)
-    for ci, key in enumerate(MODEL_KEYS):
-        vecs = CLASS_VECS[key]["class_vectors"]
-        xy   = _pca_2d(vecs)
-        fig_pca.add_trace(go.Scatter(
-            x=xy[:, 0], y=xy[:, 1], mode="markers+text",
-            text=CLASS_NAMES, textposition="top center", textfont=dict(size=7),
-            marker=dict(size=8, color=PALETTE, line=dict(color="white", width=0.5)),
-            showlegend=False,
-            hovertemplate="<b>%{text}</b><br>PC1=%{x:.3f}<br>PC2=%{y:.3f}<extra></extra>",
-        ), row=1, col=ci + 1)
-    fig_pca.update_xaxes(title_text="PC1")
-    fig_pca.update_yaxes(title_text="PC2", col=1)
-    fig_pca.update_layout(
-        height=500, paper_bgcolor="white", plot_bgcolor="white",
-        margin=dict(t=60, b=20, l=10, r=10),
-    )
-    fig_pca.show()
-```
-
-### Inside label attention: does the mechanism agree with post-hoc explanations?
-
-*Method: Captum (Integrated Gradients) vs. label-attention weights*
-
-Label Attention's built-in explanation — cross-attention weights, one query per class over the utterance — can be compared directly against the gradient-based Captum scores. If the two agree, it is reassuring triangulation: the model's internal routing mechanism and the post-hoc attribution converge on the same words. If they disagree, the label-attention weights are not a faithful account of what drives the prediction.
-
-This comparison is of particular interest here because label attention *hurts* on CLINC150: with only 100 training examples per class, the 150 query vectors do not converge to discriminative directions. If the label-attention weights are largely random or uniform (i.e. the model has not learned meaningful queries), we would expect very low correlation with Captum — the architectural explanation would be uninformative precisely where the architecture fails.
-
-**(a) Side-by-side view.**
-
-```{python}
-#| label: fig-explain-labatt-highlight
-#| fig-cap: "Side-by-side highlighted-text view for the Label Attention model: the top row shades each word by its |Captum IG| score (green = for / red = against the selected class), the bottom row shades the same words by the architecture's own label-attention weight (blue intensity = share of attention received). Use the dropdown to switch class."
-
-HAS_LAT = HAS_LA and lat_la is not None
-
-if not HAS_LAT:
-    print("Label-attention artifacts not yet available.")
-else:
-    _sample = np.concatenate([lat_la["word_attn"][i].ravel()
-                               for i in range(min(len(lat_la["word_attn"]), 100))])
-    if _sample.std() < 1e-9:
-        print("Label-attention word weights are uniform (std ≈ 0) — artifact label_attn.npz needs to be regenerated.")
-    else:
-        y_true_lat = cap_la["y_true"].astype(int)
-        y_pred_lat = cap_la["y_pred"].astype(int)
-        rng2 = np.random.default_rng(7)
-
-        n_pairs   = min(len(cap_la["words"]), len(lat_la["words"]))
-        ok_lat    = np.where(y_pred_lat[:n_pairs] == y_true_lat[:n_pairs])[0]
-        rng2.shuffle(ok_lat)
-        picks_lat = ok_lat[:5].tolist()
-
-        examples_lat = []
-        for i in picks_lat:
-            i = int(i)
-            cap_mat = _class_sorted(cap_la, i)
-            lat_mat = lat_la["word_attn"][i]
-            nw = min(cap_mat.shape[1], lat_mat.shape[1], 40)
-            words = [str(w) for w in list(cap_la["words"][i])[:nw]]
-            examples_lat.append({
-                "y_true": int(cap_la["y_true"][i]),
-                "pred":   int(cap_la["y_pred"][i]),
-                "text":   str(cap_la["texts"][i])[:200],
-                "words":  words,
-                "captum_scores": [cap_mat[c][:nw].tolist() for c in range(N_CLS)],
-                "labatt_scores": [lat_mat[c][:nw].tolist() for c in range(N_CLS)],
-            })
-
-        hl2_html = f"""
-<style>
-  .hl2-wrap   {{ font-family:sans-serif; font-size:14px; }}
-  .hl2-nav    {{ display:flex; align-items:center; gap:12px; justify-content:center; margin-bottom:12px; }}
-  .hl2-btn    {{ padding:6px 18px; background:#f0f0f0; border:1px solid #ccc;
-                 border-radius:5px; cursor:pointer; font-size:13px; }}
-  .hl2-btn:hover {{ background:#e0e0e0; }}
-  .hl2-count  {{ font-size:12px; color:#999; }}
-  .hl2-card   {{ border:1px solid #e2e2e2; border-radius:8px; padding:14px 16px; background:#fcfcfc; }}
-  .hl2-meta   {{ font-size:13px; color:#444; margin-bottom:10px; }}
-  .hl2-row    {{ margin:6px 0 14px 0; }}
-  .hl2-rlbl   {{ font-size:12.5px; color:#555; margin-bottom:4px; }}
-  .hl2-words  {{ line-height:2.5; }}
-  .hl2-sel    {{ padding:4px 8px; font-size:12px; border-radius:4px; border:1px solid #bbb;
-                 background:#fff; cursor:pointer; }}
-</style>
-
-<div class="hl2-wrap">
-  <div class="hl2-nav">
-    <button class="hl2-btn" onclick="hl2Nav(-1)">← Prev</button>
-    <span class="hl2-count" id="hl2-count"></span>
-    <button class="hl2-btn" onclick="hl2Nav(1)">Next →</button>
-  </div>
-  <div class="hl2-card">
-    <div class="hl2-meta" id="hl2-meta"></div>
-    <div id="hl2-rows"></div>
-  </div>
-</div>
-
-<script>
-(function() {{
-  const EX = {json.dumps(examples_lat)};
-  const CN = {json.dumps(CLASS_NAMES)};
-  let cur = 0;
-  let selC = {{}};
-
-  function esc(s) {{
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  }}
-
-  function spansSigned(words, scores) {{
-    const amax = Math.max.apply(null, scores.map(function(x){{ return Math.abs(x); }})) || 1;
-    return words.map(function(w, j) {{
-      const s     = j < scores.length ? scores[j] : 0;
-      const t     = Math.abs(s) / amax;
-      const rgb   = s >= 0 ? '57,255,20' : '255,30,30';
-      const alpha = (0.10 + 0.65 * t).toFixed(2);
-      return '<span style="background-color:rgba(' + rgb + ',' + alpha + ');'
-           + 'padding:1px 3px;margin:0 1px;line-height:2.3;">' + esc(w) + '</span>';
-    }}).join(' ');
-  }}
-
-  function spansUnsigned(words, scores) {{
-    const amax = Math.max.apply(null, scores.map(function(x){{ return Math.abs(x); }})) || 1;
-    return words.map(function(w, j) {{
-      const s     = j < scores.length ? scores[j] : 0;
-      const t     = Math.abs(s) / amax;
-      const alpha = (0.10 + 0.65 * t).toFixed(2);
-      return '<span style="background-color:rgba(21,101,192,' + alpha + ');'
-           + 'padding:1px 3px;margin:0 1px;line-height:2.3;">' + esc(w) + '</span>';
-    }}).join(' ');
-  }}
-
-  function buildSelect2(exIdx, predClass) {{
-    const c = selC[exIdx] !== undefined ? selC[exIdx] : predClass;
-    let opts = CN.map(function(name, k) {{
-      return '<option value="' + k + '"' + (k === c ? ' selected' : '') + '>' + name + '</option>';
-    }}).join('');
-    return '<select class="hl2-sel" onchange="hl2SelClass(' + exIdx + ',+this.value)">' + opts + '</select>';
-  }}
-
-  function render(i) {{
-    const e  = EX[i];
-    document.getElementById('hl2-count').textContent = (i + 1) + ' / ' + EX.length;
-    const ok = e.pred === e.y_true;
-    const bc = ok ? '#2E7D32' : '#B71C1C';
-    document.getElementById('hl2-meta').innerHTML =
-      '<b>Utterance #' + i + '</b> &mdash; true intent: '
-      + '<span style="color:#222;font-weight:700;">' + esc(CN[e.y_true]) + '</span>'
-      + ' &mdash; predicted: <span style="color:' + bc + ';font-weight:700;">' + esc(CN[e.pred]) + '</span>'
-      + ' &mdash; <i>&ldquo;' + esc(e.text) + '&rdquo;</i>';
-
-    const c    = selC[i] !== undefined ? selC[i] : e.pred;
-    let h = '<div style="margin-bottom:8px;"><span style="font-size:11px;color:#888;">attributions for:</span> '
-          + buildSelect2(i, e.pred) + '</div>';
-    h += '<div class="hl2-row">'
-       + '<div class="hl2-rlbl"><b>Captum IG</b> <span style="font-size:11px;color:#888;">(green = for / red = against, gradient-based)</span></div>'
-       + '<div class="hl2-words">' + spansSigned(e.words, e.captum_scores[c]) + '</div>'
-       + '</div>';
-    h += '<div class="hl2-row">'
-       + '<div class="hl2-rlbl"><b>Label Attention</b> <span style="font-size:11px;color:#888;">(blue = attention received, architecture-native)</span></div>'
-       + '<div class="hl2-words">' + spansUnsigned(e.words, e.labatt_scores[c]) + '</div>'
-       + '</div>';
-    document.getElementById('hl2-rows').innerHTML = h;
-  }}
-
-  window.hl2SelClass = function(exIdx, classIdx) {{
-    selC[exIdx] = classIdx;
-    render(cur);
-  }};
-  window.hl2Nav = function(d) {{ cur = (cur + d + EX.length) % EX.length; render(cur); }};
-  render(0);
-}})();
-</script>
-"""
-        display(HTML(hl2_html))
-```
-
-**(b) Quantitative agreement: correlation distributions.** For each utterance and each class, we compute the **Pearson correlation** between the label-attention weights and the absolute Captum scores at word level, then aggregate across examples. If label attention has not learned meaningful queries — as suggested by its lower accuracy on CLINC150 — the overall distribution should be shifted toward zero compared to what is observed on Amazon.
-
-```{python}
-#| label: fig-labatt-corr
-#| fig-cap: "Pearson correlation between label-attention weights and |Captum IG| scores at word level, for the predicted class. Left: overall distribution. Right: breakdown by predicted intent (top-20 most predicted classes)."
-
-from scipy.stats import pearsonr, gaussian_kde
-import pandas as pd
-
-if not HAS_LAT:
-    print("Label-attention artifacts not yet available.")
-else:
-    rows = []
-    n_ex = min(len(cap_la["words"]), len(lat_la["words"]))
-    for i in range(n_ex):
-        cap_mat = _class_sorted(cap_la, i)
-        lat_mat = lat_la["word_attn"][i]
-        nw = min(cap_mat.shape[1], lat_mat.shape[1])
-        if nw < 3:
-            continue
-        y_pred_i = int(cap_la["y_pred"][i])
-        y_true_i = int(cap_la["y_true"][i])
-        for c in range(N_CLS):
-            ig = np.abs(cap_mat[c, :nw])
-            la = lat_mat[c, :nw]
-            if ig.std() < 1e-9 or la.std() < 1e-9:
-                continue
-            r, _ = pearsonr(la, ig)
-            rows.append({
-                "r": float(r),
-                "class": c,
-                "y_pred": y_pred_i,
-                "y_true": y_true_i,
-                "correct": y_pred_i == y_true_i,
-                "is_pred_class": c == y_pred_i,
-            })
-    df_corr  = pd.DataFrame(rows)
-    pred_df  = df_corr[df_corr["is_pred_class"]]
-
-    top_preds = pred_df["y_pred"].value_counts().head(20).index.tolist()
-
-    fig = make_subplots(
-        rows=1, cols=2,
-        subplot_titles=["Overall distribution", "By predicted intent (top-20)"],
-        horizontal_spacing=0.12,
-    )
-
-    r_vals = pred_df["r"].dropna().values
-    kde    = gaussian_kde(r_vals, bw_method=0.25)
-    x_grid = np.linspace(r_vals.min() - 0.05, r_vals.max() + 0.05, 300)
-    kde_y  = kde(x_grid)
-    bin_w  = (r_vals.max() - r_vals.min()) / 25
-    fig.add_trace(go.Histogram(
-        x=r_vals, nbinsx=25, marker_color="#1565C0", opacity=0.5, showlegend=False,
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=x_grid, y=kde_y * len(r_vals) * bin_w,
-        mode="lines", line=dict(color="#1565C0", width=2.5), showlegend=False,
-    ), row=1, col=1)
-    fig.add_vline(x=r_vals.mean(), line_dash="dash", line_color="#B71C1C",
-                  annotation_text=f"mean={r_vals.mean():.2f}",
-                  annotation_position="top right", row=1, col=1)
-
-    for c in top_preds:
-        sub = pred_df[pred_df["y_pred"] == c]["r"]
-        fig.add_trace(go.Box(
-            y=sub, name=CLASS_NAMES[c], marker_color=PALETTE[c],
-            showlegend=False, boxpoints="outliers",
-        ), row=1, col=2)
-
-    fig.update_xaxes(title_text="Pearson r", row=1, col=1)
-    fig.update_yaxes(title_text="Count", row=1, col=1)
-    fig.update_xaxes(tickangle=-45, tickfont=dict(size=9), row=1, col=2)
-    fig.update_yaxes(title_text="Pearson r", row=1, col=2)
-    fig.update_layout(height=450, template="plotly_white", margin=dict(t=50))
-    fig.show()
 ```
 
 ### Are these explanations faithful? A word-deletion stress test
@@ -2390,11 +2201,5 @@ else:
         legend=dict(x=1.02, y=1, xanchor="left"),
     )
     fig_fai.show()
-
-    print("Faithfulness gap — area between the random and guided curves (higher = more faithful):\n")
-    for key in MODEL_KEYS:
-        fai = FAITHFUL[key]
-        gap = float(np.trapezoid(np.nanmean(fai["random_probs"], 0) - np.nanmean(fai["guided_probs"], 0), fai["fractions"]))
-        print(f"  {MODEL_LABELS[key]:<16} {gap:+.4f}")
 ```
 
