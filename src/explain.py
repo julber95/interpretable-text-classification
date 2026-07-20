@@ -171,15 +171,21 @@ def _run_captum(
                 class_order = class_order.cpu().numpy()
 
             for b, text in enumerate(batch_texts):
-                # Reconstruct word strings from character offsets
+                # Reconstruct word strings from character offsets. A word can span
+                # several sub-tokens (e.g. "directions" -> "direct" + "##ions"), all
+                # sharing the same word_id, so the span must grow to cover the last
+                # sub-token's end too — not just the first one's.
                 ids       = np.array([x if x is not None else -1 for x in word_ids_all[b]], dtype=int)
                 valid_pos = np.where(ids >= 0)[0]
-                word_strs: dict[int, str] = {}
+                word_spans: dict[int, list[int]] = {}
                 for pos in valid_pos:
                     wid = int(ids[pos])
-                    if wid not in word_strs:
-                        s, e = offsets[b][pos]
-                        word_strs[wid] = text[s:e]
+                    s, e = offsets[b][pos]
+                    if wid not in word_spans:
+                        word_spans[wid] = [s, e]
+                    else:
+                        word_spans[wid][1] = e
+                word_strs = {wid: text[s:e] for wid, (s, e) in word_spans.items()}
 
                 words = [word_strs[wid] for wid in sorted(word_strs)]
                 all_words.append(words)
@@ -261,11 +267,19 @@ def _run_label_attention(
                     word_attn_b[:, j] = attn_v[:, ids_v == wid].sum(axis=1)
                     head_word_attn_b[:, :, j] = attn_bv[:, :, ids_v == wid].sum(axis=2)
 
-                word_strs: dict[int, str] = {}
+                # A word can span several sub-tokens (e.g. "directions" -> "direct" +
+                # "##ions"), all sharing the same word_id, so the span must grow to
+                # cover the last sub-token's end too — not just the first one's.
+                word_spans: dict[int, list[int]] = {}
                 for pos, wid in enumerate(ids):
-                    if wid >= 0 and wid not in word_strs:
-                        s, e = offsets[b][pos]
-                        word_strs[wid] = text[s:e]
+                    if wid < 0:
+                        continue
+                    s, e = offsets[b][pos]
+                    if wid not in word_spans:
+                        word_spans[wid] = [s, e]
+                    else:
+                        word_spans[wid][1] = e
+                word_strs = {wid: text[s:e] for wid, (s, e) in word_spans.items()}
 
                 all_words.append([word_strs[wid] for wid in unique_w])
                 all_word_attn.append(word_attn_b)             # (n_classes, n_words)
@@ -461,12 +475,20 @@ def _run_faithfulness(
     batch_sz: int,
     seed: int,
     label: str,
+    guided_source: dict | None = None,
 ) -> dict:
     """
-    Comprehensiveness-style faithfulness test, reusing the Captum results: progressively
-    remove the words with the highest |IG score| for the predicted class — word_attn row 0,
-    since class_order (and therefore word_attn's rows) is sorted by confidence — and track
-    how much probability mass the originally predicted class retains.
+    Comprehensiveness-style faithfulness test: progressively remove the words ranked most
+    important for the predicted class, and track how much probability mass the originally
+    predicted class retains.
+
+    By default (guided_source=None), words are ranked by |Captum IG score| for the predicted
+    class — word_attn row 0, since class_order (and therefore word_attn's rows) is sorted by
+    confidence. Passing guided_source (e.g. the label_attn.npz dict) instead ranks words by
+    that source's own word_attn for the predicted class — its rows are indexed by raw class
+    id (not confidence rank), so the predicted class's row is looked up via target_class.
+    This lets the same test be re-run with Label Attention's own weights as the importance
+    signal, to check whether its built-in mechanism is as faithful as the post-hoc Captum one.
 
     A random-removal control of the same size, averaged over n_random draws, isolates the
     effect of *which* words are removed from the effect of removing *any* words: faithful
@@ -480,8 +502,15 @@ def _run_faithfulness(
     rng = np.random.default_rng(seed)
 
     words_list   = [list(w) for w in captum_data["words"][:n_faithfulness]]
-    guided_order = [np.argsort(-np.abs(captum_data["word_attn"][i][0])) for i in range(n_faithfulness)]
     target_class = captum_data["class_order"][:n_faithfulness, 0].astype(int)
+
+    if guided_source is None:
+        guided_order = [np.argsort(-np.abs(captum_data["word_attn"][i][0])) for i in range(n_faithfulness)]
+    else:
+        guided_order = [
+            np.argsort(-np.abs(guided_source["word_attn"][i][target_class[i]]))
+            for i in range(n_faithfulness)
+        ]
 
     n_levels     = len(fractions)
     guided_probs = np.zeros((n_faithfulness, n_levels), dtype=np.float32)
@@ -603,11 +632,20 @@ def main(cfg: DictConfig) -> None:
                 clf, texts, y_sample, captum_data["y_pred"], n_self_attn, batch_sz, label
             )
 
-        # 5. Faithfulness: guided vs. random word-removal curves (both models)
+        # 5. Faithfulness: guided (by Captum) vs. random word-removal curves (both models)
         artifacts["faithfulness.npz"] = _run_faithfulness(
             clf, captum_data, n_faithfulness, faithfulness_fracs,
             faithfulness_random, batch_sz, seed, label,
         )
+
+        # 5b. Same test, but guided by Label Attention's own weights instead of Captum —
+        #     only meaningful for the model that actually has this mechanism.
+        if has_label_attn:
+            artifacts["faithfulness_labatt_weight.npz"] = _run_faithfulness(
+                clf, captum_data, n_faithfulness, faithfulness_fracs,
+                faithfulness_random, batch_sz, seed, label,
+                guided_source=artifacts["label_attn.npz"],
+            )
 
         # ── Log everything to this model's MLflow run ───────────────────────────
         with mlflow.start_run(run_id=run_id):
