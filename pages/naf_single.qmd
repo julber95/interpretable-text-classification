@@ -6,7 +6,7 @@ title: "NAF — Single-level classification"
 
 The model predicts only the finest-grained **sub-class** code (679 classes in the training split) directly, in a single pass, with no auxiliary hierarchy levels — this is the baseline the [Multi-level classification](naf_multilevel.qmd) page is compared against.
 
-The `naf` MLflow experiment mixes runs from three different `train_fraction` sweeps over the same hyperparameter grid: an earlier one at **0.13** (163,615 examples), a later one at **0.26** (314,230 examples), and the latest, largest one at **0.52** (628,461 examples). The corpus itself has 2.3M observations, but only ~1.3M carry a cleaned `libelle` usable as model input — `train_fraction` is taken against that ~1.3M subset, not the raw 2.3M. The rest of this section uses **0.52** only (the largest, most recent sweep) — the figure below is the exception, comparing all three to isolate the effect of training-data size itself.
+The `naf` MLflow experiment mixes runs from four different `train_fraction` sweeps over the same hyperparameter grid: an earlier one at **0.13** (163,615 examples), then **0.26** (314,230 examples), **0.52** (628,461 examples), and the latest, largest one at **1.0** — the full usable set (1,208,579 examples). The corpus itself has 2.3M observations, but only ~1.3M carry a cleaned `libelle` usable as model input — `train_fraction` is taken against that ~1.3M subset, not the raw 2.3M. The rest of this section uses **1.0** only (100% of the usable data, the largest and most recent sweep) — the figure below is the exception, comparing all four to isolate the effect of training-data size itself.
 
 ```{python}
 #| label: fetch-mlflow-naf
@@ -826,16 +826,15 @@ HTML(html)
 
 ## Explainability
 
-This section turns the spotlight on *why* the models predict what they predict, not just *how often* they're right. The analysis is built around a focused comparison: **FastText** against **FastText + Label Attention** (identical architecture and hyperparameters, mean pooling vs. label attention as the sole difference). Both models are probed with an identical battery of analyses on the *same* 200 sampled test descriptions, so every figure below is a direct, paired comparison rather than two separate reports glued together.
+This section turns the spotlight on *why* the models predict what they predict, not just *how often* they're right. The analysis is built around a focused comparison: our best-performing runs of each architecture, **FastText** against **FastText + Label Attention** (identical architecture and hyperparameters, mean pooling vs. label attention as the sole difference). Both models are probed with an identical battery of analyses on the *same* 200 sampled test descriptions, so every figure below is a direct, paired comparison rather than two separate reports glued together.
 
-NAF differs from Amazon (5 classes) and CLINC150 (150 classes) in one important way: **679 sub-classes**. Several views used on those pages (a full class × class correlation matrix, one line per class, etc.) would simply be unreadable at this scale, so the figures below either aggregate up to the 21 NAF **sections** (the same coarsest level used in Prediction analysis above) or select a representative subset of sub-classes. There is also no self-attention view here: Amazon and CLINC150 are built on a transformer backbone, but the NAF models compared here are **FastText** and **FastText + Label Attention** — bag-of-embeddings architectures with no self-attention layer, so that instrument doesn't apply.
+NAF differs from Amazon (5 classes) and CLINC150 (150 classes) in one important way: **679 sub-classes**. Several views used on those pages (a full class × class correlation matrix, one line per class, etc.) would simply be unreadable at this scale, so the figures below either aggregate up to the 21 NAF **sections** or select a representative subset of sub-classes. There is also no self-attention view here: Amazon and CLINC150 are built on a transformer backbone, but the NAF models compared here are **FastText** and **FastText + Label Attention** — bag-of-embeddings architectures with no self-attention layer, so that instrument doesn't apply.
 
-Four complementary instruments are used throughout:
+Three complementary instruments are used throughout:
 
-- **Layer Integrated Gradients (Captum)**: a gradient-based, post-hoc attribution method that assigns every input word a *signed* score for every class: positive = pushes the prediction toward that class, negative = pushes away. It only needs a forward+backward pass through the model, so it can be computed identically for both architectures.
+- **Layer Integrated Gradients (Captum)**: a gradient-based, post-hoc attribution method that assigns every input word a signed score for every class: positive = pushes the prediction toward that sub-class, negative = pushes away. It only needs a forward+backward pass through the model, so it can be computed identically for both architectures which is exactly what makes the comparison fair.
 - **Label-attention weights**: for the Label Attention model only: the *raw cross-attention weights* between each class query and the description's tokens. An explanation that's *built into* the architecture, rather than reconstructed after the fact.
-- **Class direction vectors**: two matrices, one per model, each with one vector per sub-class: the label-attention queries (`label_embeds`, 679×64) from the Label Attention model, and the weight matrix of the linear classification head (`linear_weight`, 679×512) from FastText. `linear_weight` rows are dotted directly with the pooled embedding to produce a logit; `label_embeds` rows are attention queries used earlier in the pipeline, with no direct competitive pressure — the two live at very different points in the network.
-- **A faithfulness (word-deletion) stress test**: attribution scores are only useful if they reflect what the model *actually* relies on, so we test this directly: delete the highest-scoring words and watch the predicted probability collapse (or not).
+- **Class direction vectors**: we compare two 679×emb_dim matrices, one per model: the label-attention queries (`label_embeds`, 679×64) from the Label Attention model, and the weight matrix of the linear classification head (`linear_weight`, 679×512) from FastText. We examine how the 679 sub-class vectors are arranged relative to each other in each matrix, to see what each architecture's internal geometry reveals about the classification space.
 
 ```{python}
 #| label: load-explain-artifacts-naf
@@ -896,13 +895,17 @@ else:
 
 ### Word attributions
 
+*Method: Captum (Integrated Gradients) vs. label-attention weights*
+
 The fastest way to *trust* or distrust an explanation is to look at it on a real description. The figure below renders a handful of test descriptions as **highlighted text**: each word's background is shaded in proportion to its Captum attribution score. **Green = pushes toward the selected sub-class, red = pushes away from it**, with colour intensity proportional to `|score| / max|score|` within that description. When a model predicts incorrectly, you can toggle between **predicted** and **true** class to compare what the model *thought* it was reading versus what it should have read.
 
-The selection covers four informative cases: descriptions where the two architectures **disagree** on the predicted sub-class; a couple where they **agree and are correct**; cases where **both are wrong**; and cases where **FastText is correct but FastText + Label Attention is not**.
+Label Attention also produces its own built-in explanation — cross-attention weights, one query per sub-class over the description — shown as a third row (blue intensity = share of attention received). Comparing it against Label Attention's own Captum row tells you whether this built-in mechanism agrees with the post-hoc explanation of *itself*: a meaningful check here since, with 679 sub-classes, each query vector gets far less signal per class than Amazon's 5 classes trained on 200,000 reviews, but considerably more than CLINC150's 100-example intents — a middle ground consistent with what Training analysis showed above (label attention narrows, but doesn't fully close, the gap with FastText). This row keeps the same predicted/true toggle described above.
+
+The selection below covers four informative cases: descriptions where the two architectures **disagree** on the predicted sub-class (the richest source of qualitative insight: *what* did one model see that the other didn't?); a couple where they **agree and are correct** (a sanity check on what a "good" explanation looks like); cases where **both are wrong** (what misleads them?); and cases where **FastText is correct but FastText + Label Attention is not** (when does the simpler architecture do better?).
 
 ```{python}
 #| label: fig-explain-highlight-naf
-#| fig-cap: "Highlighted-text view of Captum attributions. When pred ≠ true, toggle between predicted and true class."
+#| fig-cap: "Highlighted-text view of Captum attributions for both architectures, plus Label Attention's own attention weights as a third row. When pred ≠ true, toggle between predicted and true class."
 import json
 from IPython.display import HTML, display
 
@@ -936,6 +939,12 @@ else:
         rng.shuffle(ok)
         picks = ok[:5].tolist()
 
+    HAS_LAT = HAS_LA and lat_la is not None
+    if HAS_LAT:
+        _sample = np.concatenate([lat_la["word_attn"][i].ravel()
+                                   for i in range(min(len(lat_la["word_attn"]), 100))])
+        HAS_LAT = bool(_sample.std() > 1e-9)
+
     examples_explain = []
     for i in picks:
         i = int(i)
@@ -951,22 +960,35 @@ else:
             pred = int(cap["y_pred"][i])
             mat  = _class_sorted(cap, i)
             nw   = len(words)
+            short_name = "Label Attention" if key == "labatt" else "Mean Pooling"
             entry["models"].append({
-                "name":        MODEL_LABELS[key],
+                "name":        short_name + (" — Captum IG" if key == "labatt" else ""),
                 "pred":        pred,
+                "kind":        "signed",
                 "words":       words,
                 "pred_scores": mat[pred][:nw].tolist(),
                 "true_scores": mat[y_true_i][:nw].tolist() if pred != y_true_i else None,
             })
+            if key == "labatt" and HAS_LAT:
+                lat_mat = lat_la["word_attn"][i]
+                nw2 = min(nw, lat_mat.shape[1])
+                entry["models"].append({
+                    "name":        "Label Attention — attention weights",
+                    "pred":        pred,
+                    "kind":        "unsigned",
+                    "words":       words[:nw2],
+                    "pred_scores": lat_mat[pred][:nw2].tolist(),
+                    "true_scores": lat_mat[y_true_i][:nw2].tolist() if pred != y_true_i else None,
+                })
         examples_explain.append(entry)
 
-    def _spans_html(words, scores):
+    def _spans_html(words, scores, signed=True):
         amax = max((abs(s) for s in scores), default=1) or 1
         parts = []
         for j, w in enumerate(words):
             s = scores[j] if j < len(scores) else 0
             t = abs(s) / amax
-            rgb = "57,255,20" if s >= 0 else "255,30,30"
+            rgb = ("57,255,20" if s >= 0 else "255,30,30") if signed else "21,101,192"
             alpha = round(0.10 + 0.65 * t, 2)
             parts.append(
                 f'<span style="background-color:rgba({rgb},{alpha});'
@@ -995,14 +1017,15 @@ else:
                 f'<span style="color:{bc};font-size:11px;">({mark})</span>'
                 f'</div>'
             )
+            signed = m.get("kind", "signed") != "unsigned"
             models_html += (
                 f'<div style="font-size:11px;color:#777;margin-bottom:2px;">predicted class</div>'
-                f'<div style="line-height:2.5;">{_spans_html(m["words"], m["pred_scores"])}</div>'
+                f'<div style="line-height:2.5;">{_spans_html(m["words"], m["pred_scores"], signed)}</div>'
             )
             if m["true_scores"] is not None:
                 models_html += (
                     f'<div style="font-size:11px;color:#777;margin:6px 0 2px 0;">true class</div>'
-                    f'<div style="line-height:2.5;">{_spans_html(m["words"], m["true_scores"])}</div>'
+                    f'<div style="line-height:2.5;">{_spans_html(m["words"], m["true_scores"], signed)}</div>'
                 )
             models_html += "</div>"
         cards_html.append(
@@ -1042,13 +1065,16 @@ display(out)
 
 ### Corpus-level word importance
 
-Zooming out from individual descriptions: which words does each architecture rely on *in general* for each **section**? Rather than displaying 679 per-class charts, we aggregate the Captum scores across all sub-classes within each of the 21 NAF sections, keeping only words seen at least 3 times. This gives a compact view of the vocabulary each section relies on — and whether the two architectures agree on what matters.
+*Method: Captum (Integrated Gradients)*
+
+Zooming out from individual descriptions: which words does each architecture rely on *in general* for a given **section**? Rather than displaying 679 per-class charts — or even all 21 sections at once, which turns into unreadable clutter — we keep the **6 sections best represented** in the 200 sampled test descriptions, so the per-section word counts (words seen at least 3 times) stay statistically reliable, and aggregate the Captum scores across all sub-classes within each of them.
 
 ```{python}
 #| label: fig-explain-corpus-naf
-#| fig-cap: "Top-12 most positively-attributed words per section (mean signed Captum IG score averaged across all sub-classes in the section, words seen ≥ 3 times)."
+#| fig-cap: "Top-12 most positively-attributed words for the 6 best-represented sections (mean signed Captum IG score averaged across all sub-classes in the section, words seen ≥ 3 times)."
 
-TOP_K = 12
+TOP_K           = 12
+N_SECTIONS_SHOWN = 6
 
 def _corpus_acc_naf(cap) -> list:
     acc = [defaultdict(list) for _ in range(N_CLS)]
@@ -1077,16 +1103,27 @@ else:
     for i in range(N_CLS):
         section_to_cls[CLASS_SEC[i]].append(i)
 
-    ROWS, COLS = 3, 7
+    # Keep only the sections with the most test examples in this 200-description
+    # sample, so every panel's word counts clear the min_count=3 threshold reliably.
+    y_true_ref = CAPTUM[MODEL_KEYS[0]]["y_true"].astype(int)
+    section_counts = defaultdict(int)
+    for c in y_true_ref:
+        section_counts[CLASS_SEC[c]] += 1
+    top_sections  = sorted(section_counts, key=lambda s: -section_counts[s])[:N_SECTIONS_SHOWN]
+    shown_sections = [s for s in SECTION_ORDER if s in top_sections]
+
+    ROWS, COLS = 2, 3
+    _SECTION_LABEL_SHORT = {"M": "Act. spécialisées, scientifiques et techniques"}
+    titles = [f"{s} — {_SECTION_LABEL_SHORT.get(s, SECTION_LABEL[s])}" for s in shown_sections]
     fig_corp_naf = make_subplots(
         rows=ROWS, cols=COLS,
-        subplot_titles=SECTION_ORDER,
-        horizontal_spacing=0.045,
-        vertical_spacing=0.10,
+        subplot_titles=titles,
+        horizontal_spacing=0.09,
+        vertical_spacing=0.20,
     )
 
     for ki, key in enumerate(MODEL_KEYS):
-        for si, sec in enumerate(SECTION_ORDER):
+        for si, sec in enumerate(shown_sections):
             row = si // COLS + 1
             col = si % COLS + 1
             top    = _section_top([accs_naf[key][c] for c in section_to_cls[sec]])[::-1]
@@ -1096,41 +1133,46 @@ else:
             fig_corp_naf.add_trace(go.Bar(
                 x=ss, y=ws, orientation="h",
                 marker=dict(color=colors, line=dict(width=0)),
-                width=0.55, opacity=0.88, showlegend=False,
+                width=0.6, opacity=0.9, showlegend=False,
                 visible=(ki == 0),
                 hovertemplate="<b>%{y}</b><br>Mean IG: %{x:.4f}<extra></extra>",
             ), row=row, col=col)
 
-    for si, sec in enumerate(SECTION_ORDER):
+    for si, sec in enumerate(shown_sections):
         row, col = si // COLS + 1, si % COLS + 1
         fig_corp_naf.update_xaxes(
             showgrid=True, gridcolor="#f0f0f0", zeroline=True, zerolinecolor="#aaa",
-            tickfont=dict(size=8), row=row, col=col,
+            tickfont=dict(size=10),
+            title_text="Mean IG score",
+            title_font=dict(size=10, color="#777"),
+            row=row, col=col,
         )
-        fig_corp_naf.update_yaxes(tickfont=dict(size=8), showgrid=False, row=row, col=col)
+        fig_corp_naf.update_yaxes(tickfont=dict(size=11), showgrid=False, row=row, col=col)
 
     for i, ann in enumerate(fig_corp_naf.layout.annotations):
-        if i < len(SECTION_ORDER):
-            ann.font.size = 12
-            ann.font.color = SECTION_COLOR[SECTION_ORDER[i]]
+        if i < len(shown_sections):
+            ann.font.size = 13
+            ann.font.color = SECTION_COLOR[shown_sections[i]]
 
     layout_extra = {}
     if HAS_BOTH:
-        n_tr = len(SECTION_ORDER)
+        n_tr = len(shown_sections)
         vis  = {key: [j // n_tr == ki for j in range(n_tr * len(MODEL_KEYS))]
                 for ki, key in enumerate(MODEL_KEYS)}
+        SHORT_LABELS = {"labatt": "Label Attention", "pooling": "Mean Pooling"}
+        BUTTON_LABELS = {k: f"Captum: {SHORT_LABELS[k]} Architecture" for k in MODEL_KEYS}
         layout_extra = dict(updatemenus=[dict(
             type="buttons", direction="right", active=0,
-            buttons=[dict(label=MODEL_LABELS[k], method="restyle",
+            buttons=[dict(label=BUTTON_LABELS[k], method="restyle",
                           args=[{"visible": vis[k]}]) for k in MODEL_KEYS],
-            x=0.5, xanchor="center", y=1.04, yanchor="bottom",
+            x=0.5, xanchor="center", y=1.06, yanchor="bottom",
             showactive=True, bgcolor="#f5f5f5", bordercolor="#ddd", borderwidth=1,
             font=dict(size=12, color="#222"), pad=dict(l=8, r=8, t=4, b=4),
         )])
 
     fig_corp_naf.update_layout(
-        height=1000,
-        margin=dict(t=100 if HAS_BOTH else 60, b=30, l=20, r=20),
+        height=620,
+        margin=dict(t=110 if HAS_BOTH else 70, b=30, l=20, r=20),
         paper_bgcolor="white", plot_bgcolor="white",
         **layout_extra,
     )
@@ -1138,6 +1180,8 @@ else:
 ```
 
 ### Distinctiveness of per-class explanations
+
+*Method: Captum (Integrated Gradients)*
 
 A raw 679×679 correlation matrix is unreadable. A more informative approach is to *select* the most interesting sub-classes according to a precise criterion. Two views are shown below, each answering a different question about the attribution profiles. Use the buttons to switch between the two models. Axis labels are the short NAF sub-class codes (hover for the full official label).
 
@@ -1259,6 +1303,8 @@ else:
 
 ### Class representations: label queries vs. linear-head directions
 
+*Method: weight/embedding geometry*
+
 At the very last step, both architectures reduce a description to a decision by comparing some representation of the description against **one reference vector per sub-class**:
 
 - FastText + Label Attention learns 679 **query embeddings** (`label_embeds`) that drive the cross-attention: they are the model's notion of "what a `6210Y` description sounds like", "what a `4791A` description sounds like", etc.
@@ -1337,6 +1383,8 @@ else:
 ```
 
 ### Inside label attention: does the mechanism agree with post-hoc explanations?
+
+*Method: Captum (Integrated Gradients) vs. label-attention weights*
 
 Label Attention's built-in explanation — cross-attention weights, one query per sub-class over the description — can be compared directly against the gradient-based Captum scores. If the two agree, it is reassuring triangulation: the model's internal routing mechanism and the post-hoc attribution converge on the same words. If they disagree, the label-attention weights are not a faithful account of what drives the prediction.
 
@@ -1572,6 +1620,8 @@ else:
 ```
 
 ### Are these explanations faithful? A word-deletion stress test
+
+*Method: Captum (Integrated Gradients)*
 
 Attribution scores are only meaningful if the model would *actually* change its mind were those words removed. We test this directly: progressively delete the words Captum ranked as most important for the predicted class, and watch how fast that class's predicted probability collapses. As a control, we delete the *same number* of **randomly chosen** words, averaged over 3 draws, isolating the effect of *which* words are removed from the trivial effect of mutilating the description.
 

@@ -8,6 +8,8 @@ The five-level hierarchy of NAF 2025 opens a natural multi-task training strateg
 
 All five NAF levels are used: the **section** (1 letter, 20 codes in the training set out of 21 in the full nomenclature), the **division** (first 2 characters, 84 out of 87), the **group** (first 3 characters, 274 out of 287), the **class** (first 4 characters, 586 out of 651), and the **sub-class** (full 5-character code, 679 out of 747). All five classification heads share a single **TokenEmbedder** — one WordPiece tokenizer and one embedding matrix — that is jointly optimised through the sum of five independent cross-entropy losses. Each level then has its own **SentenceEmbedder** (either mean pooling or label attention) and a **ClassificationHead** (a single linear projection). This design keeps the parameter count modest: only the five separate sentence embedders and linear heads add level-specific parameters on top of the shared trunk. The architecture natively supports additional categorical input variables; they are not used here for simplicity, as the NAF dataset provides only a free-text description.
 
+**A word of caution on "independent": the five heads never talk to each other.** Nothing forces the section, division, group, class, and sub-class predictions for the same example to be mutually consistent — they are five separate softmaxes over five separate label spaces, each optimised against its own ground truth, with no shared constraint tying them to the same underlying NAF code. On [Single-level classification](naf_single.qmd), by contrast, only the sub-class is ever predicted, and every coarser level is a deterministic truncation of that one code — so its levels are *always* mutually consistent by construction, and can never disagree with each other. Here, they can, and do: it is entirely possible for the division head to land on the correct division while the section head (independently) misses, even though the true division determines the true section — an outcome that is mathematically impossible under truncation. This isn't a flaw to fix; it's the entire point of giving each level its own head — but the five predictions shown anywhere on this page should be read as independent opinions, not a single coherent decision. Sharing one token encoder trained on the sum of all five losses could still nudge the heads toward agreeing in practice; whether it actually does is an empirical question the results further down answer directly.
+
 ```{python}
 #| echo: false
 from IPython.display import HTML
@@ -314,4 +316,1047 @@ HTML("""
 </script>
 """)
 ```
+
+## Hyperparameter sweep
+
+Architecture is fixed here (`n_layers=0`, i.e. FastText-style mean pooling — the multi-level trainer does not yet expose the FATE transformer variant), so the sweep covers `embedding_dim` in {64, 128, 256, 512} × `vocab_size` in {2000, 5000, 10000, 20000} × `n_heads_label_attention` in {none, 4} × `lr` in {0.0005, 0.001} — `lr=0.0001` was dropped from this grid, giving 4 × 4 × 2 × 2 = **64 runs** per `train_fraction` rather than 96. As with the [Single-level classification](naf_single.qmd) page, the `naf_multilevel` MLflow experiment mixes three `train_fraction` sweeps over the same grid: **0.13**, **0.26**, and **0.52**. The rest of this section uses **0.52** only (the largest, most recent sweep) — the figure below is the exception, comparing all three to isolate the effect of training-data size itself.
+
+```{python}
+#| label: fetch-mlflow-naf-multilevel
+
+from pathlib import Path
+import mlflow
+import pandas as pd
+
+RENAME_COLS_ML = {
+    "params.embedding_dim":            "emb_dim",
+    "params.vocab_size":               "vocab_size",
+    "params.n_heads_label_attention":  "n_heads_label_attn",
+    "params.lr":                       "lr",
+    "metrics.num_params":              "num_params",
+    "metrics.train_time_s":            "train_time_s",
+    "metrics.val_loss":                "min_val_loss",
+    "metrics.test_accuracy_sec":       "test_accuracy_sec",
+    "metrics.test_accuracy_div":       "test_accuracy_div",
+    "metrics.test_accuracy_grp":       "test_accuracy_grp",
+    "metrics.test_accuracy_cls":       "test_accuracy_cls",
+    "metrics.test_accuracy_sub":       "test_accuracy_sub",
+    "metrics.test_f1_macro_sec":       "test_f1_macro_sec",
+    "metrics.test_f1_macro_div":       "test_f1_macro_div",
+    "metrics.test_f1_macro_grp":       "test_f1_macro_grp",
+    "metrics.test_f1_macro_cls":       "test_f1_macro_cls",
+    "metrics.test_f1_macro_sub":       "test_f1_macro_sub",
+}
+KEY_COLS_ML = ["emb_dim", "vocab_size", "n_heads_label_attn", "lr"]
+
+def arch_label_ml(row):
+    la = str(row["n_heads_label_attn"]) == "4"
+    return "FastText + Label Attention" if la else "FastText"
+
+def fetch_runs_ml(experiment_name: str, cache_path: Path, train_fraction: float) -> pd.DataFrame:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if cache_path.exists():
+        return pd.read_csv(cache_path)
+    raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
+    raw = raw[raw["status"] == "FINISHED"].copy()
+    raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
+    raw = raw.rename(columns={k: v for k, v in RENAME_COLS_ML.items() if k in raw.columns})
+    for col in ["emb_dim", "vocab_size"]:
+        raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
+    raw["lr"]         = raw["lr"].astype(float)
+    raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
+    raw["architecture"] = raw.apply(arch_label_ml, axis=1)
+    raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS_ML, keep="first")
+    raw.to_csv(cache_path, index=False)
+    return raw
+
+# train_fraction=0.13 — earliest, smallest sweep
+df_ml_frac13 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac13.csv"), train_fraction=0.13)
+
+# train_fraction=0.26 — intermediate sweep
+df_ml_frac26 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac26.csv"), train_fraction=0.26)
+
+# train_fraction=0.52 — latest, largest sweep — used as the main dataset below
+df_ml_frac52 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac52.csv"), train_fraction=0.52)
+
+df_ml = df_ml_frac52
+```
+
+```{python}
+#| label: fig-trainsize-naf-multilevel
+#| fig-cap: "Validation loss vs. training set size, by architecture"
+
+import plotly.graph_objects as go
+
+COLORS_ML = {
+    "FastText":                          "#2196F3",
+    "FastText + Label Attention":        "#00BCD4",
+}
+N_TRAIN_ML = {0.13: 163615, 0.26: 327230, 0.52: 654461}
+
+means13 = df_ml_frac13.groupby("architecture")["min_val_loss"].mean()
+means26 = df_ml_frac26.groupby("architecture")["min_val_loss"].mean()
+means52 = df_ml_frac52.groupby("architecture")["min_val_loss"].mean()
+
+fig = go.Figure()
+for arch in COLORS_ML:
+    fig.add_trace(go.Scatter(
+        x=[N_TRAIN_ML[0.13], N_TRAIN_ML[0.26], N_TRAIN_ML[0.52]],
+        y=[means13[arch], means26[arch], means52[arch]],
+        mode="lines+markers", name=arch,
+        line=dict(color=COLORS_ML[arch], width=2), marker=dict(size=9),
+        hovertemplate="train size=%{x:,}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+fig.update_layout(
+    xaxis_title="Training set size", yaxis_title="Mean validation loss",
+    xaxis=dict(
+        tickvals=[N_TRAIN_ML[0.13], N_TRAIN_ML[0.26], N_TRAIN_ML[0.52]],
+        ticktext=["163,615", "327,230", "654,461"],
+    ),
+    legend_title="Architecture", height=430,
+)
+fig.show()
+```
+
+Growing the training data (163,615 → 327,230 → 654,461 examples) steadily improves mean validation loss for both architectures — FastText from ≈0.537 to ≈0.491 to ≈0.457, FastText + Label Attention from ≈0.723 to ≈0.591 to ≈0.492 — with the label-attention variant benefiting more at each step, the same pattern as [Single-level classification](naf_single.qmd): the gap between the two architectures narrows from ≈0.186 at 163,615 examples to ≈0.100 at 327,230 to ≈0.035 at 654,461, as label attention gets enough examples per class to learn meaningful per-class query vectors — here shared jointly across five hierarchy levels rather than one.
+
+### Capacity & robustness
+
+::: {.panel-tabset}
+#### Val loss vs. parameters
+
+```{python}
+#| label: fig-pareto-naf-multilevel
+#| fig-cap: "Validation loss vs. number of parameters"
+
+ARCHS_PRESENT_ML = [a for a in COLORS_ML if a in df_ml["architecture"].unique()]
+
+df_ml_curves = (
+    df_ml.groupby(["architecture", "emb_dim", "vocab_size", "num_params"], as_index=False)
+    ["min_val_loss"].min()
+    .sort_values("num_params")
+)
+
+fig = go.Figure()
+
+for arch in ARCHS_PRESENT_ML:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS_ML[arch], size=8, opacity=1.0),
+    ))
+
+for arch, group in df_ml.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["num_params"], y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS_ML.get(arch, "grey"), size=5, opacity=0.3),
+        hovertemplate="params=%{x:,}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+for arch, group in df_ml_curves.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["num_params"], y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS_ML.get(arch, "grey"), width=2), marker=dict(size=5),
+        hovertemplate="params=%{x:,}<br>best val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+y_cap_ml = df_ml["min_val_loss"].quantile(0.95)
+fig.update_layout(
+    xaxis_title="Number of parameters",
+    yaxis_title="Validation loss",
+    legend_title="Architecture",
+    height=450,
+    xaxis=dict(tickformat=".2s"),
+    yaxis=dict(range=[df_ml["min_val_loss"].min() * 0.98, y_cap_ml]),
+)
+fig.show()
+```
+
+As on the single-level page, there's no clean pareto frontier — `num_params` mixes together `vocab_size` and `emb_dim`, whose individual effects pull in different directions (see the interaction heatmap further down). Label attention consistently **hurts** here too, but the gap is modest at this data size (mean val loss ≈0.457 for FastText vs. ≈0.492 for FastText + Label Attention, a ≈0.035 gap) — five classification heads sharing one token encoder mean label attention gets exactly as many training examples per class as the single-level baseline, and the gap is comparable to `naf_single.qmd`'s.
+
+#### Stability
+
+```{python}
+#| label: fig-violin-naf-multilevel
+#| fig-cap: "Distribution of validation loss by architecture"
+
+fig = go.Figure()
+for arch in ARCHS_PRESENT_ML:
+    color = COLORS_ML[arch]
+    vals  = df_ml[df_ml["architecture"] == arch]["min_val_loss"].dropna()
+    fig.add_trace(go.Violin(
+        y=vals, name=arch,
+        side="both",
+        fillcolor=color, opacity=0.25,
+        line=dict(color=color, width=1.5),
+        box_visible=False, meanline_visible=False,
+        points=False, showlegend=False, hoverinfo="skip",
+    ))
+    fig.add_trace(go.Box(
+        y=vals, name=arch,
+        marker=dict(color=color, size=3, opacity=0.4),
+        line=dict(color=color, width=1.5),
+        fillcolor="white", boxmean="sd", width=0.12,
+        showlegend=False,
+        hovertemplate="<b>" + arch + "</b><br>median=%{median:.4f}<br>Q1=%{q1:.4f}<br>Q3=%{q3:.4f}<extra></extra>",
+    ))
+
+fig.update_layout(
+    template="simple_white",
+    yaxis_title="Validation loss",
+    yaxis=dict(gridcolor="#e8e8e8"),
+    showlegend=False, height=430,
+    violingap=0.4, boxgap=0.4,
+)
+fig.show()
+```
+
+FastText is also more stable, not just better on average: its results cluster tightly (std ≈0.0095) while Label Attention spreads almost twice as wide (std ≈0.0176) — the same direction as the single-level page, though slightly less extreme here.
+
+:::
+
+### Effect of vocabulary size and embedding dimension
+
+::: {.panel-tabset}
+#### Vocabulary size
+
+```{python}
+#| label: fig-vocab-naf-multilevel
+#| fig-cap: "Effect of vocabulary size on validation loss"
+
+vocab_vals_ml = sorted(df_ml["vocab_size"].dropna().unique())
+emb_vals_ml   = sorted(df_ml["emb_dim"].dropna().unique())
+
+df_ml_vocab_mean = (
+    df_ml.groupby(["architecture", "vocab_size"], as_index=False)["min_val_loss"].mean()
+    .sort_values("vocab_size")
+)
+
+vocab_offsets_ml = {
+    "FastText":                          -150,
+    "FastText + Label Attention":        +150,
+}
+
+fig = go.Figure()
+for arch in ARCHS_PRESENT_ML:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS_ML[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df_ml.groupby("architecture"):
+    offset = vocab_offsets_ml.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["vocab_size"] + offset, y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS_ML.get(arch, "grey"), size=5, opacity=0.15),
+        hovertemplate="vocab=%{customdata:,}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["vocab_size"],
+    ))
+for arch, group in df_ml_vocab_mean.groupby("architecture"):
+    offset = vocab_offsets_ml.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["vocab_size"] + offset, y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS_ML.get(arch, "grey"), width=2), marker=dict(size=6),
+        hovertemplate="vocab=%{customdata:,}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["vocab_size"],
+    ))
+fig.update_layout(
+    xaxis_title="Vocabulary size", yaxis_title="Validation loss",
+    xaxis=dict(tickvals=vocab_vals_ml, ticktext=[f"{v:,}" for v in vocab_vals_ml]),
+    legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
+    height=430, width=740, margin=dict(l=60, r=20),
+)
+fig.show()
+```
+
+FastText is essentially flat across vocabulary size (0.4615→0.4524→0.4549→0.4589 from 2,000 to 20,000 tokens, best at 5,000), while FastText + Label Attention degrades steadily and more steeply (0.4783→0.4834→0.4973→0.5106) — the same sparse-coverage effect as CLINC150 and the single-level page, and here it hits five classification heads at once instead of one.
+
+#### Embedding dimension
+
+```{python}
+#| label: fig-emb-naf-multilevel
+#| fig-cap: "Effect of embedding dimension on validation loss"
+
+df_ml_emb_mean = (
+    df_ml.groupby(["architecture", "emb_dim"], as_index=False)["min_val_loss"].mean()
+    .sort_values("emb_dim")
+)
+
+emb_offsets_ml = {
+    "FastText":                          -9,
+    "FastText + Label Attention":        +9,
+}
+
+fig = go.Figure()
+for arch in ARCHS_PRESENT_ML:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS_ML[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df_ml.groupby("architecture"):
+    offset = emb_offsets_ml.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["emb_dim"] + offset, y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS_ML.get(arch, "grey"), size=5, opacity=0.15),
+        hovertemplate="emb_dim=%{customdata}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["emb_dim"],
+    ))
+for arch, group in df_ml_emb_mean.groupby("architecture"):
+    offset = emb_offsets_ml.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["emb_dim"] + offset, y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS_ML.get(arch, "grey"), width=2), marker=dict(size=6),
+        hovertemplate="emb_dim=%{customdata}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["emb_dim"],
+    ))
+fig.update_layout(
+    xaxis_title="Embedding dimension", yaxis_title="Validation loss",
+    xaxis=dict(tickvals=emb_vals_ml, ticktext=[str(v) for v in emb_vals_ml]),
+    legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
+    height=430, width=740, margin=dict(l=60, r=20),
+)
+fig.show()
+```
+
+Both architectures follow a mild U-shape, best around emb_dim=256 (FastText: 0.4658→0.4530→0.4513→0.4575 from 64 to 512; Label Attention: 0.5046→0.4897→0.4820→0.4932) — unlike the single-level page, where FastText was essentially flat, here more capacity helps up to a point before overfitting the smaller `num_train` relative to the extra parameters five heads add.
+
+:::
+
+### Training time
+
+```{python}
+#| label: fig-train-time-naf-multilevel
+#| fig-cap: "Validation loss vs. training time"
+
+SYMBOLS_ML = {"FastText": "circle", "FastText + Label Attention": "diamond"}
+
+fig = go.Figure()
+for arch in ARCHS_PRESENT_ML:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS_ML[arch], size=8, symbol=SYMBOLS_ML.get(arch, "circle"), opacity=1.0),
+    ))
+for arch, group in df_ml.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["train_time_s"], y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(
+            color=COLORS_ML.get(arch, "grey"), size=7,
+            symbol=SYMBOLS_ML.get(arch, "circle"),
+            opacity=0.65, line=dict(width=0.5, color="white"),
+        ),
+        hovertemplate="time=%{x:.0f}s<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+fig.update_layout(
+    xaxis_title="Training time (s)", yaxis_title="Validation loss",
+    legend_title="Architecture", height=430,
+    xaxis=dict(
+        type="log",
+        tickvals=[1000, 2000, 5000, 10000, 20000, 50000, 100000],
+        ticktext=["1k", "2k", "5k", "10k", "20k", "50k", "100k"],
+    ),
+)
+fig.show()
+```
+
+Label attention trains dramatically **slower** here — mean ≈25,490s (≈7.1h) vs. ≈5,050s (≈1.4h) for FastText, roughly a 5× gap and proportionally wider than on the single-level page (≈2.5×): five heads sharing one label-attention-driven sentence embedder mean five times the cross-attention computation per forward pass, and with enough data to keep improving the run rarely stops early, paying that per-step cost for the whole training budget.
+
+### Interaction: embedding dimension × vocabulary size
+
+```{python}
+#| label: fig-heatmap-naf-multilevel
+#| fig-cap: "Mean validation loss by embedding dimension and vocabulary size"
+
+import numpy as np
+from plotly.subplots import make_subplots
+
+vmin_ml = df_ml.groupby(["architecture", "emb_dim", "vocab_size"])["min_val_loss"].mean().min()
+vmax_ml = df_ml.groupby(["architecture", "emb_dim", "vocab_size"])["min_val_loss"].mean().max()
+
+n_cols_hm_ml = min(2, len(ARCHS_PRESENT_ML))
+n_rows_hm_ml = (len(ARCHS_PRESENT_ML) + n_cols_hm_ml - 1) // n_cols_hm_ml
+fig = make_subplots(rows=n_rows_hm_ml, cols=n_cols_hm_ml, subplot_titles=ARCHS_PRESENT_ML,
+                    horizontal_spacing=0.08, vertical_spacing=0.28)
+
+for idx, arch in enumerate(ARCHS_PRESENT_ML):
+    row, col = divmod(idx, n_cols_hm_ml)
+    pivot = (
+        df_ml[df_ml["architecture"] == arch]
+        .groupby(["emb_dim", "vocab_size"])["min_val_loss"].mean()
+        .unstack("vocab_size")
+        .reindex(index=emb_vals_ml, columns=vocab_vals_ml)
+    )
+    x_labels = [f"{v // 1000}k" for v in vocab_vals_ml]
+    y_labels = [str(v) for v in emb_vals_ml]
+
+    is_dark = (pivot.values - vmin_ml) / (vmax_ml - vmin_ml) > 0.65
+    for mask, text_color, show_scale in [(~is_dark, "#333333", idx == 0), (is_dark, "#ffffff", False)]:
+        z_masked = np.where(mask, pivot.values, np.nan)
+        fig.add_trace(go.Heatmap(
+            z=z_masked,
+            x=x_labels,
+            y=y_labels,
+            colorscale="Viridis_r",
+            zmin=vmin_ml, zmax=vmax_ml,
+            text=[[f"{v:.3f}" if not np.isnan(v) else "" for v in row_] for row_ in z_masked],
+            texttemplate="%{text}",
+            textfont=dict(color=text_color),
+            showscale=show_scale,
+            colorbar=dict(title="Mean val loss", orientation="h", x=0.5, xanchor="center",
+                          y=-0.38, yanchor="top", len=0.5, thickness=18, title_side="bottom") if show_scale else None,
+            hovertemplate="vocab=%{x}<br>emb_dim=%{y}<br>val_loss=%{z:.4f}<extra>" + arch + "</extra>",
+        ), row=row + 1, col=col + 1)
+    fig.update_yaxes(
+        title_text="Embedding dim" if col == 0 else "",
+        range=[-0.5, len(y_labels) - 0.5], row=row + 1, col=col + 1,
+    )
+    fig.update_xaxes(
+        title_text="Vocabulary size", title_font=dict(size=12), tickangle=0,
+        range=[-0.5, len(x_labels) - 0.5], row=row + 1, col=col + 1,
+    )
+    xaxis_id = "x" if idx == 0 else f"x{idx + 1}"
+    fig.update_yaxes(scaleanchor=xaxis_id, scaleratio=1, constrain="domain", row=row + 1, col=col + 1)
+    fig.update_xaxes(constrain="domain", row=row + 1, col=col + 1)
+
+for ann in fig.layout.annotations:
+    ann.update(font=dict(size=12))
+fig.update_layout(height=500, width=790, margin=dict(l=50, r=20, t=40, b=130))
+fig.show()
+```
+
+FastText is fairly flat across the grid — best cell (emb_dim=256, vocab=5,000, 0.447) and worst (emb_dim=64, vocab=2,000, 0.474) are close together. Label Attention is far more sensitive, and vocabulary size's effect compounds with embedding dimension exactly as on the single-level page: at emb_dim=64, growing the vocab from 2,000 to 20,000 pushes the loss from 0.486 to 0.533 (the single worst cell in the whole grid, a 0.046 swing), while the same vocab change at emb_dim=512 moves it only from 0.489 to 0.501 (a 0.012 swing) — more capacity in the token embedder makes label attention markedly more robust to a larger, sparser vocabulary.
+
+## Prediction analysis and comparison with single-level
+
+This section examines what the models actually predict, using the same two architectures as [Single-level classification](naf_single.qmd) — `FastText` and `FastText + Label Attention`. Unlike that page, exact-match accuracy on the 679 sub-classes is not the only thing available here: the model predicts all five hierarchy levels **directly**, through five independent classification heads sharing one token encoder, rather than deriving coarser levels by truncating a single sub-class prediction. On the single-level page, only the sub-class code is predicted (e.g. `6820G`); the coarser levels are never predicted themselves, just mechanically cut from that one string (`code[:2]` for the division, `code[:4]` for the class, etc.). Here, each level gets its own dedicated prediction, so — unlike a truncated code, which is right at every coarser level whenever the sub-class is right — the five levels can disagree with each other (e.g. a correct section with a wrong sub-class).
+
+```{python}
+#| label: load-predictions-naf-multilevel
+
+import json
+import urllib.request
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from IPython.display import HTML
+
+PRED_BUCKET_ML = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions/naf_multilevel"
+ARCH_FILES_ML  = {
+    "FastText":                   "fasttext.npz",
+    "FastText + Label Attention": "fasttext_labatt.npz",
+}
+LEVEL_NAMES     = ["sec", "div", "grp", "cls", "sub"]
+LEVEL_LABELS_ML = {"sec": "Section", "div": "Division", "grp": "Group", "cls": "Class", "sub": "Sub-class"}
+NAF_PARQUET_URL = "https://minio.lab.sspcloud.fr/projet-text-classif/datasets/naf_merged.parquet"
+
+PREDS_DIR_ML = Path("results/naf_multilevel/preds")
+PREDS_DIR_ML.mkdir(parents=True, exist_ok=True)
+
+preds_by_arch_ml = {}   # arch -> {"y_test": (N,5), "y_pred_<level>": (N,)}
+for arch, fname in ARCH_FILES_ML.items():
+    cache = PREDS_DIR_ML / fname
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{PRED_BUCKET_ML}/{fname}", cache)
+        d = np.load(cache, allow_pickle=True)
+        preds_by_arch_ml[arch] = {"y_test": d["y_test"].astype(int)}
+        preds_by_arch_ml[arch].update({
+            f"y_pred_{lvl}": d[f"y_pred_{lvl}"].astype(int) for lvl in LEVEL_NAMES
+        })
+    except Exception:
+        pass
+
+ARCHS_AVAIL_ML = list(preds_by_arch_ml.keys())
+
+# The npz predictions only carry integer-encoded labels, not raw text or NAF codes.
+# Both are fully reconstructible offline: the test split (seed=42, val_size=
+# test_size=25000, independent of train_fraction since only the train split is
+# subsampled) and the per-level label encoders (fit on the full deduplicated
+# corpus) are deterministic — see src/multilevel/naf_data.py::load_naf. Cached
+# here so this only re-downloads/re-fits once.
+classes_cache = PREDS_DIR_ML / "level_classes.json"
+if classes_cache.exists():
+    LEVEL_CLASSES = json.loads(classes_cache.read_text())
+else:
+    df_full_ml = pd.read_parquet(NAF_PARQUET_URL, columns=["libelle_cleaned"] + LEVEL_NAMES).dropna()
+    LEVEL_CLASSES = {lvl: sorted(df_full_ml[lvl].astype(str).unique().tolist()) for lvl in LEVEL_NAMES}
+    classes_cache.write_text(json.dumps(LEVEL_CLASSES))
+
+test_cache = PREDS_DIR_ML / "test_reconstruction.parquet"
+if test_cache.exists():
+    df_test_ml = pd.read_parquet(test_cache)
+else:
+    df_full_ml = pd.read_parquet(NAF_PARQUET_URL, columns=["libelle_cleaned"] + LEVEL_NAMES)
+    df_full_ml = df_full_ml.dropna().reset_index(drop=True)
+    df_full_ml = df_full_ml.sample(frac=1, random_state=42).reset_index(drop=True)
+    df_test_ml = df_full_ml.iloc[len(df_full_ml) - 25000:].reset_index(drop=True)
+    df_test_ml.to_parquet(test_cache)
+
+X_TEST_ML = df_test_ml["libelle_cleaned"].values
+
+with open("assets/naf2025_structure.json") as f:
+    _naf_struct_ml = json.load(f)
+SECTION_LABEL_ML    = {s["id"]: s["label"] for s in _naf_struct_ml["sections"]}
+SECTION_COLOR_ML     = {s["id"]: s["color"] for s in _naf_struct_ml["sections"]}
+SOUSCLASSE_LABEL_ML = _naf_struct_ml["sousclasses"]  # keyed like "01.11Y"
+
+def code_of(level: str, idx: int) -> str:
+    return LEVEL_CLASSES[level][idx]
+
+def label_of(level: str, code: str) -> str:
+    # Only sections and sub-classes carry a human-readable label in
+    # naf2025_structure.json — division/group/class entries only reference
+    # their children, so those levels fall back to the bare code.
+    if level == "sec":
+        return SECTION_LABEL_ML.get(code, code)
+    if level == "sub":
+        dotted = code[:2] + "." + code[2:]
+        return SOUSCLASSE_LABEL_ML.get(dotted, code)
+    return code
+```
+
+::: {.panel-tabset}
+
+### Accuracy vs. class support
+
+Same question as on the single-level page, restricted to the finest (**sub-class**) head: **do errors concentrate in the sub-classes with the fewest training examples?**
+
+```{python}
+#| label: fig-support-acc-naf-multilevel
+#| fig-cap: "Per-sub-class accuracy vs. number of test examples for that sub-class (log x-axis)"
+
+fig = go.Figure()
+for arch in ARCHS_AVAIL_ML:
+    d = preds_by_arch_ml[arch]
+    y_test_sub = d["y_test"][:, 4]
+    y_pred_sub = d["y_pred_sub"]
+    classes_present = np.unique(y_test_sub)
+    support_a  = np.array([(y_test_sub == c).sum() for c in classes_present])
+    accuracy_a = np.array([(y_pred_sub[y_test_sub == c] == c).mean() for c in classes_present])
+    hover_codes  = [code_of("sub", c) for c in classes_present]
+    hover_labels = [label_of("sub", c) for c in hover_codes]
+    fig.add_trace(go.Scatter(
+        x=support_a, y=accuracy_a * 100, mode="markers", name=arch,
+        marker=dict(color=COLORS_ML.get(arch, "grey"), size=6, opacity=0.55,
+                    line=dict(width=0.5, color="white")),
+        customdata=np.stack([hover_codes, hover_labels], axis=1),
+        hovertemplate="<b>%{customdata[0]} — %{customdata[1]}</b><br>"
+                      "test support=%{x}<br>accuracy=%{y:.1f}%<extra>" + arch + "</extra>",
+    ))
+
+TICK_VALS_ML = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+TICK_TEXT_ML = ["1", "2", "5", "10", "20", "50", "100", "200", "500", "1k", "2k", "5k"]
+
+fig.update_layout(
+    xaxis_title="Test-set support for this sub-class (log scale)",
+    yaxis_title="Accuracy on this sub-class (%)",
+    xaxis=dict(type="log", tickvals=TICK_VALS_ML, ticktext=TICK_TEXT_ML),
+    yaxis=dict(range=[-2, 102]),
+    legend_title="Architecture", height=450,
+)
+fig.show()
+```
+
+The same funnel shape as on the single-level page: 331 of the 470 sub-classes present in the test set have fewer than 20 test examples, and their accuracy swings across the entire 0–100% range; the 25 sub-classes with 200+ examples tighten into a 56–98% band (mean ≈88%). Sharing the token encoder with four auxiliary heads doesn't change this — sub-class accuracy is still driven by how much data that specific sub-class has, not by the auxiliary supervision.
+
+### Hierarchical accuracy
+
+An earlier version of this section derived every coarser level by truncating the **sub-class head**'s prediction, exactly like [Single-level classification](naf_single.qmd) is forced to (it has no separate section/division/group/class head to ask). That method turned out to be misleading here: the multi-level model has four genuinely **independent** auxiliary heads, each trained with its own cross-entropy loss, and they are *not* reducible to a truncation of the sub-class guess. Checking directly — among examples where the sub-class head is wrong, how often is the **independent section head** still correct — gives 61.7–63.2%, against only 51.8–52.3% from truncating the (wrong) sub-class guess. The charts below query each head directly.
+
+```{python}
+#| label: fig-hierarchy-direct-naf-multilevel
+#| fig-cap: "Error rate by hierarchy level: multi-level's independent heads vs. single-level's truncated cascade"
+
+level_acc_ml = {}  # arch -> [acc at sec, div, grp, cls, sub], each from its own head
+for arch in ARCHS_AVAIL_ML:
+    d = preds_by_arch_ml[arch]
+    level_acc_ml[arch] = [
+        (d[f"y_pred_{lvl}"] == d["y_test"][:, i]).mean() * 100
+        for i, lvl in enumerate(LEVEL_NAMES)
+    ]
+
+# Load the single-level page's raw sub-class-only predictions, so its
+# truncation-derived cascade can be plotted on the same axes for comparison.
+PRED_BUCKET_SINGLE = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions/naf"
+ARCH_FILES_SINGLE  = {
+    "FastText":                   "fasttext.npz",
+    "FastText + Label Attention": "fasttext_labatt.npz",
+}
+PREDS_DIR_SINGLE = Path("results/naf/preds")
+PREDS_DIR_SINGLE.mkdir(parents=True, exist_ok=True)
+
+preds_by_arch_single = {}
+for arch, fname in ARCH_FILES_SINGLE.items():
+    cache = PREDS_DIR_SINGLE / fname
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{PRED_BUCKET_SINGLE}/{fname}", cache)
+        d = np.load(cache, allow_pickle=True)
+        preds_by_arch_single[arch] = {
+            "y_test": d["y_test"].astype(int), "y_pred": d["y_pred"].astype(int), "X_test": d["X_test"],
+        }
+    except Exception:
+        pass
+
+with open("assets/naf_labels.json") as f:
+    NAF_LABEL_MAP_SINGLE = json.load(f)
+
+def _single_class_code(idx):
+    return NAF_LABEL_MAP_SINGLE.get(str(idx), "?")
+
+DIVISION_TO_SECTION_SINGLE = {div: s["id"] for s in _naf_struct_ml["sections"] for div in s["divisions"]}
+
+SINGLE_LEVELS = [
+    ("Section",   lambda c: DIVISION_TO_SECTION_SINGLE.get(c[:2], "?")),
+    ("Division",  lambda c: c[:2]),
+    ("Group",     lambda c: c[:3]),
+    ("Class",     lambda c: c[:4]),
+    ("Sub-class", lambda c: c),
+]
+
+error_single = {}  # arch -> [error rate at sec, div, grp, cls, sub], from truncating the sub-class guess
+for arch, d in preds_by_arch_single.items():
+    true_codes = [_single_class_code(c) for c in d["y_test"]]
+    pred_codes = [_single_class_code(c) for c in d["y_pred"]]
+    error_single[arch] = [
+        100 - np.mean([fn(t) == fn(p) for t, p in zip(true_codes, pred_codes)]) * 100
+        for _, fn in SINGLE_LEVELS
+    ]
+
+x_lvls_ml = [LEVEL_LABELS_ML[l] for l in LEVEL_NAMES]
+
+fig = go.Figure()
+for arch in ARCHS_AVAIL_ML:
+    err_ml = [100 - a for a in level_acc_ml[arch]]
+    fig.add_trace(go.Scatter(
+        x=x_lvls_ml, y=err_ml, mode="lines+markers", name=f"{arch} — multi-level heads",
+        line=dict(color=COLORS_ML.get(arch, "grey"), width=2.5), marker=dict(size=10),
+        hovertemplate="%{x}<br>error rate=%{y:.1f}%<extra>" + arch + " — multi-level</extra>",
+    ))
+for arch, errs in error_single.items():
+    fig.add_trace(go.Scatter(
+        x=x_lvls_ml, y=errs, mode="lines+markers", name=f"{arch} — single-level (truncated)",
+        line=dict(color=COLORS_ML.get(arch, "grey"), width=2.5, dash="dot"),
+        marker=dict(size=8, symbol="diamond"),
+        hovertemplate="%{x}<br>error rate=%{y:.1f}%<extra>" + arch + " — single-level</extra>",
+    ))
+
+all_err_vals = [v for arch in ARCHS_AVAIL_ML for v in [100 - a for a in level_acc_ml[arch]]]
+all_err_vals += [v for errs in error_single.values() for v in errs]
+y_pad = (max(all_err_vals) - min(all_err_vals)) * 0.1
+
+fig.update_layout(
+    template="simple_white",
+    xaxis_title="Hierarchy level", yaxis_title="Error rate (%)",
+    yaxis=dict(range=[min(all_err_vals) - y_pad, max(all_err_vals) + y_pad]),
+    legend_title="Architecture — approach", height=460,
+)
+fig.show()
+```
+
+The gap isn't monotonic. At **Section**, truncating the single-level model's sub-class guess does about as well as — even fractionally better than — multi-level's own dedicated section head. From **Division to Class**, the multi-level curve pulls ahead and the gap widens, before narrowing again slightly at **Sub-class**, where multi-level still keeps a modest edge. That last point is worth flagging: single-level and multi-level are two *separately trained* models, not the same model with heads removed, so there's no reason to expect them to match exactly even on the one task (sub-class) both nominally solve directly — the fact that multi-level is still a bit more accurate there suggests its auxiliary per-level losses provide some regularisation benefit to its own sub-class head, not just to the coarser ones.
+
+The next view zooms into the wrong sub-class predictions only, and buckets each one by the *finest* of Class/Group/Division/Section that still lands correctly. For single-level, that bucket is unambiguous — truncation is nested by construction, so a correct division always implies a correct section too (section is deterministically derived from division), and conversely a wrong section forces division, group and class to be wrong as well. For multi-level, it's less obvious than it sounds: **"No match" means all four independent heads miss at once**, not just the section head — since the four heads are separately trained and never consult each other, it's entirely possible for the division head to land correctly while the (equally independent) section head misses the very same example, an inconsistency truncation can never produce.
+
+```{python}
+#| label: fig-hierarchy-errors-naf-multilevel
+#| fig-cap: "Among wrong sub-class predictions, the finest level that still lands correctly — multi-level's independent heads vs. single-level's truncated cascade"
+
+BUCKET_ORDER_ML = ["cls", "grp", "div", "sec"]
+BUCKET_LABELS_ML = {"cls": "Class", "grp": "Group", "div": "Division", "sec": "Section"}
+ERROR_BUCKETS_ML = ["Class", "Group", "Division", "Section", "No match"]
+BUCKET_COLORS_ML = {
+    "Class":      "#66BB6A",
+    "Group":      "#FFCA28",
+    "Division":   "#FB8C00",
+    "Section":    "#E53935",
+    "No match":   "#7B0000",
+}
+
+error_shares_ml = {}  # arch -> {bucket: pct of errors}
+overall_acc_ml  = {}  # arch -> exact-match accuracy, for the x-axis subtitle
+for arch in ARCHS_AVAIL_ML:
+    d = preds_by_arch_ml[arch]
+    y_test = d["y_test"]
+    correct = {lvl: (d[f"y_pred_{lvl}"] == y_test[:, i]) for i, lvl in enumerate(LEVEL_NAMES)}
+    overall_acc_ml[arch] = correct["sub"].mean() * 100
+
+    wrong_idx = np.where(~correct["sub"])[0]
+    assigned  = np.full(len(wrong_idx), "No match", dtype=object)
+    remaining = np.ones(len(wrong_idx), dtype=bool)
+    for lvl in BUCKET_ORDER_ML:
+        is_correct_here = correct[lvl][wrong_idx] & remaining
+        assigned[is_correct_here] = BUCKET_LABELS_ML[lvl]
+        remaining &= ~is_correct_here
+
+    counts = pd.Series(assigned).value_counts()
+    error_shares_ml[arch] = {b: counts.get(b, 0) / len(wrong_idx) * 100 for b in ERROR_BUCKETS_ML}
+
+# Same bucketing, applied to the single-level page's truncated cascade instead
+# of independent heads, so both approaches can sit on the same chart.
+SINGLE_LEVEL_FN_BY_KEY = {name: fn for name, fn in SINGLE_LEVELS}  # "Section"/"Division"/... -> fn
+SINGLE_LEVEL_FN_BY_KEY = {
+    "sec": SINGLE_LEVEL_FN_BY_KEY["Section"],
+    "div": SINGLE_LEVEL_FN_BY_KEY["Division"],
+    "grp": SINGLE_LEVEL_FN_BY_KEY["Group"],
+    "cls": SINGLE_LEVEL_FN_BY_KEY["Class"],
+}
+
+error_shares_single = {}
+overall_acc_single  = {}
+for arch, d in preds_by_arch_single.items():
+    true_codes  = np.array([_single_class_code(c) for c in d["y_test"]])
+    pred_codes  = np.array([_single_class_code(c) for c in d["y_pred"]])
+    correct_sub = true_codes == pred_codes
+    overall_acc_single[arch] = correct_sub.mean() * 100
+
+    wrong_idx = np.where(~correct_sub)[0]
+    t_wrong, p_wrong = true_codes[wrong_idx], pred_codes[wrong_idx]
+    assigned  = np.full(len(wrong_idx), "No match", dtype=object)
+    remaining = np.ones(len(wrong_idx), dtype=bool)
+    for lvl in BUCKET_ORDER_ML:
+        fn = SINGLE_LEVEL_FN_BY_KEY[lvl]
+        is_correct_here = (np.array([fn(t) for t in t_wrong]) == np.array([fn(p) for p in p_wrong])) & remaining
+        assigned[is_correct_here] = BUCKET_LABELS_ML[lvl]
+        remaining &= ~is_correct_here
+
+    counts = pd.Series(assigned).value_counts()
+    error_shares_single[arch] = {b: counts.get(b, 0) / len(wrong_idx) * 100 for b in ERROR_BUCKETS_ML}
+
+bar_order = []  # [("ml"|"single", arch), ...] — same architecture's two bars kept adjacent
+for arch in ARCHS_AVAIL_ML:
+    bar_order.append(("ml", arch))
+    if arch in preds_by_arch_single:
+        bar_order.append(("single", arch))
+
+x_labels_combined = [
+    f"{arch}<br>multi-level<i> ({100 - overall_acc_ml[arch]:.1f}% wrong)</i>" if kind == "ml"
+    else f"{arch}<br>single-level<i> ({100 - overall_acc_single[arch]:.1f}% wrong)</i>"
+    for kind, arch in bar_order
+]
+patterns_combined = ["" if kind == "ml" else "/" for kind, arch in bar_order]
+
+fig = go.Figure()
+for bucket in ERROR_BUCKETS_ML:
+    vals = [
+        error_shares_ml[arch][bucket] if kind == "ml" else error_shares_single[arch][bucket]
+        for kind, arch in bar_order
+    ]
+    fig.add_trace(go.Bar(
+        x=x_labels_combined, y=vals, name=bucket,
+        marker=dict(color=BUCKET_COLORS_ML[bucket], pattern=dict(shape=patterns_combined)),
+        text=[f"{v:.1f}%" for v in vals],
+        textposition="inside", insidetextfont=dict(color="white", size=11),
+        hovertemplate="%{x}<br>" + bucket + ": %{y:.1f}% of errors<extra></extra>",
+    ))
+
+fig.update_layout(
+    template="simple_white", barmode="stack",
+    xaxis_title=None, yaxis_title="Share of wrong sub-class predictions (%)",
+    yaxis=dict(range=[0, 100]),
+    legend_title="Finest level<br>that still lands right", height=480,
+)
+fig.show()
+```
+
+The single-level bars (hatched) confirm this isn't just an artefact of the earlier derived comparison: on [Single-level classification](naf_single.qmd), ≈48–50% of errors are "No match" (not even the section is right) for both architectures, and only ≈8% stay within the correct class. Multi-level's independent heads do much better on both counts: "No match" is only **33.1%** for FastText and **25.7%** for Label Attention, and — unlike the single-level bars, which look nearly identical to each other — the two architectures now diverge meaningfully, with Label Attention landing in the **Class** bucket far more often (26.6% vs. 11.3% for FastText). When its finest guess is wrong, its independently-trained class head is much more likely to still be right, even though its raw sub-class accuracy is slightly lower. The auxiliary heads are doing real work that the single-level bars, sitting right next to them, simply cannot do.
+
+### Effect of independent heads
+
+The buckets in the previous tab already prove the auxiliary heads are doing real work, but they still read like an abstract accounting exercise. This tab isolates the mechanism directly — the single-level model is not involved here, both sides of the comparison come from the **multi-level model alone**: restricted to the exact same wrong-sub-class examples, how often does *truncating* that same model's own wrong sub-class guess land on the truth, versus how often does its *independent* head get it right on its own?
+
+```{python}
+#| label: fig-hierarchy-independence-naf-multilevel
+#| fig-cap: "Section/division accuracy among wrong sub-class predictions: truncating the wrong guess vs. asking the independent head directly"
+
+from plotly.subplots import make_subplots
+
+GAP_LEVELS_ML  = ["sec", "div"]
+GAP_LABELS_ML  = {"sec": "Section", "div": "Division"}
+
+DIVISION_TO_SECTION_ML = {div: s["id"] for s in _naf_struct_ml["sections"] for div in s["divisions"]}
+
+def code_section_gap(code):
+    return DIVISION_TO_SECTION_ML.get(code[:2], "?")
+
+def code_division_gap(code):
+    return code[:2]
+TRUNC_FNS_ML = {"sec": code_section_gap, "div": code_division_gap}
+
+fig = make_subplots(rows=1, cols=len(ARCHS_AVAIL_ML), subplot_titles=ARCHS_AVAIL_ML,
+                    horizontal_spacing=0.12)
+
+for col, arch in enumerate(ARCHS_AVAIL_ML, start=1):
+    d = preds_by_arch_ml[arch]
+    y_test = d["y_test"]
+    wrong_sub = d["y_pred_sub"] != y_test[:, 4]
+    pred_sub_codes = np.array([code_of("sub", c) for c in d["y_pred_sub"][wrong_sub]])
+
+    trunc_accs, direct_accs = [], []
+    for i, lvl in enumerate(GAP_LEVELS_ML):
+        true_codes  = np.array([code_of(lvl, c) for c in y_test[wrong_sub, i]])
+        trunc_codes = np.array([TRUNC_FNS_ML[lvl](c) for c in pred_sub_codes])
+        trunc_accs.append((trunc_codes == true_codes).mean() * 100)
+        direct_accs.append((d[f"y_pred_{lvl}"][wrong_sub] == y_test[wrong_sub, i]).mean() * 100)
+
+    x_labels = [GAP_LABELS_ML[l] for l in GAP_LEVELS_ML]
+    fig.add_trace(go.Bar(
+        x=x_labels, y=trunc_accs, name="Truncated (from the wrong sub-class guess)",
+        legendgroup="trunc", showlegend=(col == 1),
+        marker=dict(color="#bbbbbb", pattern_shape="/"),
+        text=[f"{v:.1f}%" for v in trunc_accs], textposition="outside",
+        hovertemplate="%{x}<br>truncated: %{y:.1f}%<extra></extra>",
+    ), row=1, col=col)
+    fig.add_trace(go.Bar(
+        x=x_labels, y=direct_accs, name="Direct (independent head)",
+        legendgroup="direct", showlegend=(col == 1),
+        marker=dict(color=COLORS_ML.get(arch, "grey")),
+        text=[f"{v:.1f}%" for v in direct_accs], textposition="outside",
+        hovertemplate="%{x}<br>direct: %{y:.1f}%<extra></extra>",
+    ), row=1, col=col)
+    fig.update_yaxes(range=[0, 75], title_text="Accuracy (%)" if col == 1 else "", row=1, col=col)
+
+fig.update_layout(
+    barmode="group", template="simple_white", height=440,
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.18, yanchor="top"),
+    margin=dict(t=40, b=80),
+)
+fig.show()
+```
+
+For both architectures and both levels, the grey (truncated) bar is consistently well below the coloured (direct) bar — the independent head recovers real accuracy that a truncation-only view throws away: +9.4pp at section / +10.3pp at division for FastText, +11.4pp / +15.1pp for Label Attention. This is the concrete mechanism behind the previous tab's better "No match" rate: it isn't that the model becomes more accurate overall, it's that its mistakes are genuinely *localised to one head* — the sub-class head can misfire on the fine-grained decision while the division and section heads, trained with their own independent loss on the same shared token encoding, are unaffected and still answer correctly.
+
+**Why not group and class too?** 576 of the 651 NAF classes (88.5%) contain exactly **one** sub-class — for those, getting the class right and getting the sub-class right are the same event, so whenever the sub-class head is wrong, truncating that wrong guess to class level is *necessarily* also wrong: truncated accuracy collapses to ~0% at those two levels, which would make the comparison trivial rather than informative. Section and division are coarse enough that many different sub-classes map to the same coarser code, so truncation and direct prediction can genuinely diverge — that's what the chart above needs to be meaningful.
+
+### Top section confusions
+
+```{python}
+#| label: fig-topflows-naf-multilevel
+#| fig-cap: "Top misclassification flows between NAF sections (true section → predicted section), predicted directly"
+
+N_FLOWS_ML = 15
+
+def _top_flows_ml(arch):
+    d = preds_by_arch_ml[arch]
+    true_sec = [code_of("sec", c) for c in d["y_test"][:, 0]]
+    pred_sec = [code_of("sec", c) for c in d["y_pred_sec"]]
+    flow_counts = defaultdict(int)
+    for t, p in zip(true_sec, pred_sec):
+        if t != p:
+            flow_counts[(t, p)] += 1
+    top = sorted(flow_counts.items(), key=lambda kv: kv[1], reverse=True)[:N_FLOWS_ML]
+    return top[::-1]  # reversed: largest ends up at the top of the horizontal bar
+
+n_archs_ml = len(ARCHS_AVAIL_ML)
+fig = go.Figure()
+
+for i, arch in enumerate(ARCHS_AVAIL_ML):
+    top = _top_flows_ml(arch)
+    labels = [f"{t} → {p}" for (t, p), _ in top]
+    counts = [cnt for _, cnt in top]
+    colors = [SECTION_COLOR_ML.get(t, "#888888") for (t, p), _ in top]
+    hover  = [f"{SECTION_LABEL_ML.get(t, t)} → {SECTION_LABEL_ML.get(p, p)}" for (t, p), _ in top]
+    fig.add_trace(go.Bar(
+        x=counts, y=labels, orientation="h",
+        marker=dict(color=colors),
+        customdata=hover,
+        text=[str(c) for c in counts], textposition="outside",
+        hovertemplate="<b>%{customdata}</b><br>%{x} misclassifications<extra></extra>",
+        visible=(i == 0),
+    ))
+
+buttons = [dict(
+    label=arch, method="update",
+    args=[{"visible": [j == i for j in range(n_archs_ml)]}],
+) for i, arch in enumerate(ARCHS_AVAIL_ML)]
+
+fig.update_layout(
+    xaxis_title="Number of misclassifications (true → predicted section)",
+    yaxis_title=None,
+    height=550, margin=dict(l=10, r=40, t=60, b=40),
+    updatemenus=[dict(
+        type="dropdown", buttons=buttons,
+        x=0.5, xanchor="center", y=1.08, yanchor="top",
+        showactive=True, bgcolor="#f0f0f0", bordercolor="#ccc",
+        font=dict(size=12),
+    )],
+)
+fig.show()
+```
+
+The two largest flows both involve section **M** (scientific & technical activities) — confused with **K** (financial & insurance, 7.0% of FastText's section-level errors) and **J** (information & communication, 6.0%), with the reverse flow J→M also in the top three (5.8%). This is a symmetric, semantically coherent confusion: consulting, IT, and technical-services activities genuinely overlap in vocabulary with finance and information-services activities, and it shows up as a real bidirectional flow rather than a one-way drain into a single dominant class — unlike the OOS "catch-all" pattern seen on CLINC150.
+
+### Examples
+
+```{python}
+#| label: fig-examples-naf-multilevel
+#| fig-cap: "Example predictions across all five hierarchy levels"
+
+import random
+random.seed(42)
+
+y_test_all_ml = preds_by_arch_ml[ARCHS_AVAIL_ML[0]]["y_test"]  # (25000, 5)
+
+df_ex_ml = pd.DataFrame({"text": X_TEST_ML})
+for i, lvl in enumerate(LEVEL_NAMES):
+    df_ex_ml[f"true_{lvl}"] = y_test_all_ml[:, i]
+    for arch in ARCHS_AVAIL_ML:
+        df_ex_ml[f"{arch}__{lvl}"] = preds_by_arch_ml[arch][f"y_pred_{lvl}"]
+
+sub_cols_ml = [f"{arch}__sub" for arch in ARCHS_AVAIL_ML]
+df_ex_ml["disagree"]  = df_ex_ml[sub_cols_ml].nunique(axis=1) > 1
+df_ex_ml["any_wrong"] = (df_ex_ml[sub_cols_ml].values != df_ex_ml[["true_sub"]].values).any(axis=1)
+pool_ml   = df_ex_ml[df_ex_ml["disagree"] & df_ex_ml["any_wrong"]]
+sample_ml = pool_ml.sample(min(12, len(pool_ml)), random_state=42).reset_index(drop=True)
+
+def fmt_ml(level, idx):
+    code = code_of(level, int(idx))
+    lbl  = label_of(level, code)
+    return f"{code} — {lbl}" if lbl != code else code
+
+def fmt_code_ml(level, code):
+    lbl = label_of(level, code)
+    return f"{code} — {lbl}" if lbl != code else code
+
+def truncate_code_ml(level, code):
+    return code if level == "sub" else SINGLE_LEVEL_FN_BY_KEY[level](code)
+
+# Text -> row lookup into the single-level page's own (separately trained)
+# test set, so each sampled utterance can be matched to its single-level
+# prediction too — verified to fully overlap (all 25k multi-level test texts
+# are also present in single-level's 50k test set, same cleaning pipeline).
+single_lookup_ml = {
+    arch: {str(t): i for i, t in enumerate(d["X_test"])}
+    for arch, d in preds_by_arch_single.items()
+}
+
+examples_ml = []
+for _, r in sample_ml.iterrows():
+    text = str(r["text"])
+    preds_entry = {}
+    for arch in ARCHS_AVAIL_ML:
+        sub_code_own = code_of("sub", int(r[f"{arch}__sub"]))
+        preds_entry[arch] = {
+            "direct":     {lvl: fmt_ml(lvl, r[f"{arch}__{lvl}"]) for lvl in LEVEL_NAMES},
+            "trunc_own":  {lvl: fmt_code_ml(lvl, truncate_code_ml(lvl, sub_code_own)) for lvl in LEVEL_NAMES},
+            "trunc_single": None,
+        }
+        idx_single = single_lookup_ml.get(arch, {}).get(text)
+        if idx_single is not None:
+            sub_code_single = _single_class_code(int(preds_by_arch_single[arch]["y_pred"][idx_single]))
+            preds_entry[arch]["trunc_single"] = {
+                lvl: fmt_code_ml(lvl, truncate_code_ml(lvl, sub_code_single)) for lvl in LEVEL_NAMES
+            }
+
+    examples_ml.append({
+        "text": text,
+        "true": {lvl: fmt_ml(lvl, r[f"true_{lvl}"]) for lvl in LEVEL_NAMES},
+        "preds": preds_entry,
+    })
+
+html = f"""
+<style>
+  .exml-wrap   {{ font-family:sans-serif; font-size:14px; max-width:100%; }}
+  .exml-card   {{ border:1px solid #ddd; border-radius:8px; padding:20px 24px;
+                  background:#fafafa; margin-bottom:14px; }}
+  .exml-text   {{ line-height:1.75; color:#222; margin-bottom:16px; font-style:italic; }}
+  #exml-table-wrap {{ overflow-x:auto; }}
+  .exml-table  {{ border-collapse:collapse; font-size:12.5px; white-space:nowrap; }}
+  .exml-table th, .exml-table td {{ text-align:left; padding:5px 8px; border-bottom:1px solid #e5e5e5; }}
+  .exml-table th {{ color:#888; font-weight:600; text-transform:uppercase; font-size:10.5px; letter-spacing:.03em; text-align:center; }}
+  .exml-lvl    {{ color:#555; font-weight:600; white-space:nowrap; }}
+  .exml-correct {{ color:#155724; background:#d4edda; border-radius:4px; padding:2px 6px; }}
+  .exml-wrong   {{ color:#721c24; background:#f8d7da; border-radius:4px; padding:2px 6px; }}
+  .exml-nav    {{ display:flex; align-items:center; gap:12px; justify-content:center; margin-bottom:12px; }}
+  .exml-btn    {{ padding:6px 18px; background:#f0f0f0; border:1px solid #ccc;
+                  border-radius:5px; cursor:pointer; font-size:13px; }}
+  .exml-btn:hover {{ background:#e0e0e0; }}
+  .exml-count  {{ font-size:12px; color:#999; }}
+</style>
+
+<div class="exml-wrap">
+  <div class="exml-nav">
+    <button class="exml-btn" onclick="exNafMlNav(-1)">← Prev</button>
+    <span class="exml-count" id="exml-count"></span>
+    <button class="exml-btn" onclick="exNafMlNav(1)">Next →</button>
+  </div>
+  <div class="exml-card">
+    <div class="exml-text" id="exml-text"></div>
+    <div id="exml-table-wrap"></div>
+  </div>
+</div>
+
+<script>
+(function() {{
+  const EX = {json.dumps(examples_ml)};
+  const LEVELS = {json.dumps(LEVEL_NAMES)};
+  const LEVEL_LABELS = {json.dumps(LEVEL_LABELS_ML)};
+  const ARCHS = {json.dumps(ARCHS_AVAIL_ML)};
+  const ARCH_SHORT = {json.dumps({"FastText": "FT", "FastText + Label Attention": "FT+LabAtt"})};
+  let cur = 0;
+
+  function render(i) {{
+    const e = EX[i];
+    document.getElementById('exml-text').textContent = '"' + e.text + '"';
+
+    // Built as one HTML string and injected into a plain <div> rather than
+    // pre-declaring an empty <table>/<thead>: Quarto's HTML post-processing
+    // (Pandoc) reinterprets raw <table> elements and drops an empty <thead>
+    // at build time (before this JS ever runs), silently breaking the ids
+    // it depends on. A plain div is passed through untouched.
+    // Transposed layout — one row per (architecture, variant), one column per
+    // hierarchy level — so the table stays narrow instead of needing 8 columns.
+    let head = '<th>Prediction</th>';
+    for (const lvl of LEVELS) head += '<th>' + LEVEL_LABELS[lvl] + '</th>';
+    head = '<tr>' + head + '</tr>';
+
+    let rows = '<tr><td class="exml-lvl">True</td>';
+    for (const lvl of LEVELS) rows += '<td>' + e.true[lvl] + '</td>';
+    rows += '</tr>';
+
+    for (const arch of ARCHS) {{
+      const p = e.preds[arch];
+      const archShort = ARCH_SHORT[arch] || arch;
+      const variantDefs = [['Indep. heads', p.direct], ['Trunc. (multi)', p.trunc_own], ['Trunc. (single)', p.trunc_single]];
+      for (const [label, data] of variantDefs) {{
+        rows += '<tr><td class="exml-lvl">' + archShort + ' — ' + label + '</td>';
+        for (const lvl of LEVELS) {{
+          if (!data) {{
+            rows += '<td style="color:#aaa;">n/a</td>';
+          }} else {{
+            const val = data[lvl];
+            const cls = val === e.true[lvl] ? 'exml-correct' : 'exml-wrong';
+            rows += '<td><span class="' + cls + '">' + val + '</span></td>';
+          }}
+        }}
+        rows += '</tr>';
+      }}
+    }}
+    document.getElementById('exml-table-wrap').innerHTML =
+      '<table class="exml-table"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table>';
+    document.getElementById('exml-count').textContent = (i + 1) + ' / ' + EX.length;
+  }}
+
+  window.exNafMlNav = function(d) {{ cur = (cur + d + EX.length) % EX.length; render(cur); }};
+  render(0);
+}})();
+</script>
+"""
+HTML(html)
+```
+
+Browsing through these cards turns up the independent-heads quirk from the top of the page in concrete form: it's not rare to see the **sub-class** head land exactly right while the (independently predicted) **section** head misses — a combination truncation could never produce, since a correct sub-class would truncate down to a correct section every time. Here, the two heads simply disagree, each having made its own call from the shared encoding.
+
+:::
 

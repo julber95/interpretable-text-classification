@@ -1,6 +1,6 @@
 ---
 title: "Towards Interpretable Text Classification for Administrative Coding: A Study at INSEE"
-subtitle: "Internship Report · June 2026"
+subtitle: "Internship Report · July 2026"
 ---
 
 ```{=html}
@@ -13,7 +13,7 @@ subtitle: "Internship Report · June 2026"
 
 This report presents the work carried out during an internship at **INSEE** (Institut national de la statistique et des études économiques), France's national statistics institute.
 
-The internship focuses on **text classification**, a core natural language processing (NLP) task that consists in assigning a predefined category to a piece of text. At INSEE, a concrete use case is the automatic coding of business creation declarations: when a company is founded, its activity is described in free text by the declarant and must be assigned a code from the NAF (*Nomenclature des Activités Françaises*), a hierarchical classification of economic activities. A model has recently been deployed to automate this coding process, making it a concrete reference point for evaluating the lightweight architectures studied in this internship.
+The internship focuses on **text classification**, a core natural language processing (NLP) task that consists in assigning a predefined category to a piece of text. At INSEE, a concrete use case is the automatic coding of business creation declarations: when a company is founded, its activity is described in free text by the declarant and must be assigned a code from the NAF (*Nomenclature des Activités Françaises*), a hierarchical classification of economic activities. A model has recently been deployed to automate this coding process — a classic single-level FastText classifier, predicting the finest-grained NAF code directly — making it a concrete reference point for evaluating the lightweight architectures studied in this internship. Because NAF codes are organised hierarchically (section, division, group, class, sub-class), models can also be trained to predict several of these levels jointly instead of only the finest one — an approach known as **multilevel classification**.
 
 Large language models (LLMs) achieve strong performance on text classification, but they come with significant computational costs. In a production envonment processing millions of records, lighter and faster alternatives are desirable. This internship investigates whether **lightweight neural architectures** such as FastText-style mean-pooling models and small transformer encoders can reach competitive accuracy at a fraction of the cost. A secondary focus is **explainability**: in high-uncertainty settings, decision-makers need more than a bare prediction, and post-hoc explanations can provide the additional information required to act with confidence. All experiments are built on top of [**`torchTextClassifiers`**](https://github.com/InseeFrLab/torchTextClassifiers), a Python package developed at INSEE that provides a unified interface for training and evaluating these architectures.
 
@@ -22,20 +22,23 @@ The main objectives are:
 1. Benchmark lightweight text classification architectures (FastText, small transformer encoders) across several datasets of increasing difficulty.
 2. Study the impact of key hyperparameters (embedding dimension, vocabulary size, number of encoder layers, attention heads, learning rate) on accuracy and data efficiency.
 3. Investigate explainability methods to understand what these models rely on, and assess whether their predictions can be trusted enough to support human decision-making in uncertain cases.
+4. Study a multilevel classification approach exploiting NAF's hierarchical structure: predicting coarser levels alongside the target sub-class can provide auxiliary training signal and a fallback prediction (e.g. the correct division) when the model is not confident enough at the finest level.
+
+This report is organised as a small website, one tab per topic: this page covers the introduction and the shared benchmark setup, followed by dedicated tabs for the **Amazon**, **CLINC150**, and **NAF** results, and a **Concepts** tab gathering in-depth explanations of the mechanisms and explainability methods used throughout.
 
 ## Benchmark Setup
 
 ### Datasets
 
-The benchmark covers three datasets of increasing number of classes, designed as a progression towards the target application: automatic NAF coding, which involves around 700 classes.
+The benchmark covers three datasets of increasing number of classes, designed as a progression towards the target application: automatic NAF coding, which involves around 700 classes. Experiments were run in this order — Amazon Reviews, then CLINC150, then NAF — each step raising the difficulty before tackling the target task.
 
-**Amazon Reviews** (`amazon_reviews_multi`, English) is the Multilingual Amazon Reviews Corpus (MARC). The English split contains 200,000 training and 5,000 test product reviews, each rated from 1 to 5 stars. The input combines the review title and body. The 5-class ordinal nature of the task makes it harder than binary sentiment.
+**Amazon Reviews** (English) is the Multilingual Amazon Reviews Corpus (MARC). The English split contains 200,000 training and 5,000 test product reviews, each rated from 1 to 5 stars. The input combines the review title and body. The 5-class ordinal nature of the task makes it harder than binary sentiment.
 
-**CLINC150** (`clinc_oos`) is an intent detection dataset. It contains 150 intent classes covering everyday conversational domains (banking, travel, home automation, etc.), with 100 training examples per class. The large number of classes and the short, colloquial nature of utterances make it a natural intermediate step between Amazon and NAF.
+**CLINC150** is an intent detection dataset. It contains 150 intent classes covering everyday conversational domains (banking, travel, home automation, etc.), with 100 training examples per class. The large number of classes and the short, colloquial nature of utterances make it a natural intermediate step between Amazon and NAF.
 
 **NAF** is the target application: automatic coding of business creation declarations against the *Nomenclature des Activités Françaises*, with around 700 classes. Results on this dataset constitute the core deliverable of the internship.
 
-The class counts and train/val/test splits used in our experiments are summarised below.
+The class counts and train/val/test splits used in our experiments are summarised below (NAF is detailed further in its own dedicated section).
 
 | Dataset | Classes | Train | Val | Test | SOTA (acc.) |
 |---|---|---|---|---|---|
