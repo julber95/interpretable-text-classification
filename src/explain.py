@@ -170,6 +170,16 @@ def _run_captum(
             if isinstance(class_order, torch.Tensor):
                 class_order = class_order.cpu().numpy()
 
+            # clf.predict() decodes back to the original label values (e.g. NAF's
+            # string sub-class codes like "0141Y") whenever the model has a
+            # value_encoder attached, instead of returning raw integer indices.
+            # Re-encode so class_order stays an index array — everything below,
+            # including _run_faithfulness, assumes integer class ids.
+            if class_order.dtype.kind not in "iu":
+                class_order = clf.value_encoder.transform_labels(
+                    class_order.reshape(-1)
+                ).reshape(class_order.shape)
+
             for b, text in enumerate(batch_texts):
                 # Reconstruct word strings from character offsets. A word can span
                 # several sub-tokens (e.g. "directions" -> "direct" + "##ions"), all
