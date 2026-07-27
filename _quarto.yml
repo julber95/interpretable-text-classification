@@ -18,6 +18,8 @@ website:
         text: "NAF"
       - href: pages/concepts.qmd
         text: "Concepts"
+      - href: pages/slides.qmd
+        text: "Presentations"
 
 format:
   html:
