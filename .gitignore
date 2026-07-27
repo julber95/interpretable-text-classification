@@ -37,10 +37,13 @@ naf_files/
 **/*.quarto_ipynb*
 index.html
 /_site/
+/site_libs/
 
 # Schemas
 schemas/
 
-# Predictions and explanations (downloaded from MinIO in CI, see .github/workflows/pages.yml)
+# Predictions and explanations (downloaded/reconstructed from MinIO in CI, see .github/workflows/pages.yml)
 results/**/*.npz
+results/**/*.parquet
+results/**/*.json
 **/*.quarto_ipynb
