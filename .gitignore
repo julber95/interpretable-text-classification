@@ -36,6 +36,7 @@ naf_files/
 /.quarto/
 **/*.quarto_ipynb*
 index.html
+pages/*.html
 /_site/
 /site_libs/
 
