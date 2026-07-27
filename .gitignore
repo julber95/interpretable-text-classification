@@ -35,8 +35,12 @@ imdb_files/
 naf_files/
 /.quarto/
 **/*.quarto_ipynb*
+
 index.html
 pages/*.html
+pages/slides/*.html
+pages/slides/*_files/
+pages/slides_files/
 /_site/
 /site_libs/
 
