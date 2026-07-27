@@ -595,6 +595,62 @@ html = f"""
 HTML(html)
 ```
 
+#### Error analysis
+
+Unlike Amazon's 1★–5★ ratings, CLINC150's 150 intents have no inherent order, so "prediction distance" can't mean a numeric gap between labels the way it does there. The closest meaningful analogue is **domain distance**: is a wrong prediction at least in the right domain (e.g. mixing up two `banking` intents), or does it miss the domain entirely?
+
+```{python}
+#| label: fig-error-seg-clinc150
+#| fig-cap: "Prediction distance per architecture: correct intent, wrong intent within the right domain, or wrong domain entirely"
+
+SEG_KEYS_C   = ["Correct", "Same domain", "Wrong domain"]
+SEG_COLORS_C = {"Correct": "#43A047", "Same domain": "#FDD835", "Wrong domain": "#E53935"}
+
+arch_segs_c = {}
+for arch in ARCHS_AVAIL:
+    d = preds_by_arch[arch]
+    y_t, y_p = d["y_test"], d["y_pred"]
+    correct  = y_t == y_p
+    true_dom = np.array([intent_domain(y) for y in y_t])
+    pred_dom = np.array([intent_domain(y) for y in y_p])
+    same_dom = (~correct) & (true_dom == pred_dom)
+    diff_dom = (~correct) & (true_dom != pred_dom)
+    n = len(y_t)
+    arch_segs_c[arch] = {
+        "Correct":      correct.sum() / n * 100,
+        "Same domain":  same_dom.sum() / n * 100,
+        "Wrong domain": diff_dom.sum() / n * 100,
+    }
+
+fig1c = go.Figure()
+for i, arch in enumerate(ARCHS_AVAIL):
+    segs = arch_segs_c[arch]
+    for seg in SEG_KEYS_C:
+        pct = segs[seg]
+        fig1c.add_trace(go.Bar(
+            x=[pct], y=[arch], orientation="h",
+            name=seg, legendgroup=seg, showlegend=(i == 0),
+            marker_color=SEG_COLORS_C[seg],
+            text=f"{pct:.1f}%" if pct >= 4 else "",
+            textposition="inside", insidetextanchor="middle",
+            textfont=dict(size=11, color="white" if seg != "Same domain" else "#333"),
+            hovertemplate=f"<b>{seg}</b>: {pct:.1f}%<extra></extra>",
+        ))
+
+fig1c.update_layout(
+    barmode="relative",
+    template="simple_white",
+    xaxis=dict(range=[0, 100], ticksuffix="%", showgrid=False, title_text="% of test examples"),
+    yaxis=dict(autorange="reversed"),
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.22, yanchor="top",
+                itemclick=False, itemdoubleclick=False),
+    height=360, margin=dict(t=20, b=80),
+)
+fig1c.show()
+```
+
+Label attention roughly doubles the "wrong domain" share versus its non-attention counterpart at every capacity level (FastText: 5.0%→9.8%; FATE (L=1): 4.1%→8.5%; FATE (L=2): 3.7%→7.1%) — consistent with its lower overall accuracy, but the gap is entirely in the *worst* error bucket, not the "same domain" one, which barely moves (3.6–3.8% without label attention vs. 5.6–6.6% with it). When label attention gets it wrong on CLINC150, it's more likely to miss the domain entirely rather than land on a plausible near-miss.
+
 #### Top confused pairs
 
 ```{python}
@@ -1214,7 +1270,7 @@ The balance between the two bars tells us whether OOS contamination is primarily
 
 ## Explainability
 
-Four complementary instruments are used throughout:
+For each architecture, the **best-performing model** — the run with the lowest `min_val_loss` — is used throughout this section. Four complementary instruments are used:
 
 - **Layer Integrated Gradients (Captum)** : a gradient-based, post-hoc attribution method that assigns every input word a *signed* score for every class: positive = pushes the prediction toward that intent, negative = pushes away. It only needs a forward+backward pass through the model, so it can be computed identically for both architectures which is exactly what makes the comparison fair.
 - **Label-attention weights** : for the Label Attention model only: the *raw cross-attention weights* between each class query and the utterance's tokens — an explanation built into the architecture, rather than reconstructed after the fact.
@@ -1253,6 +1309,7 @@ def _load_artifact(method: str, name: str):
 
 cap_la, lat_la, cv_la, sa_la, fai_la = (_load_artifact("labatt",  n) for n in _ARTIFACT_NAMES)
 cap_pl, lat_pl, cv_pl, sa_pl, fai_pl = (_load_artifact("pooling", n) for n in _ARTIFACT_NAMES)
+fai_la_lw = _load_artifact("labatt", "faithfulness_labatt_weight.npz")  # labatt only: guided by its own attention weights instead of Captum
 
 HAS_LA   = cap_la is not None
 HAS_PL   = cap_pl is not None
@@ -1278,6 +1335,7 @@ else:
     CLASS_VECS   = {"labatt": cv_la,  "pooling": cv_pl}
     SELF_ATTN    = {"labatt": sa_la,  "pooling": sa_pl}
     FAITHFUL     = {"labatt": fai_la, "pooling": fai_pl}
+    FAITHFUL_LW  = fai_la_lw
     MODEL_KEYS   = [k for k in ("labatt", "pooling") if CAPTUM[k] is not None]
 
     def _class_sorted(cap, i: int) -> np.ndarray:
@@ -1692,7 +1750,7 @@ def _full_corr_fig(sel_indices, sel_labels):
 
 #### Most-confused intents
 
-We select the **20 intents with the highest error rate** (Label Attention model) and display the 20×20 sub-matrix of their word-attribution profiles. If the model confuses intents A and B, their attribution profiles should look similar (high positive correlation). Hot off-diagonal cells reveal intent pairs that are simultaneously hard to classify *and* hard to distinguish in attribution space.
+We select the **20 intents with the highest error rate, as selected by the Label Attention model**, and display the 20×20 sub-matrix of their word-attribution profiles. If the model confuses intents A and B, their attribution profiles should look similar (high positive correlation). Hot off-diagonal cells reveal intent pairs that are simultaneously hard to classify *and* hard to distinguish in attribution space.
 
 ```{python}
 #| label: fig-explain-class-correlation-confused
@@ -1857,8 +1915,8 @@ else:
         fig_l = make_subplots(
             rows=n_models, cols=n_heads_ph,
             column_titles=[f"Head {h + 1}" for h in range(n_heads_ph)],
-            row_titles=[MODEL_LABELS[k] for k in MODEL_KEYS],
-            horizontal_spacing=0.04, vertical_spacing=0.14,
+            row_titles=[f"<b>{MODEL_LABELS[k]}</b>" for k in MODEL_KEYS],
+            horizontal_spacing=0.04, vertical_spacing=0.18,
         )
         z_l = frame0["layers"][layer]["z"]
         x_l = frame0["layers"][layer]["x"]
@@ -1982,9 +2040,9 @@ else:
 
 In Label Attention, Layer 1 stays diffuse across all four heads, with no consistent token to settle on. By Layer 2, a couple of heads start to sharpen and lean toward content words, but the rest stay diffuse — the architecture never fully commits to a hub token.
 
-Mean Pooling shows the same progression, only earlier. Already in Layer 1, three of the four heads behave like dedicated summarizers, fixating on the utterance's key content word almost regardless of what the sentence is about — only Head 4 stays diffuse, rarely settling on a single token, much like Label Attention's heads. By Layer 2, everything converges: all four heads now share this same content-focused behaviour.
+Mean Pooling shows the same progression, only earlier. Already in Layer 1, the majority of heads behave like dedicated summarizers, fixating on the utterance's key content word almost regardless of what the sentence is about, even though a few stay diffuse. By Layer 2, everything converges: all four heads now share this same content-focused behaviour.
 
-A plausible explanation is that Mean Pooling has to pre-aggregate the utterance's information onto a handful of tokens before the unweighted average is taken, whereas Label Attention can leave that selection to its own dedicated cross-attention step downstream and instead use its self-attention layers for more local, contextual refinement — which is why its self-attention rarely needs to commit to a single hub token. This matches the same asymmetry observed on Amazon: the same underlying mechanism drives both datasets.
+A plausible explanation is that Mean Pooling has to pre-aggregate the utterance's information onto a handful of tokens before the unweighted average is taken, whereas Label Attention can leave that selection to its own dedicated cross-attention step downstream — which is why its self-attention rarely needs to commit to a single hub token. Unlike Amazon, though, we don't see this pay off as a clean local pattern: only a couple of heads lean toward content words by Layer 2, most stay diffuse — likely because with only two layers (vs. Amazon's four) and ~100 examples per intent, the label-attention queries may not have converged to a discriminative enough target to offload onto.
 
 #### Label attention
 
@@ -2077,7 +2135,7 @@ else:
     # bolder title to stand out slightly from the 4 individual heads.
     n_words_lah   = len(x0[0])
     n_classes_lah = max(len(yy) for yy in y0)
-    cell_px_lah   = 21
+    cell_px_lah   = 27
     COLS_LAH      = 5
     subplot_titles_lah = ["Head 1", "Head 2", "Head 3", "Head 4", "Mean over heads"]
 
@@ -2093,24 +2151,28 @@ else:
             hovertemplate="word=%{x}<br>class=%{y}<br>weight=%{z:.3f}<extra></extra>",
         ), row=1, col=i + 1)
 
-    fig_lah.update_xaxes(tickangle=-45, tickfont=dict(size=8))
+    fig_lah.update_xaxes(tickangle=-45, tickfont=dict(size=11))
     for col in range(1, COLS_LAH + 1):
-        fig_lah.update_yaxes(showticklabels=(col == 1), tickfont=dict(size=7), row=1, col=col)
+        fig_lah.update_yaxes(showticklabels=(col == 1), tickfont=dict(size=10), row=1, col=col)
 
-    for i, ann in enumerate(fig_lah.layout.annotations):
-        ann.font.size = 13 if i == COLS_LAH - 1 else 11
+    for ann in fig_lah.layout.annotations:
+        ann.font.size = 15
 
     fig_lah.update_layout(
         width=cell_px_lah * n_words_lah * 5.3 + 40,
-        height=cell_px_lah * n_classes_lah + 260,
+        height=cell_px_lah * n_classes_lah + 255,
         coloraxis=dict(colorscale="Viridis", colorbar=dict(
             title="weight", orientation="h",
-            x=0.5, xanchor="center", y=-0.35, yanchor="top",
-            len=0.5, thickness=12,
+            x=0.5, xanchor="center", y=-0.22, yanchor="top",
+            len=0.5, thickness=16,
         )),
         paper_bgcolor="white", plot_bgcolor="white",
-        margin=dict(t=90, b=140, l=110, r=10),
-        title_text=title0, title_font_size=12,
+        # l mirrors r so the wide left margin needed for the class-name y-axis
+        # labels doesn't throw off centering — title.x/colorbar.x=0.5 stay
+        # correct regardless of how much space the labels need, since the
+        # margins are always equal on both sides.
+        margin=dict(t=75, b=130, l=140, r=140),
+        title_text=title0, title_font_size=13,
         title_x=0.5, title_y=0.98, title_yanchor="top",
     )
 
@@ -2158,6 +2220,8 @@ else:
     display(HTML(lab_nav_html))
 ```
 
+The 4 heads generally attend to different words from one another rather than duplicating each other, but none of them settles into a sharp, decisive pattern — all stay comparably diffuse, spreading weight across several words instead of committing to one. The heads split up *what* they look at without any single one acting as a clear specialist.
+
 ### Are these explanations faithful? A word-deletion stress test
 
 *Method: Captum (Integrated Gradients)*
@@ -2168,7 +2232,7 @@ On short utterances (5–15 words), this test is particularly demanding: even re
 
 ```{python}
 #| label: fig-explain-faithfulness
-#| fig-cap: "Faithfulness (comprehensiveness) test: mean probability retained by the originally-predicted class as the most-attributed words are progressively deleted (solid = guided removal by |Captum score|; dotted = random-removal control, averaged over 3 draws). Shaded bands show ±1 std across examples."
+#| fig-cap: "Faithfulness (comprehensiveness) test: mean probability retained by the originally-predicted class as the most-attributed words are progressively deleted (solid, darker = guided removal by |Captum score|; solid, lighter blue = Label Attention guided by its own attention weights; dotted = random-removal control, averaged over 3 draws). Shaded bands show ±1 std across examples."
 
 HAS_FAI = HAS_LA and all(FAITHFUL.get(k) is not None for k in MODEL_KEYS)
 
@@ -2181,8 +2245,11 @@ else:
         fr    = fai["fractions"]
         color = "#1565C0" if key == "labatt" else "#B71C1C"
         rgb   = "21,101,192" if key == "labatt" else "183,28,28"
-        for arr, name, dash in [(fai["guided_probs"], "guided removal", "solid"),
-                                (fai["random_probs"], "random removal (control)", "dot")]:
+        series = [(fai["guided_probs"], "guided by Captum score", "solid", color)]
+        if key == "labatt" and FAITHFUL_LW is not None:
+            series.append((FAITHFUL_LW["guided_probs"], "guided by attention weights", "solid", "#64B5F6"))
+        series.append((fai["random_probs"], "random removal (control)", "dot", color))
+        for arr, name, dash, line_color in series:
             m, s = np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
             fig_fai.add_trace(go.Scatter(
                 x=np.concatenate([fr, fr[::-1]]), y=np.concatenate([m + s, (m - s)[::-1]]),
@@ -2191,7 +2258,7 @@ else:
             ))
             fig_fai.add_trace(go.Scatter(
                 x=fr, y=m, mode="lines+markers", name=f"{MODEL_LABELS[key]} — {name}",
-                line=dict(color=color, dash=dash, width=2.5), marker=dict(size=6, color=color),
+                line=dict(color=line_color, dash=dash, width=2.5), marker=dict(size=6, color=line_color),
             ))
     fig_fai.update_layout(
         xaxis_title="Fraction of words removed",
@@ -2202,4 +2269,6 @@ else:
     )
     fig_fai.show()
 ```
+
+All three guided curves collapse far faster than their random controls — the gap peaks around 25% of words removed (+0.55 for Label Attention's Captum scores, +0.59 for its own attention weights, +0.55 for Mean Pooling), confirming both attribution methods identify words the models genuinely depend on rather than merely correlate with. Label Attention's built-in attention weights are, if anything, the *most* faithful guide of the three — its curve drops fastest and lowest (0.045 retained at 50% removed, vs. 0.104 for its own Captum scores and 0.075 for Mean Pooling), a reassuring sign that its own explanation isn't decorative.
 

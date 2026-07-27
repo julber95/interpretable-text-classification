@@ -1868,7 +1868,7 @@ How to read it:
 
 ```{python}
 #| label: fig-explain-faithfulness
-#| fig-cap: "Faithfulness (comprehensiveness) test: mean probability retained by the originally-predicted class as the most-attributed words are progressively deleted (solid = guided removal by |Captum score|; dash-dot = Label Attention guided by its own attention weights; dotted = random-removal control, averaged over 3 draws). Shaded bands show ±1 std across 50 reviews."
+#| fig-cap: "Faithfulness (comprehensiveness) test: mean probability retained by the originally-predicted class as the most-attributed words are progressively deleted (solid, darker = guided removal by |Captum score|; solid, lighter blue = Label Attention guided by its own attention weights; dotted = random-removal control, averaged over 3 draws). Shaded bands show ±1 std across 50 reviews."
 
 HAS_FAI = HAS_LA and all(FAITHFUL.get(k) is not None for k in MODEL_KEYS)
 
@@ -1881,11 +1881,11 @@ else:
         fr    = fai["fractions"]
         color = PALETTE[0] if key == "labatt" else PALETTE[4]
         rgb   = "21,101,192" if key == "labatt" else "183,28,28"
-        series = [(fai["guided_probs"], "guided by Captum score", "solid")]
+        series = [(fai["guided_probs"], "guided by Captum score", "solid", color)]
         if key == "labatt" and FAITHFUL_LW is not None:
-            series.append((FAITHFUL_LW["guided_probs"], "guided by attention weights", "dashdot"))
-        series.append((fai["random_probs"], "random removal (control)", "dot"))
-        for arr, name, dash in series:
+            series.append((FAITHFUL_LW["guided_probs"], "guided by attention weights", "solid", "#64B5F6"))
+        series.append((fai["random_probs"], "random removal (control)", "dot", color))
+        for arr, name, dash, line_color in series:
             m, s = np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
             fig_fai.add_trace(go.Scatter(
                 x=np.concatenate([fr, fr[::-1]]), y=np.concatenate([m + s, (m - s)[::-1]]),
@@ -1894,7 +1894,7 @@ else:
             ))
             fig_fai.add_trace(go.Scatter(
                 x=fr, y=m, mode="lines+markers", name=f"{MODEL_LABELS[key]} — {name}",
-                line=dict(color=color, dash=dash, width=2.5), marker=dict(size=6, color=color),
+                line=dict(color=line_color, dash=dash, width=2.5), marker=dict(size=6, color=line_color),
             ))
     fig_fai.update_layout(
         xaxis_title="Fraction of words removed", yaxis_title="Mean retained probability of the predicted class",
@@ -1905,7 +1905,5 @@ else:
     fig_fai.show()
 ```
 
-Label Attention's two guided curves — by Captum and by its own attention weights — sit almost on top of each other, both dropping well below the random control at every removal level: its built-in explanation is about as faithful a guide to what the model relies on as the independent, gradient-based one, with no consistent winner between the two (Captum marginally faster early on, attention weights marginally faster from 25% onward). That the built-in explanation holds up this well against an independent method is a reassuring sign that it isn't just decorative.
-
-The two guided curves sit almost on top of each other, both dropping well below the random control at every removal level — Label Attention's own attention weights turn out to be about as faithful a guide to what the model relies on as the post-hoc Captum scores, with no consistent winner: Captum drops marginally faster early on (10% removed), attention weights marginally faster from 25% onward. That the built-in explanation holds up this well against an independent, gradient-based method is a reassuring sign that it isn't just decorative.
+Label Attention's two guided curves sit almost on top of each other, both well below the random control — its built-in attention weights are about as faithful a guide as the independent Captum scores, a reassuring sign it isn't just decorative.
 
