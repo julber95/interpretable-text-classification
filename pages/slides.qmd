@@ -1,0 +1,7 @@
+---
+title: "Presentations"
+---
+
+Slide decks associated with this project.
+
+- [End-of-Internship Presentation — INSEE, July 28, 2026](slides/end-of-internship-presentation.html)

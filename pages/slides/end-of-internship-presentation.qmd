@@ -1,0 +1,2110 @@
+---
+title: "End-of-Internship Presentation"
+subtitle: "Interpretable Text Classification · July 28, 2026"
+author: "Julien Bernardi"
+date: ""
+format:
+  revealjs:
+    slide-number: true
+    theme: insee-theme.scss
+    logo: ../../assets/insee_logo.svg
+    scrollable: true
+    embed-resources: true
+    transition: fade
+    highlight-style: github
+---
+
+# Introduction
+
+## What this internship is about {.intro-bigger}
+
+- **3-month internship** focused on text classification
+- Central use case: **NAF** — classifying business activities from free text *(more on this later)*
+- Explored a range of modeling approaches, from simple to more complex — comparing **what works, what doesn't, and why**
+- Common thread: not just accuracy — being able to **explain** why a model chose a given label
+- Today: a **selection of key results** — the full experimental report is on GitHub
+
+```{=html}
+<style>
+.intro-bigger ul { font-size: 1.3em; }
+</style>
+```
+
+## Table of Contents {.smaller}
+
+::: {.toc}
+::: {.toc-item}
+**I. Concepts**
+
+- Models used: FastText, attention-based models (FATE)
+- Aggregation methods: mean pooling vs. label attention
+- Captum
+:::
+
+::: {.toc-item}
+**II. Amazon & CLINC150: The Methodological Testbed**
+
+- Setup: testbed, focus, method
+- Training
+- Predictions
+- Explainability
+:::
+
+::: {.toc-item}
+**III. NAF**
+
+- The dataset & label space
+- Label attention on NAF
+- Predictions
+- Explainability
+- The real problem
+:::
+
+**IV. Towards Multi-Level Classification**
+
+**V. Conclusion**
+:::
+
+```{=html}
+<style>
+.toc p strong { font-size: 1.2em; }
+</style>
+```
+
+# Concepts
+
+## Models Used: FastText {.center}
+
+:::: {.columns}
+
+::: {.column width="34%"}
+- Words are embedded, then simply **averaged** (mean pooling)
+- Word order and context between tokens are **ignored**
+- Minimal parameters — very fast to train and to run
+- The baseline behind the model **already in production** for NAF coding
+:::
+
+::: {.column width="66%"}
+```{=html}
+<div style="zoom:0.72;">
+  <div style="border:2px solid #d0d0d0;border-radius:14px;background:#fff;
+              padding:24px 28px;box-sizing:border-box;
+              display:flex;flex-direction:column;align-items:center;gap:0;
+              box-shadow:0 2px 12px rgba(0,0,0,.06);">
+
+  <div style="display:flex;flex-direction:column;align-items:flex-start;gap:0;">
+
+    <div style="display:flex;align-items:center;flex-wrap:nowrap;gap:0;">
+
+      <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;margin-right:2px;">
+        <div style="font-size:10px;font-weight:700;color:#333;white-space:nowrap;">(B,)&nbsp;str</div>
+        <div style="font-size:13px;color:#bbb;">─────▶</div>
+      </div>
+
+      <div class="ah-block" style="border-color:#78909c;background:#eceff1;">
+        <div class="ah-icon" style="color:#546e7a;">⌨</div>
+        <div class="ah-name" style="color:#37474f;">WordPiece</div>
+      </div>
+
+      <div class="ah-arr">
+        <div class="ah-shape">(B, seq_len)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">int64</div>
+      </div>
+
+      <div class="ah-block" style="border-color:#1976d2;background:#e3f2fd;">
+        <div class="ah-icon" style="color:#1565c0;">⊞</div>
+        <div class="ah-name" style="color:#0d47a1;">Embedding</div>
+        <div class="ah-params" style="color:#1976d2;">vocab_size × emb_dim</div>
+      </div>
+
+      <div class="ah-arr">
+        <div class="ah-shape">(B, seq_len, emb_dim)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">float32</div>
+      </div>
+
+      <div class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;">
+        <div class="ah-slim-text">σ</div>
+      </div>
+
+    </div>
+
+<div style="align-self:stretch;position:relative;height:44px;margin:2px 0 4px 0;">
+  <div style="position:absolute;top:0;left:56px;right:62px;height:50%;box-sizing:border-box;
+              border-right:2px solid #ccc;border-bottom:2px solid #ccc;
+              border-bottom-right-radius:8px;"></div>
+  <div style="position:absolute;top:50%;bottom:0;left:56px;width:2px;background:#ccc;"></div>
+  <div style="position:absolute;bottom:-4px;left:52.2px;width:0;height:0;
+              border-left:5px solid transparent;
+              border-right:5px solid transparent;
+              border-top:8px solid #ccc;"></div>
+  <div style="position:absolute;top:4px;right:380px;font-size:9px;font-weight:700;color:#888;white-space:nowrap;">
+    (B, seq_len, emb_dim) · float32
+  </div>
+</div>
+
+    <div style="display:flex;align-items:center;flex-wrap:nowrap;gap:0;">
+
+      <div class="ah-block" style="border-color:#388e3c;background:#e8f5e9;">
+        <div class="ah-icon" style="color:#2e7d32;">∑÷n</div>
+        <div class="ah-name" style="color:#1b5e20;">Mean Pool</div>
+        <div class="ah-params" style="color:#388e3c;">masked avg<br>over seq_len</div>
+      </div>
+
+      <div class="ah-arr">
+        <div class="ah-shape">(B, emb_dim)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">float32</div>
+      </div>
+
+      <div class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;">
+        <div class="ah-slim-text">σ</div>
+      </div>
+
+      <div class="ah-arr" style="min-width:70px;">
+        <div class="ah-shape">(B, emb_dim)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">float32</div>
+      </div>
+
+      <div class="ah-block" style="border-color:#f57c00;background:#fff3e0;">
+        <div class="ah-icon" style="color:#e65100;">⊸</div>
+        <div class="ah-name" style="color:#bf360c;">Linear</div>
+        <div class="ah-params" style="color:#f57c00;">emb_dim → n_classes</div>
+      </div>
+
+      <div style="display:flex;align-items:center;flex-shrink:0;gap:14px;margin-left:2px;">
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div style="font-size:9.5px;font-weight:700;color:#333;white-space:nowrap;">(B, n_classes)</div>
+          <div style="font-size:13px;color:#bbb;">────▶</div>
+        </div>
+        <div style="font-size:15px;font-weight:700;color:#333;white-space:nowrap;margin-top:10px;">ŷ (logits)</div>
+      </div>
+
+    </div>
+
+  </div>
+
+  </div>
+</div>
+<style>
+.ah-block {
+  min-width:110px; max-width:130px; height:130px; padding:12px 10px; border-radius:10px;
+  border:2px solid; text-align:center; cursor:default; flex-shrink:0;
+  display:flex; flex-direction:column; justify-content:center; align-items:center;
+}
+.ah-icon   { font-size:20px; margin-bottom:4px; }
+.ah-name   { font-size:13px; font-weight:700; margin-bottom:5px; }
+.ah-params { font-size:10.5px; line-height:1.5; }
+.ah-arr {
+  display:flex; flex-direction:column; align-items:center;
+  flex-shrink:0; padding:0 3px; min-width:80px;
+}
+.ah-shape  { font-size:9.5px; font-weight:700; color:#333; white-space:nowrap; margin-bottom:1px; }
+.ah-line   { font-size:14px; color:#bbb; letter-spacing:-2px; }
+.ah-dtype  { font-size:9px; color:#aaa; margin-top:1px; }
+.ah-slim {
+  width:36px; height:130px; padding:12px 4px; border-radius:8px; border:2px solid;
+  text-align:center; cursor:default; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+}
+.ah-slim-text { font-size:22px; font-weight:400; line-height:1; }
+</style>
+```
+:::
+
+::::
+
+## Models Used: FastText + Transformer Encoder (FATE) {.center}
+
+:::: {.columns}
+
+::: {.column width="34%"}
+- Same embeddings, but first passed through **N transformer encoder layers** (self-attention + feed-forward)
+- Words gain **context from their neighbors** before being pooled
+- Everything downstream — pooling, linear head — is unchanged
+- More expressive representation — but heavier and slower to train/run
+:::
+
+::: {.column width="66%"}
+```{=html}
+<div style="zoom:0.68;">
+  <div style="border:2px solid #d0d0d0;border-radius:14px;background:#fff;
+              padding:24px 28px;width:fit-content;
+              display:flex;flex-direction:column;align-items:flex-start;gap:0;
+              box-shadow:0 2px 12px rgba(0,0,0,.06);">
+
+    <div style="display:flex;align-items:center;flex-wrap:nowrap;gap:0;">
+
+      <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;margin-right:2px;">
+        <div style="font-size:10px;font-weight:700;color:#333;white-space:nowrap;">(B,)&nbsp;str</div>
+        <div style="font-size:13px;color:#bbb;">─────▶</div>
+      </div>
+
+      <div class="ah-block" style="border-color:#78909c;background:#eceff1;">
+        <div class="ah-icon" style="color:#546e7a;">⌨</div>
+        <div class="ah-name" style="color:#37474f;">WordPiece</div>
+      </div>
+
+      <div class="ah-arr">
+        <div class="ah-shape">(B, seq_len)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">int64</div>
+      </div>
+
+      <div class="ah-block" style="border-color:#1976d2;background:#e3f2fd;">
+        <div class="ah-icon" style="color:#1565c0;">⊞</div>
+        <div class="ah-name" style="color:#0d47a1;">Embedding</div>
+        <div class="ah-params" style="color:#1976d2;">vocab_size × emb_dim</div>
+      </div>
+
+      <div class="ah-arr">
+        <div class="ah-shape">(B, seq_len, emb_dim)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">float32</div>
+      </div>
+
+      <div class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;">
+        <div class="ah-slim-text">σ</div>
+      </div>
+
+    </div>
+
+    <div style="display:flex;flex-direction:column;align-items:center;padding:10px 0 6px;">
+      <div style="font-size:9px;font-weight:700;color:#666;white-space:nowrap;">(B, seq_len, emb_dim) · float32</div>
+      <div style="font-size:28px;color:#bbb;line-height:1.1;">↓</div>
+    </div>
+
+    <div style="border:1.5px dashed #9c27b0;border-radius:10px;padding:14px 18px;
+                position:relative;display:flex;align-items:center;gap:0;">
+
+      <div style="position:absolute;top:-13px;left:50%;transform:translateX(-50%);
+                  font-size:9.5px;color:#7b1fa2;font-weight:700;background:#fff;
+                  padding:2px 10px;border:1px solid #ce93d8;border-radius:10px;white-space:nowrap;">
+        × n_layers
+      </div>
+
+      <div class="ah-slim" style="border-color:#6a1b9a;background:#f3e5f5;color:#4a148c;">
+        <div class="ah-slim-text">σ</div>
+      </div>
+
+      <div class="ah-arr" style="min-width:56px;">
+        <div class="ah-shape" style="font-size:8px;">(B, seq, emb)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">pre-attn</div>
+      </div>
+
+      <div class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;min-width:148px;">
+        <div class="ah-icon" style="color:#6a1b9a;font-style:italic;letter-spacing:3px;font-size:11px;">Q K V</div>
+        <div class="ah-name" style="color:#4a148c;">Multi-Head Attn</div>
+        <div class="ah-params" style="color:#7b1fa2;">head_dim = emb_dim / n_head</div>
+      </div>
+
+      <div class="ah-arr" style="min-width:62px;">
+        <div class="ah-shape" style="color:#9c27b0;font-size:9px;font-weight:700;">↺ +res</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">(B, seq, emb)</div>
+      </div>
+
+      <div class="ah-slim" style="border-color:#6a1b9a;background:#f3e5f5;color:#4a148c;">
+        <div class="ah-slim-text">σ</div>
+      </div>
+
+      <div class="ah-arr" style="min-width:56px;">
+        <div class="ah-shape" style="font-size:8px;">(B, seq, emb)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">pre-MLP</div>
+      </div>
+
+      <div class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;">
+        <div class="ah-icon" style="color:#6a1b9a;">⇔</div>
+        <div class="ah-name" style="color:#4a148c;">MLP</div>
+        <div class="ah-params" style="color:#7b1fa2;">emb_dim → 4·emb_dim → emb_dim</div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;padding:0 10px;">
+        <div style="font-size:11px;color:#9c27b0;font-weight:700;white-space:nowrap;">↺ +res</div>
+      </div>
+
+    </div>
+
+    <div style="display:flex;flex-direction:column;align-items:center;padding:10px 0 6px;">
+      <div style="font-size:9px;font-weight:700;color:#666;white-space:nowrap;">(B, seq_len, emb_dim) · float32</div>
+      <div style="font-size:28px;color:#bbb;line-height:1.1;">↓</div>
+    </div>
+
+    <div style="display:flex;align-items:center;flex-wrap:nowrap;gap:0;">
+
+      <div class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;">
+        <div class="ah-slim-text">σ</div>
+      </div>
+
+      <div class="ah-arr" style="min-width:70px;">
+        <div class="ah-shape">(B, seq, emb)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">float32</div>
+      </div>
+
+      <div class="ah-block" style="border-color:#388e3c;background:#e8f5e9;">
+        <div class="ah-icon" style="color:#2e7d32;">∑÷n</div>
+        <div class="ah-name" style="color:#1b5e20;">Mean Pool</div>
+        <div class="ah-params" style="color:#388e3c;">(B, seq, emb_dim)<br>→ (B, emb_dim)</div>
+      </div>
+
+      <div class="ah-arr">
+        <div class="ah-shape">(B, emb_dim)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">float32</div>
+      </div>
+
+      <div class="ah-slim" style="border-color:#0097a7;background:#e0f7fa;color:#006064;">
+        <div class="ah-slim-text">σ</div>
+      </div>
+
+      <div class="ah-arr" style="min-width:70px;">
+        <div class="ah-shape">(B, emb_dim)</div>
+        <div class="ah-line">────▶</div>
+        <div class="ah-dtype">float32</div>
+      </div>
+
+      <div class="ah-block" style="border-color:#f57c00;background:#fff3e0;">
+        <div class="ah-icon" style="color:#e65100;">⊸</div>
+        <div class="ah-name" style="color:#bf360c;">Linear</div>
+        <div class="ah-params" style="color:#f57c00;">emb_dim → n_classes</div>
+      </div>
+
+      <div style="display:flex;align-items:center;flex-shrink:0;gap:14px;margin-left:2px;">
+        <div style="display:flex;flex-direction:column;align-items:center;">
+          <div style="font-size:9.5px;font-weight:700;color:#333;white-space:nowrap;">(B, n_classes)</div>
+          <div style="font-size:13px;color:#bbb;">────▶</div>
+        </div>
+        <div style="font-size:15px;font-weight:700;color:#333;white-space:nowrap;margin-top:10px;">ŷ (logits)</div>
+      </div>
+
+    </div>
+
+  </div>
+</div>
+```
+:::
+
+::::
+
+## Aggregation Method: Mean Pooling {.center}
+
+:::: {.columns}
+
+::: {.column width="34%"}
+- Every token embedding contributes **equally** to the sentence vector: $v = \frac{1}{T}\sum_t e_t$
+- No notion of importance — a keyword and a stopword count the same
+- The **same pooled vector** $v$ is then reused by the linear head, for every class alike
+- Simple and fast, a strong baseline — but blind to *which* words actually drove the decision
+:::
+
+::: {.column width="66%"}
+```{=html}
+<div style="zoom:0.85;">
+  <div style="border:2px solid #d0d0d0;border-radius:14px;background:#fff;
+              padding:22px 26px;box-sizing:border-box;
+              display:flex;flex-direction:column;align-items:center;gap:6px;
+              box-shadow:0 2px 12px rgba(0,0,0,.06);">
+
+    <div style="display:flex;gap:16px;padding-bottom:12px;border-bottom:2px solid #ccc;">
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="mp-tok">sells</div>
+        <div class="mp-emb">e₁</div>
+        <div class="mp-w">1/T</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="mp-tok">organic</div>
+        <div class="mp-emb">e₂</div>
+        <div class="mp-w">1/T</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="mp-tok">vegetables</div>
+        <div class="mp-emb">e₃</div>
+        <div class="mp-w">1/T</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="mp-tok">online</div>
+        <div class="mp-emb">e₄</div>
+        <div class="mp-w">1/T</div>
+      </div>
+    </div>
+
+    <div style="font-size:20px;color:#bbb;">↓</div>
+
+    <div class="ah-slim" style="border-color:#388e3c;background:#e8f5e9;color:#1b5e20;width:44px;height:44px;">
+      <div class="ah-slim-text" style="font-size:18px;">Σ</div>
+    </div>
+
+    <div style="font-size:20px;color:#bbb;">↓</div>
+
+    <div class="ah-block" style="border-color:#388e3c;background:#e8f5e9;height:auto;padding:10px 16px;">
+      <div class="ah-name" style="color:#1b5e20;">v</div>
+      <div class="ah-params" style="color:#388e3c;">pooled vector<br>(emb_dim,)</div>
+    </div>
+
+    <div style="font-size:10.5px;color:#888;margin-top:2px;">same v reused for every class</div>
+
+    <div style="font-size:20px;color:#bbb;">↓</div>
+
+    <div style="display:flex;gap:22px;padding-top:12px;border-top:2px dashed #ccc;">
+      <div class="mp-cls">Class 1<br><span>ŷ₁ = w₁·v</span></div>
+      <div class="mp-cls">Class 2<br><span>ŷ₂ = w₂·v</span></div>
+      <div class="mp-cls">Class 3<br><span>ŷ₃ = w₃·v</span></div>
+    </div>
+
+  </div>
+</div>
+<style>
+.mp-tok { border:1.5px solid #1976d2; border-radius:8px; background:#e3f2fd; padding:6px 10px;
+          font-size:11px; font-weight:700; color:#0d47a1; white-space:nowrap; }
+.mp-emb { font-size:10px; color:#1976d2; margin-top:3px; }
+.mp-w   { font-size:10.5px; color:#388e3c; font-weight:700; margin-top:5px; }
+.mp-cls { border:2px solid #f57c00; border-radius:10px; background:#fff3e0; padding:8px 12px;
+          font-size:11px; font-weight:700; color:#bf360c; text-align:center; white-space:nowrap; }
+.mp-cls span { font-size:9.5px; font-weight:400; color:#e65100; }
+</style>
+```
+:::
+
+::::
+
+## Aggregation Method: Label Attention {.center}
+
+:::: {.columns}
+
+::: {.column width="34%"}
+- Each class $c$ learns its own **attention query**, giving weights $\alpha_{c,t}$ over the tokens (softmax, sums to 1)
+- Class vector: $v_c = \sum_t \alpha_{c,t}\, e_t$ — a **different weighted combination per class**
+- The weights double as an **explanation**: which words mattered, *for which class*
+- More expressive than mean pooling — and interpretable **by construction**, not after the fact
+:::
+
+::: {.column width="66%"}
+```{=html}
+<div style="zoom:0.62;">
+  <div style="border:2px solid #d0d0d0;border-radius:14px;background:#fff;
+              padding:22px 26px;box-sizing:border-box;
+              display:flex;flex-direction:column;align-items:center;gap:6px;
+              box-shadow:0 2px 12px rgba(0,0,0,.06);">
+
+    <div style="display:flex;gap:16px;padding-bottom:14px;">
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="mp-tok">sells</div>
+        <div class="mp-emb">e₁</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="mp-tok">organic</div>
+        <div class="mp-emb">e₂</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="mp-tok">vegetables</div>
+        <div class="mp-emb">e₃</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;">
+        <div class="mp-tok">online</div>
+        <div class="mp-emb">e₄</div>
+      </div>
+    </div>
+
+    <div style="font-size:20px;color:#bbb;">↓ ↓ ↓ ↓</div>
+
+    <div style="display:flex;gap:48px;padding-top:8px;">
+
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+        <div style="font-size:11px;font-weight:700;color:#7b1fa2;">Class A attention</div>
+        <div style="display:flex;align-items:flex-end;gap:10px;height:44px;">
+          <div class="la-bar" style="height:10px;background:#ce93d8;"><span>.05</span></div>
+          <div class="la-bar" style="height:40px;background:#8e24aa;"><span>.62</span></div>
+          <div class="la-bar" style="height:18px;background:#ce93d8;"><span>.20</span></div>
+          <div class="la-bar" style="height:8px;background:#ce93d8;"><span>.13</span></div>
+        </div>
+        <div style="font-size:20px;color:#bbb;">↓</div>
+        <div class="ah-slim" style="border-color:#6a1b9a;background:#f3e5f5;color:#4a148c;width:40px;height:40px;">
+          <div class="ah-slim-text" style="font-size:16px;">Σ</div>
+        </div>
+        <div style="font-size:20px;color:#bbb;">↓</div>
+        <div class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;height:auto;padding:8px 14px;">
+          <div class="ah-name" style="color:#4a148c;">v_A</div>
+          <div class="ah-params" style="color:#7b1fa2;">weighted vector</div>
+        </div>
+        <div style="font-size:20px;color:#bbb;">↓</div>
+        <div class="mp-cls">Class A<br><span>ŷ_A = w_A·v_A</span></div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+        <div style="font-size:11px;font-weight:700;color:#7b1fa2;">Class B attention</div>
+        <div style="display:flex;align-items:flex-end;gap:10px;height:44px;">
+          <div class="la-bar" style="height:8px;background:#ce93d8;"><span>.04</span></div>
+          <div class="la-bar" style="height:10px;background:#ce93d8;"><span>.09</span></div>
+          <div class="la-bar" style="height:16px;background:#ce93d8;"><span>.17</span></div>
+          <div class="la-bar" style="height:40px;background:#8e24aa;"><span>.70</span></div>
+        </div>
+        <div style="font-size:20px;color:#bbb;">↓</div>
+        <div class="ah-slim" style="border-color:#6a1b9a;background:#f3e5f5;color:#4a148c;width:40px;height:40px;">
+          <div class="ah-slim-text" style="font-size:16px;">Σ</div>
+        </div>
+        <div style="font-size:20px;color:#bbb;">↓</div>
+        <div class="ah-block" style="border-color:#6a1b9a;background:#f3e5f5;height:auto;padding:8px 14px;">
+          <div class="ah-name" style="color:#4a148c;">v_B</div>
+          <div class="ah-params" style="color:#7b1fa2;">weighted vector</div>
+        </div>
+        <div style="font-size:20px;color:#bbb;">↓</div>
+        <div class="mp-cls">Class B<br><span>ŷ_B = w_B·v_B</span></div>
+      </div>
+
+    </div>
+
+  </div>
+</div>
+<style>
+.mp-tok { border:1.5px solid #1976d2; border-radius:8px; background:#e3f2fd; padding:6px 10px;
+          font-size:11px; font-weight:700; color:#0d47a1; white-space:nowrap; }
+.mp-emb { font-size:10px; color:#1976d2; margin-top:3px; }
+.mp-cls { border:2px solid #f57c00; border-radius:10px; background:#fff3e0; padding:8px 12px;
+          font-size:11px; font-weight:700; color:#bf360c; text-align:center; white-space:nowrap; }
+.mp-cls span { font-size:9.5px; font-weight:400; color:#e65100; }
+.la-bar { width:26px; border-radius:4px 4px 0 0; position:relative; display:flex;
+          justify-content:center; }
+.la-bar span { position:absolute; top:-16px; font-size:9px; font-weight:700; color:#4a148c; white-space:nowrap; }
+</style>
+```
+:::
+
+::::
+
+## Captum: Explaining a Prediction After the Fact {.center}
+
+:::: {.columns}
+
+::: {.column width="34%"}
+- **Captum (Integrated Gradients)**: a post-hoc method — explains any differentiable model, no architecture change needed
+- Interpolates between a **baseline** (e.g. an empty input) and the actual input, accumulating gradients along the path
+- Output: one **attribution score per token** — how much each word pushed the prediction toward the predicted class
+:::
+
+::: {.column width="66%"}
+```{=html}
+<div style="zoom:1;">
+  <div style="border:2px solid #d0d0d0;border-radius:14px;background:#fff;
+              padding:20px 26px;box-sizing:border-box;width:640px;
+              display:flex;flex-direction:column;gap:16px;
+              box-shadow:0 2px 12px rgba(0,0,0,.06);">
+
+    <div style="text-align:center;font-size:10.5px;color:#999;font-family:monospace;">
+      IG(xₜ) = (xₜ − x′ₜ) · (1/m) Σₖ ∂Fc/∂xₜ (x′ + (k/m)(x−x′))
+    </div>
+
+    <!-- Step 1 -->
+    <div class="ig-step">
+      <div class="ig-badge">1</div>
+      <div style="flex:1;">
+        <div class="ig-title">Pick a baseline — a neutral reference input</div>
+        <div style="display:flex;align-items:center;gap:18px;">
+          <div style="display:flex;flex-direction:column;align-items:center;">
+            <div class="cg-baseline">∅</div>
+            <div class="ig-sub">baseline x′ (zero embedding)</div>
+          </div>
+          <div style="font-size:16px;color:#ccc;">vs.</div>
+          <div style="display:flex;flex-direction:column;align-items:center;">
+            <div style="display:flex;gap:6px;">
+              <div class="cg-tok">sells</div>
+              <div class="cg-tok">organic</div>
+              <div class="cg-tok">vegetables</div>
+              <div class="cg-tok">online</div>
+            </div>
+            <div class="ig-sub">actual input x</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2 -->
+    <div class="ig-step">
+      <div class="ig-badge">2</div>
+      <div style="flex:1;">
+        <div class="ig-title">Walk the straight line from x′ to x in m steps, and measure the gradient at each point</div>
+        <div style="display:flex;align-items:flex-end;gap:0;padding-top:6px;">
+          <div class="ig-pt"><div class="ig-bar" style="height:5px;"></div><div class="ig-dot"></div><div class="ig-a">α=0</div></div>
+          <div class="ig-pt"><div class="ig-bar" style="height:12px;"></div><div class="ig-dot"></div><div class="ig-a">.2</div></div>
+          <div class="ig-pt"><div class="ig-bar" style="height:20px;"></div><div class="ig-dot"></div><div class="ig-a">.4</div></div>
+          <div class="ig-pt"><div class="ig-bar" style="height:29px;"></div><div class="ig-dot"></div><div class="ig-a">.6</div></div>
+          <div class="ig-pt"><div class="ig-bar" style="height:37px;"></div><div class="ig-dot"></div><div class="ig-a">.8</div></div>
+          <div class="ig-pt"><div class="ig-bar" style="height:44px;"></div><div class="ig-dot"></div><div class="ig-a">α=1</div></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:9.5px;color:#888;padding-top:2px;">
+          <span>x′ + α(x−x′)</span><span>bar height = |∂Fc/∂x| at that point</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3 -->
+    <div class="ig-step">
+      <div class="ig-badge">3</div>
+      <div style="flex:1;">
+        <div class="ig-title">Average the m gradients, then scale by how far each word is from its baseline</div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div class="ig-op">1/m Σ</div>
+          <div class="ig-arrow-h">──▶</div>
+          <div class="ig-op">avg gradient</div>
+          <div class="ig-arrow-h">──▶</div>
+          <div class="ig-op">× (x − x′)</div>
+          <div class="ig-arrow-h">──▶</div>
+          <div class="ig-op" style="border-color:#c62828;background:#ffebee;color:#b71c1c;">IGₜ</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Result -->
+    <div class="ig-step">
+      <div class="ig-badge" style="background:#c62828;">✓</div>
+      <div style="flex:1;">
+        <div class="ig-title">Result: one attribution score per token</div>
+        <div style="display:flex;gap:8px;">
+          <div class="cg-attr" style="background:rgba(211,47,47,.15);color:#4a0000;"><span>sells</span><small>0.04</small></div>
+          <div class="cg-attr" style="background:rgba(211,47,47,.80);color:#fff;"><span>organic</span><small>0.51</small></div>
+          <div class="cg-attr" style="background:rgba(211,47,47,.55);color:#fff;"><span>vegetables</span><small>0.38</small></div>
+          <div class="cg-attr" style="background:rgba(211,47,47,.10);color:#4a0000;"><span>online</span><small>0.07</small></div>
+        </div>
+        <div class="ig-sub" style="margin-top:4px;">darker = more important for the predicted class</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+<style>
+.cg-baseline { width:44px; height:44px; border:2px dashed #9e9e9e; border-radius:8px;
+               display:flex; align-items:center; justify-content:center;
+               font-size:16px; color:#757575; background:#fafafa; }
+.cg-tok { border:1.5px solid #1976d2; border-radius:8px; background:#e3f2fd; padding:6px 10px;
+          font-size:11px; font-weight:700; color:#0d47a1; white-space:nowrap; }
+.cg-attr { border-radius:8px; padding:8px 10px; text-align:center; min-width:64px; }
+.cg-attr span { display:block; font-size:11px; font-weight:700; }
+.cg-attr small { display:block; font-size:9.5px; margin-top:2px; }
+.ig-step { display:flex; align-items:flex-start; gap:14px; }
+.ig-badge { flex-shrink:0; width:26px; height:26px; border-radius:50%; background:#0097a7; color:#fff;
+            font-weight:700; font-size:12px; display:flex; align-items:center; justify-content:center; }
+.ig-title { font-size:11.5px; font-weight:700; color:#333; margin-bottom:8px; }
+.ig-sub { font-size:9.5px; color:#888; margin-top:3px; text-align:center; }
+.ig-pt { display:flex; flex-direction:column; align-items:center; width:66px; flex-shrink:0; }
+.ig-bar { width:8px; background:#0097a7; border-radius:2px 2px 0 0; }
+.ig-dot { width:8px; height:8px; border-radius:50%; background:#00636f; margin-top:2px; }
+.ig-a { font-size:9px; color:#888; margin-top:3px; }
+.ig-op { border:1.5px solid #0097a7; background:#e0f7fa; color:#006064; border-radius:8px;
+         padding:6px 10px; font-size:10.5px; font-weight:700; white-space:nowrap; }
+.ig-arrow-h { font-size:13px; color:#bbb; }
+</style>
+```
+:::
+
+::::
+
+# Amazon & CLINC150: The Methodological Testbed
+
+## Setup — A Testbed Before NAF {.center}
+
+- Two public, **SOTA** benchmarks — chosen as a **testbed**, not the end goal. Most of the pipeline later applied to NAF (analysis, explainability, fidelity tests) was built and validated here first
+- The only datasets where the **FATE (transformer)** architecture was tested — NAF stayed on the lighter FastText backbone
+
+:::: {.columns}
+
+::: {.column width="50%"}
+**Amazon Reviews** — sentiment analysis: review text → star rating (1–5)
+
+<span class="ds-badge" style="border-color:#1976d2;background:#e3f2fd;color:#0d47a1;">~200,000 examples</span>
+
+```{=html}
+<div class="ex-card">
+  <div class="ex-text">"Absolutely love this blender, crushes ice in seconds."</div>
+  <div class="ex-arrow">→</div>
+  <div class="ex-label" style="border-color:#1976d2;background:#e3f2fd;color:#0d47a1;">★★★★★</div>
+</div>
+<div class="ex-card">
+  <div class="ex-text">"Battery died after two days, very disappointed."</div>
+  <div class="ex-arrow">→</div>
+  <div class="ex-label" style="border-color:#1976d2;background:#e3f2fd;color:#0d47a1;">★★☆☆☆</div>
+</div>
+```
+:::
+
+::: {.column width="50%"}
+**CLINC150** — intent classification: user query → one of 150 possible intents
+
+<span class="ds-badge" style="border-color:#f57c00;background:#fff3e0;color:#bf360c;">~15,000 examples</span>
+
+```{=html}
+<div class="ex-card">
+  <div class="ex-text">"what's the weather going to be like tomorrow"</div>
+  <div class="ex-arrow">→</div>
+  <div class="ex-label" style="border-color:#f57c00;background:#fff3e0;color:#bf360c;">weather</div>
+</div>
+<div class="ex-card">
+  <div class="ex-text">"can you tell me a joke about cats"</div>
+  <div class="ex-arrow">→</div>
+  <div class="ex-label" style="border-color:#f57c00;background:#fff3e0;color:#bf360c;">tell_joke</div>
+</div>
+```
+:::
+
+::::
+
+```{=html}
+<style>
+.ds-badge { display:inline-block; border:1.5px solid; border-radius:12px; padding:3px 10px;
+            font-size:11px; font-weight:700; margin:6px 0 12px; }
+.ex-card { display:flex; align-items:center; gap:10px; border:1.5px solid #e0e0e0; border-radius:10px;
+           background:#fafafa; padding:8px 12px; margin-bottom:8px; }
+.ex-text { font-size:11px; color:#444; font-style:italic; flex:1; }
+.ex-arrow { font-size:14px; color:#bbb; flex-shrink:0; }
+.ex-label { flex-shrink:0; border:1.5px solid; border-radius:8px; padding:5px 9px;
+            font-size:10.5px; font-weight:700; white-space:nowrap; }
+</style>
+```
+
+## Setup — Focus on Amazon {.center}
+
+:::: {.columns}
+
+::: {.column width="34%"}
+- On CLINC150, label attention doesn't just fail to help — it **degrades** accuracy vs. plain mean pooling
+- Root cause: **too little data per class**. Label attention learns one attention query *per class* — 150 separate patterns to learn on CLINC vs. only 5 on Amazon
+- ~100 examples/class on CLINC vs. ~40,000 on Amazon — not enough signal to learn 150 patterns
+:::
+
+::: {.column width="66%"}
+```{=html}
+<div style="zoom:1.25;display:flex;gap:20px;justify-content:center;align-items:stretch;">
+
+  <div class="cmp-panel" style="border-color:#c62828;background:#ffebee;">
+    <div class="cmp-title" style="color:#b71c1c;">CLINC150</div>
+    <div class="cmp-badge" style="background:#c62828;">150 classes</div>
+    <div class="cmp-bar-wrap">
+      <div class="cmp-bar-label">~100</div>
+      <div class="cmp-bar" style="height:40px;background:#e57373;"></div>
+    </div>
+    <div class="cmp-note">examples / class</div>
+    <div class="cmp-icon" style="color:#c62828;">⚠ 150 attention queries, undertrained</div>
+    <div class="cmp-result" style="border-color:#c62828;background:#c62828;color:#fff;">accuracy ↓ vs. mean pooling</div>
+  </div>
+
+  <div class="cmp-panel" style="border-color:#2e7d32;background:#e8f5e9;">
+    <div class="cmp-title" style="color:#1b5e20;">Amazon</div>
+    <div class="cmp-badge" style="background:#2e7d32;">5 classes</div>
+    <div class="cmp-bar-wrap">
+      <div class="cmp-bar-label">~40,000</div>
+      <div class="cmp-bar" style="height:92px;background:#81c784;"></div>
+    </div>
+    <div class="cmp-note">examples / class</div>
+    <div class="cmp-icon" style="color:#2e7d32;">✓ 5 attention queries, well-trained</div>
+    <div class="cmp-result" style="border-color:#2e7d32;background:#2e7d32;color:#fff;">accuracy ↑ vs. mean pooling</div>
+  </div>
+
+</div>
+<style>
+.cmp-panel { border:2px solid; border-radius:14px; padding:16px 18px; width:220px;
+             box-shadow:0 2px 12px rgba(0,0,0,.06);
+             display:flex; flex-direction:column; align-items:center; gap:8px; }
+.cmp-title { font-size:15px; font-weight:700; }
+.cmp-badge { color:#fff; border-radius:12px; padding:3px 10px; font-size:10.5px; font-weight:700; }
+.cmp-bar-wrap { display:flex; flex-direction:column; align-items:center; justify-content:flex-end;
+                height:100px; margin-top:6px; }
+.cmp-bar-label { font-size:11px; font-weight:700; color:#333; margin-bottom:4px; }
+.cmp-bar { width:46px; border-radius:6px 6px 0 0; }
+.cmp-note { font-size:9.5px; color:#888; margin-top:-4px; }
+.cmp-icon { font-size:10.5px; font-weight:700; text-align:center; margin-top:6px; }
+.cmp-result { border:1.5px solid; border-radius:8px; padding:6px 10px; font-size:10.5px;
+              font-weight:700; text-align:center; white-space:nowrap; margin-top:4px; }
+</style>
+```
+:::
+
+::::
+
+## Setup — Method: Train → Predictions → Explainability {.center}
+
+```{=html}
+<div style="display:flex;align-items:stretch;justify-content:center;gap:14px;padding-top:10px;">
+
+  <div class="pl-stage" style="border-color:#0097a7;background:#e0f7fa;">
+    <div class="pl-badge" style="background:#0097a7;">1</div>
+    <div class="pl-title" style="color:#006064;">Training</div>
+    <ul class="pl-list">
+      <li>Loss dynamics over epochs</li>
+      <li>Effect of hyperparameters</li>
+      <li>Representation separability</li>
+    </ul>
+  </div>
+
+  <div class="pl-arrow">→</div>
+
+  <div class="pl-stage" style="border-color:#f57c00;background:#fff3e0;">
+    <div class="pl-badge" style="background:#f57c00;">2</div>
+    <div class="pl-title" style="color:#bf360c;">Predictions</div>
+    <ul class="pl-list">
+      <li>Confusion patterns</li>
+      <li>Confidence / calibration</li>
+    </ul>
+  </div>
+
+  <div class="pl-arrow">→</div>
+
+  <div class="pl-stage" style="border-color:#8e24aa;background:#f3e5f5;">
+    <div class="pl-badge" style="background:#8e24aa;">3</div>
+    <div class="pl-title" style="color:#4a148c;">Explainability</div>
+    <ul class="pl-list">
+      <li>Captum (Integrated Gradients)</li>
+      <li>Label attention</li>
+      <li>Fidelity test</li>
+    </ul>
+  </div>
+
+</div>
+<style>
+.pl-stage { border:2px solid; border-radius:14px; padding:18px 16px; width:230px;
+            box-shadow:0 2px 12px rgba(0,0,0,.06);
+            display:flex; flex-direction:column; align-items:center; gap:8px; }
+.pl-badge { width:28px; height:28px; border-radius:50%; color:#fff; font-weight:700;
+            font-size:13px; display:flex; align-items:center; justify-content:center; }
+.pl-title { font-size:15px; font-weight:700; }
+.pl-list { margin:0; padding-left:18px; text-align:left; font-size:11.5px; color:#444; line-height:1.6; }
+.pl-arrow { font-size:26px; color:#bbb; align-self:center; }
+</style>
+```
+
+## Training: What Shapes Validation Loss {.smaller}
+
+960 runs on Amazon, swept across architecture, vocabulary size, and embedding dimension.
+
+```{python}
+#| label: load-amazon-runs-train
+
+from pathlib import Path
+import mlflow
+import pandas as pd
+
+CACHE_PATH = Path("results/amazon/runs.csv")
+CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+if CACHE_PATH.exists():
+    df = pd.read_csv(CACHE_PATH)
+    if "metrics.train_time_s" in df.columns:
+        df = df.rename(columns={"metrics.train_time_s": "train_time_s"})
+else:
+    df = mlflow.search_runs(experiment_names=["amazon"], max_results=2000)
+    df = df[df["status"] == "FINISHED"].copy()
+    df = df.rename(columns={
+        "params.emb_dim":                  "emb_dim",
+        "params.n_layers":                 "n_layers",
+        "params.n_head":                   "n_head",
+        "params.n_heads_label_attention":  "n_heads_label_attn",
+        "params.vocab_size":               "vocab_size",
+        "params.lr":                       "lr",
+        "metrics.num_params":              "num_params",
+        "metrics.test_accuracy":           "test_accuracy",
+        "metrics.test_f1_macro":           "test_f1_macro",
+        "metrics.train_time_s":            "train_time_s",
+    })
+
+    client = mlflow.MlflowClient()
+    def get_min_val_loss(run_id):
+        history = client.get_metric_history(run_id, "val_loss")
+        return min(m.value for m in history) if history else None
+
+    df["min_val_loss"] = df["run_id"].apply(get_min_val_loss)
+
+    for col in ["emb_dim", "n_layers", "vocab_size"]:
+        df[col] = df[col].astype(int)
+    df["lr"] = df["lr"].astype(float)
+    df["num_params"] = df["num_params"].astype(int)
+
+    def arch_label(row):
+        la = str(row["n_heads_label_attn"]) == "4"
+        if row["n_layers"] == 0:
+            return "FastText + Label Attention" if la else "FastText"
+        suffix = " + Label Attention" if la else ""
+        return f"FATE (L={row['n_layers']}){suffix}"
+
+    df["architecture"] = df.apply(arch_label, axis=1)
+    df.to_csv(CACHE_PATH, index=False)
+
+COLORS = {
+    "FastText":                          "#2196F3",
+    "FastText + Label Attention":        "#00BCD4",
+    "FATE (L=1)":                        "#FFC107",
+    "FATE (L=1) + Label Attention":      "#FF8C00",
+    "FATE (L=2)":                        "#CC0000",
+    "FATE (L=2) + Label Attention":      "#880E4F",
+    "FATE (L=4)":                        "#6A1B9A",
+    "FATE (L=4) + Label Attention":      "#311B92",
+}
+```
+
+::: {.panel-tabset}
+
+### vs. Parameters
+
+```{python}
+#| label: fig-pareto-slide
+#| fig-cap: "Validation loss vs. number of parameters"
+
+import plotly.graph_objects as go
+
+df_curves = (
+    df.groupby(["architecture", "emb_dim", "vocab_size", "num_params"], as_index=False)
+    ["min_val_loss"].min()
+    .sort_values("num_params")
+)
+
+ft_archs   = ["FastText", "FastText + Label Attention"]
+df_ft      = df[df["architecture"].isin(ft_archs)].groupby(
+    ["architecture", "emb_dim", "vocab_size", "lr", "num_params"], as_index=False
+)["min_val_loss"].min()
+df_scatter = pd.concat([df_ft, df[~df["architecture"].isin(ft_archs)]], ignore_index=True)
+
+fig = go.Figure()
+
+for arch in COLORS:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+
+for arch, group in df_scatter.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["num_params"], y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.3),
+        hovertemplate="params=%{x:,}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+for arch, group in df_curves.groupby("architecture"):
+    fig.add_trace(go.Scatter(
+        x=group["num_params"], y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=5),
+        hovertemplate="params=%{x:,}<br>best val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+fig.update_layout(
+    xaxis_title="Number of parameters", yaxis_title="Validation loss",
+    legend_title="Architecture", height=460,
+    xaxis=dict(tickformat=".2s"), margin=dict(l=50, r=10, t=10, b=40),
+)
+fig.show()
+```
+
+### vs. Vocabulary Size
+
+```{python}
+#| label: fig-vocab-slide
+#| fig-cap: "Effect of vocabulary size on validation loss"
+
+vocab_vals = sorted(df["vocab_size"].unique())
+emb_vals   = sorted(df["emb_dim"].unique())
+
+df_vocab_mean = (
+    df.groupby(["architecture", "vocab_size"], as_index=False)["min_val_loss"].mean()
+    .sort_values("vocab_size")
+)
+df_emb_mean = (
+    df.groupby(["architecture", "emb_dim"], as_index=False)["min_val_loss"].mean()
+    .sort_values("emb_dim")
+)
+
+vocab_offsets = {
+    "FastText":                          -1050,
+    "FastText + Label Attention":        -750,
+    "FATE (L=1)":                        -450,
+    "FATE (L=1) + Label Attention":      -150,
+    "FATE (L=2)":                        +150,
+    "FATE (L=2) + Label Attention":      +450,
+    "FATE (L=4)":                        +750,
+    "FATE (L=4) + Label Attention":      +1050,
+}
+
+fig = go.Figure()
+for arch in COLORS:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df.groupby("architecture"):
+    offset = vocab_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["vocab_size"] + offset, y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
+        hovertemplate="vocab=%{customdata:,}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["vocab_size"],
+    ))
+for arch, group in df_vocab_mean.groupby("architecture"):
+    offset = vocab_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["vocab_size"] + offset, y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=6),
+        hovertemplate="vocab=%{customdata:,}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["vocab_size"],
+    ))
+fig.update_layout(
+    xaxis_title="Vocabulary size", yaxis_title="Validation loss",
+    xaxis=dict(tickvals=vocab_vals, ticktext=[f"{v:,}" for v in vocab_vals]),
+    legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
+    height=460, width=860, margin=dict(l=50, r=10, t=10, b=40),
+)
+fig.show()
+```
+
+### vs. Embedding Dimension
+
+```{python}
+#| label: fig-emb-slide
+#| fig-cap: "Effect of embedding dimension on validation loss"
+
+emb_offsets = {
+    "FastText":                          -31,
+    "FastText + Label Attention":        -22,
+    "FATE (L=1)":                        -13,
+    "FATE (L=1) + Label Attention":      -4,
+    "FATE (L=2)":                        +4,
+    "FATE (L=2) + Label Attention":      +13,
+    "FATE (L=4)":                        +22,
+    "FATE (L=4) + Label Attention":      +31,
+}
+
+fig = go.Figure()
+for arch in COLORS:
+    fig.add_trace(go.Scatter(
+        x=[None], y=[None], mode="markers",
+        name=arch, legendgroup=arch, showlegend=True,
+        marker=dict(color=COLORS[arch], size=8, opacity=1.0),
+    ))
+for arch, group in df.groupby("architecture"):
+    offset = emb_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["emb_dim"] + offset, y=group["min_val_loss"],
+        mode="markers", name=arch, legendgroup=arch, showlegend=False,
+        marker=dict(color=COLORS.get(arch, "grey"), size=5, opacity=0.15),
+        hovertemplate="emb_dim=%{customdata}<br>val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["emb_dim"],
+    ))
+for arch, group in df_emb_mean.groupby("architecture"):
+    offset = emb_offsets.get(arch, 0)
+    fig.add_trace(go.Scatter(
+        x=group["emb_dim"] + offset, y=group["min_val_loss"],
+        mode="lines+markers", name=arch, legendgroup=arch, showlegend=False,
+        line=dict(color=COLORS.get(arch, "grey"), width=2), marker=dict(size=6),
+        hovertemplate="emb_dim=%{customdata}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+        customdata=group["emb_dim"],
+    ))
+fig.update_layout(
+    xaxis_title="Embedding dimension", yaxis_title="Validation loss",
+    xaxis=dict(tickvals=emb_vals, ticktext=[str(v) for v in emb_vals]),
+    legend=dict(title=dict(text="Architecture<br><i style='font-size:11px;font-weight:normal'>line = mean</i>")),
+    height=460, width=860, margin=dict(l=50, r=10, t=10, b=40),
+)
+fig.show()
+```
+
+:::
+
+## Predictions: Error Patterns & Agreement {.smaller}
+
+```{python}
+#| label: load-predictions-slide
+
+import numpy as np, urllib.request
+from plotly.subplots import make_subplots
+
+STAR_LABELS  = ["1★", "2★", "3★", "4★", "5★"]
+
+PRED_BUCKET  = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions/amazon"
+ARCH_FILES   = {
+    "FastText":                          "fasttext.npz",
+    "FastText + Label Attention":        "fasttext_labatt.npz",
+    "FATE (L=1)":                        "fateL1.npz",
+    "FATE (L=1) + Label Attention":      "fateL1_labatt.npz",
+    "FATE (L=2)":                        "fateL2.npz",
+    "FATE (L=2) + Label Attention":      "fateL2_labatt.npz",
+    "FATE (L=4)":                        "fateL4.npz",
+    "FATE (L=4) + Label Attention":      "fateL4_labatt.npz",
+}
+
+PREDS_DIR = Path("results/amazon/preds")
+PREDS_DIR.mkdir(parents=True, exist_ok=True)
+
+preds_by_arch = {}
+for arch, fname in ARCH_FILES.items():
+    cache = PREDS_DIR / fname
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{PRED_BUCKET}/{fname}", cache)
+        d = np.load(cache, allow_pickle=True)
+        preds_by_arch[arch] = {
+            "y_test": d["y_test"].astype(int),
+            "y_pred": d["y_pred"].astype(int),
+        }
+    except Exception:
+        pass
+
+ARCHS_AVAIL = list(preds_by_arch.keys())
+```
+
+::: {.panel-tabset}
+
+### Error Analysis
+
+```{python}
+#| label: fig-error-seg-slide
+#| fig-cap: "Prediction distance per architecture"
+
+SEG_KEYS   = ["Correct", "Off by 1", "Off by 2", "Off by 3+"]
+SEG_COLORS = {"Correct": "#43A047", "Off by 1": "#FDD835", "Off by 2": "#FB8C00", "Off by 3+": "#E53935"}
+
+arch_segs = {}
+for arch in ARCHS_AVAIL:
+    d        = preds_by_arch[arch]
+    y_t, y_p = d["y_test"], d["y_pred"]
+    dist     = np.abs(y_p - y_t)
+    n        = len(dist)
+    arch_segs[arch] = {
+        "Correct":   (dist == 0).sum() / n * 100,
+        "Off by 1":  (dist == 1).sum() / n * 100,
+        "Off by 2":  (dist == 2).sum() / n * 100,
+        "Off by 3+": (dist >= 3).sum() / n * 100,
+    }
+
+fig1 = go.Figure()
+for i, arch in enumerate(ARCHS_AVAIL):
+    segs = arch_segs[arch]
+    for seg in SEG_KEYS:
+        pct = segs[seg]
+        fig1.add_trace(go.Bar(
+            x=[pct], y=[arch], orientation="h",
+            name=seg, legendgroup=seg, showlegend=(i == 0),
+            marker_color=SEG_COLORS[seg],
+            text=f"{pct:.1f}%" if pct >= 4 else "",
+            textposition="inside", insidetextanchor="middle",
+            textfont=dict(size=11, color="white" if seg != "Off by 1" else "#333"),
+            hovertemplate=f"<b>{seg}</b>: {pct:.1f}%<extra></extra>",
+        ))
+
+fig1.update_layout(
+    barmode="relative",
+    template="simple_white",
+    xaxis=dict(range=[0, 100], ticksuffix="%", showgrid=False, title_text="% of test examples"),
+    yaxis=dict(autorange="reversed"),
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.22, yanchor="top",
+                itemclick=False, itemdoubleclick=False),
+    height=380, width=820, margin=dict(t=20, b=80),
+)
+fig1.show()
+```
+
+- The vast majority of predictions land within **±1 star** of the truth — off-by-3+ errors stay under **8%**
+- Correctness rises modestly with capacity: ~59% for FastText vs. ~62–63% for the deeper FATE variants
+
+### Model Agreement
+
+```{python}
+#| label: fig-agreement-correctness-slide
+#| fig-cap: "Model agreement vs. correctness"
+
+preds_matrix = np.array([preds_by_arch[a]["y_pred"] for a in ARCHS_AVAIL])
+y_true       = preds_by_arch[ARCHS_AVAIL[0]]["y_test"]
+n_test       = preds_matrix.shape[1]
+
+n_distinct  = np.array([len(set(preds_matrix[:, i])) for i in range(n_test)])
+maj_pred    = np.array([np.bincount(preds_matrix[:, i], minlength=5).argmax() for i in range(n_test)])
+maj_correct = (maj_pred == y_true)
+
+levels  = sorted(k for k in np.unique(n_distinct).tolist() if k < 5)
+xlabels = [f"All {len(ARCHS_AVAIL)} agree" if k == 1 else f"{k} distinct labels" for k in levels]
+
+share = [(n_distinct == k).mean() * 100 for k in levels]
+acc   = [maj_correct[n_distinct == k].mean() * 100 for k in levels]
+
+STAR_COLORS = ["#E53935", "#FB8C00", "#FDD835", "#7CB342", "#43A047"]
+comp = np.zeros((len(levels), 5))
+for li, k in enumerate(levels):
+    counts = np.bincount(y_true[n_distinct == k], minlength=5)
+    comp[li] = counts / counts.sum() * 100
+
+fig = make_subplots(
+    rows=1, cols=2,
+    subplot_titles=["Share of test set & majority-vote accuracy", "Composition of true ratings"],
+)
+fig.add_trace(go.Bar(
+    x=xlabels, y=share, name="% of test set", marker_color="#90A4AE",
+    hovertemplate="%{x}<br>%{y:.1f}% of test set<extra></extra>",
+), row=1, col=1)
+fig.add_trace(go.Scatter(
+    x=xlabels, y=acc, name="Majority-vote accuracy", mode="lines+markers",
+    marker=dict(size=10, color="#C62828"), line=dict(width=3, color="#C62828"),
+    hovertemplate="%{x}<br>accuracy: %{y:.1f}%<extra></extra>",
+), row=1, col=1)
+
+for ci, star in enumerate(STAR_LABELS):
+    fig.add_trace(go.Bar(
+        x=xlabels, y=comp[:, ci], name=star, marker_color=STAR_COLORS[ci],
+        hovertemplate=f"<b>{star}</b><br>%{{x}}: %{{y:.1f}}% of group<extra></extra>",
+    ), row=1, col=2)
+
+fig.update_yaxes(title_text="%", range=[0, 100], row=1, col=1)
+fig.update_yaxes(title_text="% of group", range=[0, 100], row=1, col=2)
+fig.update_xaxes(tickangle=-15)
+fig.update_layout(
+    barmode="stack", template="simple_white", height=380, width=820,
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.32, yanchor="top"),
+    margin=dict(t=60, b=110),
+)
+fig.show()
+```
+
+- Accuracy drops sharply as soon as models start to disagree
+- Disagreement zones are dominated by **middle ratings (2★–4★)** — the boundary cases a human would also hesitate on
+
+:::
+
+## Explainability: Self-Attention {.smaller}
+
+*This slide only — CLINC150.* The one explainability angle not revisited for NAF, since NAF never used FATE's transformer layers.
+
+```{python}
+#| label: load-explain-artifacts-slide
+
+import urllib.request
+from pathlib import Path
+from collections import defaultdict
+
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+EXPLAIN_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/explanations/clinc150"
+
+_ARTIFACT_NAMES = ["captum.npz", "label_attn.npz", "class_vectors.npz", "self_attn.npz", "faithfulness.npz"]
+_NOT_APPLICABLE = {("pooling", "label_attn.npz")}
+
+def _load_artifact(method: str, name: str):
+    if (method, name) in _NOT_APPLICABLE:
+        return None
+    cache_dir = Path("results/clinc150/explain") / method
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache = cache_dir / name
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{EXPLAIN_BUCKET}/{method}/{name}", cache)
+        return np.load(cache, allow_pickle=True)
+    except Exception:
+        return None
+
+cap_la, lat_la, cv_la, sa_la, fai_la = (_load_artifact("labatt",  n) for n in _ARTIFACT_NAMES)
+cap_pl, lat_pl, cv_pl, sa_pl, fai_pl = (_load_artifact("pooling", n) for n in _ARTIFACT_NAMES)
+
+HAS_LA   = cap_la is not None
+HAS_PL   = cap_pl is not None
+HAS_BOTH = HAS_LA and HAS_PL
+
+if HAS_LA:
+    N_CLS = cap_la["word_attn"][0].shape[0]
+
+    if "class_names" in cap_la.files:
+        CLASS_NAMES = [str(c) for c in cap_la["class_names"]]
+    else:
+        import json as _json
+        with open("assets/clinc150_labels.json") as _f:
+            _lmap = _json.load(_f)
+        CLASS_NAMES = [_lmap[str(i)] for i in range(N_CLS)]
+
+    MODEL_LABELS = {"labatt": "Label Attention", "pooling": "Mean Pooling"}
+    CAPTUM       = {"labatt": cap_la, "pooling": cap_pl}
+    SELF_ATTN    = {"labatt": sa_la,  "pooling": sa_pl}
+    MODEL_KEYS   = [k for k in ("labatt", "pooling") if CAPTUM[k] is not None]
+```
+
+```{python}
+#| label: fig-explain-selfattn-slide
+#| fig-cap: "Self-attention matrices per head and per layer, for a sampled CLINC150 utterance. One column per model. Use the ← / → arrows to switch between examples."
+
+import json
+from IPython.display import HTML, display
+
+HAS_SA       = HAS_LA and all(SELF_ATTN.get(k) is not None for k in MODEL_KEYS)
+HAS_PER_HEAD = HAS_SA and all("self_attn_per_head" in SELF_ATTN[k].files for k in MODEL_KEYS)
+
+if not HAS_PER_HEAD:
+    print("Per-head self-attention artifacts not yet available.")
+else:
+    HAS_TOKENS = "tokens" in SELF_ATTN[MODEL_KEYS[0]].files
+
+    n_align  = min(len(SELF_ATTN[k]["texts"]) for k in MODEL_KEYS)
+    lengths  = [SELF_ATTN[MODEL_KEYS[0]]["self_attn"][i].shape[-1] for i in range(n_align)]
+    mid_idx  = np.array([i for i, L in enumerate(lengths) if 8 <= L <= 18])
+
+    rng = np.random.default_rng(11)
+    cand_idx: list = []
+
+    if len(mid_idx) == 0:
+        cand_idx = [int(np.argmax(lengths))]
+    elif HAS_BOTH:
+        y_true_ref = SELF_ATTN[MODEL_KEYS[0]]["y_true"].astype(int)[mid_idx]
+        y_pred_a   = SELF_ATTN[MODEL_KEYS[0]]["y_pred"].astype(int)[mid_idx]
+        y_pred_b   = SELF_ATTN[MODEL_KEYS[1]]["y_pred"].astype(int)[mid_idx]
+
+        def _pick(mask, k):
+            pool = mid_idx[mask].tolist()
+            rng.shuffle(pool)
+            added = 0
+            for i in pool:
+                if i in cand_idx:
+                    continue
+                cand_idx.append(int(i))
+                added += 1
+                if added >= k:
+                    break
+
+        _pick(y_pred_a != y_pred_b, 2)                                # disagree
+        _pick((y_pred_a == y_pred_b) & (y_pred_a == y_true_ref), 2)   # both correct
+        _pick((y_pred_a != y_true_ref) & (y_pred_b != y_true_ref), 2) # both wrong
+        _pick((y_pred_b == y_true_ref) & (y_pred_a != y_true_ref), 1) # MODEL_KEYS[1] right, MODEL_KEYS[0] wrong
+        _pick((y_pred_a == y_true_ref) & (y_pred_b != y_true_ref), 1) # MODEL_KEYS[0] right, MODEL_KEYS[1] wrong
+        if not cand_idx:
+            cand_idx = mid_idx[:8].tolist()
+    else:
+        cand_idx = mid_idx[:8].tolist()
+
+    n_layers_ph = min(SELF_ATTN[k]["self_attn_per_head"][cand_idx[0]].shape[0] for k in MODEL_KEYS)
+    n_heads_ph  = min(SELF_ATTN[k]["self_attn_per_head"][cand_idx[0]].shape[1] for k in MODEL_KEYS)
+    n_models    = len(MODEL_KEYS)
+
+    def _tokens_for(key, idx, L):
+        if HAS_TOKENS:
+            return list(SELF_ATTN[key]["tokens"][idx])[:L]
+        raw = str(SELF_ATTN[key]["texts"][idx]).split()
+        return (raw + [""] * L)[:L]
+
+    def _title_for(idx):
+        text   = str(SELF_ATTN[MODEL_KEYS[0]]["texts"][idx])
+        y_true = int(SELF_ATTN[MODEL_KEYS[0]]["y_true"][idx])
+        bits   = [f"true: <b>{CLASS_NAMES[y_true]}</b>"]
+        for key in MODEL_KEYS:
+            y_pred = int(SELF_ATTN[key]["y_pred"][idx])
+            ok     = y_pred == y_true
+            mark   = "✓" if ok else "✗"
+            col    = "#2E7D32" if ok else "#B71C1C"
+            bits.append(
+                f"{MODEL_LABELS[key]} → "
+                f"<span style='color:{col};font-weight:700;'>{CLASS_NAMES[y_pred]} {mark}</span>"
+            )
+        return f'Per-head self-attention — "{text}"<br>' + " · ".join(bits)
+
+    def _layer_frame(idx, layer):
+        per_head = {k: SELF_ATTN[k]["self_attn_per_head"][idx] for k in MODEL_KEYS}
+        z_list, x_list, y_list = [], [], []
+        for key in MODEL_KEYS:
+            mat_layer = per_head[key][layer]
+            L_k  = mat_layer.shape[-1]
+            tok_k = _tokens_for(key, idx, L_k)
+            for h in range(n_heads_ph):
+                z_list.append(mat_layer[h])
+                x_list.append(tok_k)
+                y_list.append(tok_k)
+        return z_list, x_list, y_list
+
+    def _frame_for(idx):
+        layers = []
+        for layer in range(n_layers_ph):
+            z_l, x_l, y_l = _layer_frame(idx, layer)
+            layers.append({"z": [zz.tolist() for zz in z_l], "x": x_l, "y": y_l})
+        return {"title": _title_for(idx), "layers": layers}
+
+    frame0 = _frame_for(cand_idx[0])
+
+    cell_px = 17
+    tok_n   = len(frame0["layers"][0]["x"][0])
+    plot_sz = tok_n * cell_px
+
+    div_ids = [f"selfattn-fig-slide-l{layer + 1}" for layer in range(n_layers_ph)]
+    fig_blocks_html = []
+    for layer in range(n_layers_ph):
+        fig_l = make_subplots(
+            rows=n_models, cols=n_heads_ph,
+            column_titles=[f"Head {h + 1}" for h in range(n_heads_ph)],
+            row_titles=[f"<b>{MODEL_LABELS[k]}</b>" for k in MODEL_KEYS],
+            horizontal_spacing=0.04, vertical_spacing=0.18,
+        )
+        z_l = frame0["layers"][layer]["z"]
+        x_l = frame0["layers"][layer]["x"]
+        y_l = frame0["layers"][layer]["y"]
+        trace_i = 0
+        for ri, key in enumerate(MODEL_KEYS):
+            row    = ri + 1
+            for h in range(n_heads_ph):
+                col    = h + 1
+                show_y = (col == 1)
+                idx_sp = (row - 1) * n_heads_ph + col
+                xref   = "x" if idx_sp == 1 else f"x{idx_sp}"
+                fig_l.add_trace(go.Heatmap(
+                    z=z_l[trace_i], x=x_l[trace_i], y=y_l[trace_i],
+                    coloraxis="coloraxis",
+                    hovertemplate="key=%{x}<br>query=%{y}<br>weight=%{z:.3f}"
+                                  + f"<extra>{MODEL_LABELS[key]} L{layer + 1} H{h + 1}</extra>",
+                ), row=row, col=col)
+                trace_i += 1
+                fig_l.update_xaxes(
+                    tickangle=-90, tickfont=dict(size=9), dtick=1,
+                    showticklabels=True, row=row, col=col,
+                )
+                fig_l.update_yaxes(
+                    autorange="reversed", showticklabels=show_y, tickfont=dict(size=9), dtick=1,
+                    scaleanchor=xref, scaleratio=1, row=row, col=col,
+                )
+
+        for ann in fig_l.layout.annotations:
+            ann.font.size = 11
+
+        fig_height = plot_sz * n_models + 155
+        fig_l.update_layout(
+            width=plot_sz * n_heads_ph + 180,
+            height=fig_height,
+            paper_bgcolor="white", plot_bgcolor="white",
+            margin=dict(t=50, b=75, l=30, r=100),
+            coloraxis=dict(colorscale="Viridis", cmin=0, colorbar=dict(title="weight", len=0.8, thickness=14)),
+            showlegend=False,
+        )
+
+        x0_dom = fig_l.layout.xaxis.domain[0]
+        last_xaxis = "xaxis" if n_heads_ph == 1 else f"xaxis{n_heads_ph}"
+        x1_dom = fig_l.layout[last_xaxis].domain[1]
+        y_bracket_bot = 1 + 20 / fig_height
+        y_bracket_top = 1 + 25 / fig_height
+        y_label       = 1 + 29 / fig_height
+        fig_l.add_shape(
+            type="path",
+            path=f"M {x0_dom},{y_bracket_bot} L {x0_dom},{y_bracket_top} "
+                 f"L {x1_dom},{y_bracket_top} L {x1_dom},{y_bracket_bot}",
+            xref="paper", yref="paper", line=dict(color="#999", width=1),
+        )
+        fig_l.add_annotation(
+            xref="paper", yref="paper",
+            x=(x0_dom + x1_dom) / 2, y=y_label,
+            text=f"<b>Layer {layer + 1}</b>", showarrow=False,
+            font=dict(size=12), xanchor="center", yanchor="bottom",
+        )
+
+        fig_blocks_html.append(
+            fig_l.to_html(full_html=False, include_plotlyjs=False, div_id=div_ids[layer])
+        )
+
+    frames = [_frame_for(idx) for idx in cand_idx]
+
+    title_id = "sa-title-slide"
+    blocks_html = "".join(
+        f'<div style="margin-top:{18 if layer == 0 else 0}px;">{fig_blocks_html[layer]}</div>'
+        for layer in range(n_layers_ph)
+    )
+
+    nav_html = f"""
+<style>
+  .sa-nav   {{ display:flex; align-items:center; gap:12px;
+               justify-content:center; margin-bottom:8px; }}
+  .sa-btn   {{ padding:6px 18px; background:#f0f0f0; border:1px solid #ccc;
+               border-radius:5px; cursor:pointer; font-size:13px; }}
+  .sa-btn:hover {{ background:#e0e0e0; }}
+  .sa-count {{ font-size:12px; color:#999; }}
+  .sa-title {{ text-align:center; font-size:13px; line-height:1.5; margin-bottom:6px; }}
+  .sa-blocks {{ overflow-x:auto; }}
+</style>
+<div class="sa-nav">
+  <button class="sa-btn" onclick="selfAttnNavSlide(-1)">← Prev</button>
+  <span class="sa-count" id="sa-count-slide"></span>
+  <button class="sa-btn" onclick="selfAttnNavSlide(1)">Next →</button>
+</div>
+<div class="sa-title" id="{title_id}">{frame0["title"]}</div>
+<div class="sa-blocks">
+{blocks_html}
+</div>
+<script>
+(function() {{
+  const FRAMES  = {json.dumps(frames)};
+  const DIV_IDS = {json.dumps(div_ids)};
+  let cur = 0;
+  window.selfAttnNavSlide = function(d) {{
+    cur = (cur + d + FRAMES.length) % FRAMES.length;
+    const f = FRAMES[cur];
+    document.getElementById("{title_id}").innerHTML = f.title;
+    DIV_IDS.forEach(function(divId, layer) {{
+      const gd = document.getElementById(divId);
+      const l  = f.layers[layer];
+      Plotly.update(gd, {{z: l.z, x: l.x, y: l.y}}, {{}});
+    }});
+    document.getElementById("sa-count-slide").textContent = (cur + 1) + " / " + FRAMES.length;
+  }};
+  document.getElementById("sa-count-slide").textContent = "1 / " + FRAMES.length;
+}})();
+</script>
+"""
+    display(HTML(nav_html))
+```
+
+# NAF
+
+## The dataset & the label space {.center}
+
+:::: {.columns}
+
+::: {.column width="34%"}
+- Describe an activity in free text → one code among 679 subclasses (in our dataset, 747 in real)
+- Official nomenclature of economic activities (NACE Rev. 2.1-aligned), **5 nested levels**
+- A few sections, for scale: **A** — Agriculture, **C** — Manufacturing, **J** — Information & Communication
+- **~1.3M labeled examples** used for training
+:::
+
+::: {.column width="66%"}
+```{=html}
+<div style="zoom:0.72;">
+<style>
+.naf {
+  max-width: 500px;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  margin: 0 auto;
+}
+.naf-card {
+  display: flex;
+  border: 1px solid #dde3ec;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.naf-bar  { width: 5px; flex-shrink: 0; }
+.naf-body { flex: 1; padding: 14px 20px; }
+.naf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.naf-name { font-size: 14px; font-weight: 700; }
+.naf-count-wrap { text-align: right; line-height: 1; }
+.naf-n    { font-size: 30px; font-weight: 700; opacity: .5; line-height: 1; }
+.naf-n-lbl { font-size: 9px; color: #b0b8c8; text-transform: uppercase; letter-spacing: .06em; margin-top: 2px; }
+.naf-fmt {
+  display: inline-block;
+  font-family: 'Courier New', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 4px;
+  margin-top: 6px;
+}
+.naf-sep {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2px 0;
+}
+.naf-sep-line  { width: 1px; height: 7px; background: #d4dae6; }
+.naf-sep-stat  { font-size: 10px; color: #b5bfcf; padding: 2px 0; white-space: nowrap; }
+.naf-sep-arrow { font-size: 12px; color: #cdd3de; line-height: 1; }
+</style>
+
+<div class="naf">
+
+<div class="naf-card" style="background:linear-gradient(to right,rgba(13,59,119,.07) 2.8%,#fafbff 2.8%)">
+  <div class="naf-bar" style="background:#0D3B77"></div>
+  <div class="naf-body">
+    <div class="naf-head">
+      <span class="naf-name" style="color:#0D3B77">Section</span>
+      <div class="naf-count-wrap">
+        <div class="naf-n" style="color:#0D3B77">21</div>
+        <div class="naf-n-lbl">codes</div>
+        <div style="font-size:9px;color:#999;margin-top:2px;">20 in training</div>
+      </div>
+    </div>
+    <span class="naf-fmt" style="color:#0D3B77; background:#e8edf8;">1 letter &nbsp;·&nbsp; A to U</span>
+  </div>
+</div>
+
+<div class="naf-sep">
+  <div class="naf-sep-line"></div>
+  <span class="naf-sep-stat">≈ 4 divisions per section</span>
+  <div class="naf-sep-arrow">▼</div>
+</div>
+
+<div class="naf-card" style="background:linear-gradient(to right,rgba(21,101,192,.07) 11.6%,#fafbff 11.6%)">
+  <div class="naf-bar" style="background:#1565C0"></div>
+  <div class="naf-body">
+    <div class="naf-head">
+      <span class="naf-name" style="color:#1565C0">Division</span>
+      <div class="naf-count-wrap">
+        <div class="naf-n" style="color:#1565C0">87</div>
+        <div class="naf-n-lbl">codes</div>
+        <div style="font-size:9px;color:#999;margin-top:2px;">84 in training</div>
+      </div>
+    </div>
+    <span class="naf-fmt" style="color:#1565C0; background:#e0e9f7;">2 digits &nbsp;·&nbsp; 01 to 99</span>
+  </div>
+</div>
+
+<div class="naf-sep">
+  <div class="naf-sep-line"></div>
+  <span class="naf-sep-stat">≈ 3.3 groups per division</span>
+  <div class="naf-sep-arrow">▼</div>
+</div>
+
+<div class="naf-card" style="background:linear-gradient(to right,rgba(25,118,210,.07) 38.4%,#fafbff 38.4%)">
+  <div class="naf-bar" style="background:#1976D2"></div>
+  <div class="naf-body">
+    <div class="naf-head">
+      <span class="naf-name" style="color:#1976D2">Group</span>
+      <div class="naf-count-wrap">
+        <div class="naf-n" style="color:#1976D2">287</div>
+        <div class="naf-n-lbl">codes</div>
+        <div style="font-size:9px;color:#999;margin-top:2px;">274 in training</div>
+      </div>
+    </div>
+    <span class="naf-fmt" style="color:#1976D2; background:#d8e6f6;">3 digits &nbsp;·&nbsp; XX.X</span>
+  </div>
+</div>
+
+<div class="naf-sep">
+  <div class="naf-sep-line"></div>
+  <span class="naf-sep-stat">≈ 2.3 classes per group</span>
+  <div class="naf-sep-arrow">▼</div>
+</div>
+
+<div class="naf-card" style="background:linear-gradient(to right,rgba(33,150,243,.07) 87.1%,#fafbff 87.1%)">
+  <div class="naf-bar" style="background:#2196F3"></div>
+  <div class="naf-body">
+    <div class="naf-head">
+      <span class="naf-name" style="color:#2196F3">Class</span>
+      <div class="naf-count-wrap">
+        <div class="naf-n" style="color:#2196F3">651</div>
+        <div class="naf-n-lbl">codes</div>
+        <div style="font-size:9px;color:#999;margin-top:2px;">586 in training</div>
+      </div>
+    </div>
+    <span class="naf-fmt" style="color:#2196F3; background:#cfe0fb;">4 digits &nbsp;·&nbsp; XX.XX</span>
+  </div>
+</div>
+
+<div class="naf-sep">
+  <div class="naf-sep-line"></div>
+  <span class="naf-sep-stat">≈ 1.1 sub-classes per class</span>
+  <div class="naf-sep-arrow">▼</div>
+</div>
+
+<div class="naf-card" style="background:rgba(66,165,245,.07)">
+  <div class="naf-bar" style="background:#42A5F5"></div>
+  <div class="naf-body">
+    <div class="naf-head">
+      <span class="naf-name" style="color:#2b8fe0">Sub-class</span>
+      <div class="naf-count-wrap">
+        <div class="naf-n" style="color:#2b8fe0">747</div>
+        <div class="naf-n-lbl">codes</div>
+        <div style="font-size:9px;color:#999;margin-top:2px;">679 in training</div>
+      </div>
+    </div>
+    <span class="naf-fmt" style="color:#2b8fe0; background:#c5dafa;">4 digits + letter &nbsp;·&nbsp; XX.XXY</span>
+  </div>
+</div>
+
+</div>
+</div>
+```
+:::
+
+::::
+
+## Label Attention on NAF {.center}
+
+:::: {.columns}
+
+::: {.column width="34%"}
+- On CLINC150, label attention was starved of data — 150 query vectors, ~100 examples each
+- NAF's usable training set: **1.2M examples** — by far the largest of the three
+- As training size grows, label attention's validation loss falls **faster** than FastText's
+:::
+
+::: {.column width="66%"}
+```{python}
+#| label: fetch-mlflow-naf-slide
+
+from pathlib import Path
+import mlflow
+import pandas as pd
+
+RENAME_COLS = {
+    "params.emb_dim":                  "emb_dim",
+    "params.n_layers":                 "n_layers",
+    "params.n_head":                   "n_head",
+    "params.n_heads_label_attention":  "n_heads_label_attn",
+    "params.vocab_size":               "vocab_size",
+    "params.lr":                       "lr",
+    "metrics.num_params":              "num_params",
+    "metrics.test_accuracy":           "test_accuracy",
+    "metrics.test_f1_macro":           "test_f1_macro",
+    "metrics.train_time_s":            "train_time_s",
+    "metrics.val_loss":                "min_val_loss",
+}
+KEY_COLS = ["n_layers", "emb_dim", "vocab_size", "n_head", "n_heads_label_attn", "lr"]
+
+def arch_label_naf(row):
+    la = str(row["n_heads_label_attn"]) == "4"
+    if row["n_layers"] == 0:
+        return "FastText + Label Attention" if la else "FastText"
+    suffix = " + Label Attention" if la else ""
+    return f"FATE (L={row['n_layers']}){suffix}"
+
+def fetch_runs_naf(experiment_name: str, cache_path: Path, train_fraction: float) -> pd.DataFrame:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if cache_path.exists():
+        return pd.read_csv(cache_path)
+    raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
+    raw = raw[raw["status"] == "FINISHED"].copy()
+    raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
+    raw = raw.rename(columns={k: v for k, v in RENAME_COLS.items() if k in raw.columns})
+    for col in ["emb_dim", "n_layers", "vocab_size"]:
+        raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
+    raw["lr"]         = raw["lr"].astype(float)
+    raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
+    raw["architecture"] = raw.apply(arch_label_naf, axis=1)
+    raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS, keep="first")
+    raw.to_csv(cache_path, index=False)
+    return raw
+
+df_frac13  = fetch_runs_naf("naf", Path("results/naf/runs_frac13.csv"),  train_fraction=0.13)
+df_frac26  = fetch_runs_naf("naf", Path("results/naf/runs_frac26.csv"),  train_fraction=0.26)
+df_frac52  = fetch_runs_naf("naf", Path("results/naf/runs_frac52.csv"),  train_fraction=0.52)
+df_frac100 = fetch_runs_naf("naf", Path("results/naf/runs_frac100.csv"), train_fraction=1.0)
+```
+
+```{python}
+#| label: fig-trainsize-naf-slide
+#| fig-cap: "Validation loss vs. training set size, by architecture"
+
+import plotly.graph_objects as go
+
+COLORS = {
+    "FastText":                          "#2196F3",
+    "FastText + Label Attention":        "#00BCD4",
+}
+N_TRAIN = {0.13: 163615, 0.26: 314230, 0.52: 628461, 1.0: 1208579}
+
+common_archs = ["FastText", "FastText + Label Attention"]
+means13  = df_frac13[df_frac13["architecture"].isin(common_archs)].groupby("architecture")["min_val_loss"].mean()
+means26  = df_frac26[df_frac26["architecture"].isin(common_archs)].groupby("architecture")["min_val_loss"].mean()
+means52  = df_frac52[df_frac52["architecture"].isin(common_archs)].groupby("architecture")["min_val_loss"].mean()
+means100 = df_frac100[df_frac100["architecture"].isin(common_archs)].groupby("architecture")["min_val_loss"].mean()
+
+fig = go.Figure()
+for arch in common_archs:
+    fig.add_trace(go.Scatter(
+        x=[N_TRAIN[0.13], N_TRAIN[0.26], N_TRAIN[0.52], N_TRAIN[1.0]],
+        y=[means13[arch], means26[arch], means52[arch], means100[arch]],
+        mode="lines+markers", name=arch,
+        line=dict(color=COLORS[arch], width=2), marker=dict(size=9),
+        hovertemplate="train size=%{x:,}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+fig.update_layout(
+    xaxis_title="Training set size", yaxis_title="Mean validation loss",
+    xaxis=dict(
+        tickvals=[N_TRAIN[0.13], N_TRAIN[0.26], N_TRAIN[0.52], N_TRAIN[1.0]],
+        ticktext=["163,615", "314,230", "628,461", "1,208,579"],
+    ),
+    legend_title="Architecture", height=410, width=640,
+)
+fig.show()
+```
+:::
+
+::::
+
+## Predictions: What Errors Look Like {.smaller}
+
+```{python}
+#| label: load-predictions-naf-slide
+
+import json
+import urllib.request
+import numpy as np
+from pathlib import Path
+
+PRED_BUCKET = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions/naf"
+ARCH_FILES  = {
+    "FastText":                   "fasttext.npz",
+    "FastText + Label Attention": "fasttext_labatt.npz",
+}
+
+PREDS_DIR = Path("results/naf/preds")
+PREDS_DIR.mkdir(parents=True, exist_ok=True)
+
+preds_by_arch = {}
+for arch, fname in ARCH_FILES.items():
+    cache = PREDS_DIR / fname
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{PRED_BUCKET}/{fname}", cache)
+        d = np.load(cache, allow_pickle=True)
+        preds_by_arch[arch] = {
+            "y_test": d["y_test"].astype(int),
+            "y_pred": d["y_pred"].astype(int),
+        }
+    except Exception:
+        pass
+
+ARCHS_AVAIL = list(preds_by_arch.keys())
+
+with open("assets/naf_labels.json") as f:
+    NAF_LABEL_MAP = json.load(f)
+
+with open("assets/naf2025_structure.json") as f:
+    _naf_struct = json.load(f)
+
+DIVISION_TO_SECTION = {
+    div: s["id"] for s in _naf_struct["sections"] for div in s["divisions"]
+}
+SOUSCLASSE_LABEL = _naf_struct["sousclasses"]
+
+def class_code(idx: int) -> str:
+    return NAF_LABEL_MAP.get(str(idx), "?")
+
+def code_section(code: str) -> str:
+    return DIVISION_TO_SECTION.get(code[:2], "?")
+
+def code_division(code: str) -> str:
+    return code[:2]
+
+def code_groupe(code: str) -> str:
+    return code[:2] + "." + code[2:3]
+
+def code_classe(code: str) -> str:
+    return code[:2] + "." + code[2:4]
+
+def code_label(code: str) -> str:
+    dotted = code[:2] + "." + code[2:]
+    return SOUSCLASSE_LABEL.get(dotted, code)
+```
+
+::: {.panel-tabset}
+
+### Accuracy vs. Class Support
+
+```{python}
+#| label: fig-support-acc-naf-slide
+#| fig-cap: "Per-sub-class accuracy vs. number of test examples for that sub-class (log x-axis)"
+
+COLORS = {"FastText": "#2196F3", "FastText + Label Attention": "#00BCD4"}
+
+fig = go.Figure()
+for arch in ARCHS_AVAIL:
+    d = preds_by_arch[arch]
+    y_test_a, y_pred_a = d["y_test"], d["y_pred"]
+    classes_present = np.unique(y_test_a)
+    support = np.array([(y_test_a == c).sum() for c in classes_present])
+    accuracy = np.array([
+        (y_pred_a[y_test_a == c] == c).mean() for c in classes_present
+    ])
+    hover_codes = [class_code(c) for c in classes_present]
+    hover_labels = [code_label(c) for c in hover_codes]
+    fig.add_trace(go.Scatter(
+        x=support, y=accuracy * 100, mode="markers", name=arch,
+        marker=dict(color=COLORS.get(arch, "grey"), size=6, opacity=0.55,
+                    line=dict(width=0.5, color="white")),
+        customdata=np.stack([hover_codes, hover_labels], axis=1),
+        hovertemplate="<b>%{customdata[0]} — %{customdata[1]}</b><br>"
+                      "test support=%{x}<br>accuracy=%{y:.1f}%<extra>" + arch + "</extra>",
+    ))
+
+TICK_VALS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+TICK_TEXT = ["1", "2", "5", "10", "20", "50", "100", "200", "500", "1k", "2k", "5k", "10k"]
+
+fig.update_layout(
+    xaxis_title="Test-set support for this sub-class (log scale)",
+    yaxis_title="Accuracy on this sub-class (%)",
+    xaxis=dict(type="log", tickvals=TICK_VALS, ticktext=TICK_TEXT),
+    yaxis=dict(range=[-2, 102]),
+    legend_title="Architecture", height=390, width=820,
+)
+fig.show()
+```
+
+- Below ~20 test examples, per-sub-class accuracy swings anywhere from **0% to 100%**
+- Past a few hundred examples, it tightens firmly into an **80–100%** band
+
+### Hierarchical Accuracy
+
+```{python}
+#| label: fig-hierarchy-errors-naf-slide
+#| fig-cap: "Among wrong predictions, the coarsest NAF level at which they still land correctly"
+
+import pandas as pd
+
+LEVELS = [
+    ("Section",   code_section),
+    ("Division",  code_division),
+    ("Group",     code_groupe),
+    ("Class",     code_classe),
+    ("Sub-class", lambda c: c),
+]
+
+ERROR_BUCKETS = ["Class", "Group", "Division", "Section", "No match"]
+BUCKET_COLORS = {
+    "Class":      "#66BB6A",
+    "Group":      "#FFCA28",
+    "Division":   "#FB8C00",
+    "Section":    "#E53935",
+    "No match":   "#7B0000",
+}
+
+def _finest_match(true_code: str, pred_code: str) -> str:
+    for name, fn in reversed(LEVELS):
+        if fn(true_code) == fn(pred_code):
+            return name
+    return "No match"
+
+error_shares = {}
+overall_acc = {}
+for arch in ARCHS_AVAIL:
+    d = preds_by_arch[arch]
+    true_codes = [class_code(c) for c in d["y_test"]]
+    pred_codes = [class_code(c) for c in d["y_pred"]]
+    buckets = [_finest_match(t, p) for t, p in zip(true_codes, pred_codes)]
+    overall_acc[arch] = (pd.Series(buckets) == "Sub-class").mean() * 100
+    errors = [b for b in buckets if b != "Sub-class"]
+    counts = pd.Series(errors).value_counts()
+    error_shares[arch] = {b: counts.get(b, 0) / len(errors) * 100 for b in ERROR_BUCKETS}
+
+x_labels = [
+    f"{arch}<br><i>({100 - overall_acc[arch]:.1f}% of test set is wrong)</i>"
+    for arch in ARCHS_AVAIL
+]
+
+fig = go.Figure()
+for bucket in ERROR_BUCKETS:
+    vals = [error_shares[arch][bucket] for arch in ARCHS_AVAIL]
+    fig.add_trace(go.Bar(
+        x=x_labels, y=vals, name=bucket,
+        marker=dict(color=BUCKET_COLORS[bucket]),
+        text=[f"{v:.1f}%" for v in vals],
+        textposition="inside", insidetextfont=dict(color="white", size=11),
+        hovertemplate="%{x}<br>" + bucket + ": %{y:.1f}% of errors<extra></extra>",
+    ))
+
+fig.update_layout(
+    template="simple_white", barmode="stack",
+    xaxis_title=None, yaxis_title="Share of wrong predictions (%)",
+    yaxis=dict(range=[0, 100]),
+    legend_title="Coarsest level where<br>the miss still lands right", height=390, width=820,
+)
+fig.show()
+```
+
+- Only **~7–8%** of wrong predictions still land in the right class
+- The single largest bucket — **~47–48%** of errors — misses even the broad section ("No match")
+
+### Hierarchical Accuracy — v2
+
+```{python}
+#| label: fig-hierarchy-cascade-naf-slide
+#| fig-cap: "Accuracy by required hierarchy level"
+
+cascade_err = {}
+for arch in ARCHS_AVAIL:
+    d = preds_by_arch[arch]
+    true_codes = [class_code(c) for c in d["y_test"]]
+    pred_codes = [class_code(c) for c in d["y_pred"]]
+    cascade_err[arch] = [
+        100 - np.mean([fn(t) == fn(p) for t, p in zip(true_codes, pred_codes)]) * 100
+        for _, fn in LEVELS
+    ]
+
+SYMBOLS = {"FastText": "circle", "FastText + Label Attention": "diamond"}
+
+fig = go.Figure()
+for arch in ARCHS_AVAIL:
+    fig.add_trace(go.Scatter(
+        x=[lvl for lvl, _ in LEVELS], y=cascade_err[arch], mode="lines+markers", name=arch,
+        line=dict(color=COLORS.get(arch, "grey"), width=2.5),
+        marker=dict(size=10, symbol=SYMBOLS.get(arch, "circle")),
+        hovertemplate="%{x}<br>error rate=%{y:.2f}%<extra>" + arch + "</extra>",
+    ))
+
+fig.update_layout(
+    template="simple_white",
+    xaxis_title="Required level of agreement", yaxis_title="Error rate (%)",
+    legend_title="Architecture", height=390, width=820,
+)
+fig.show()
+```
+
+- Error rate climbs only gradually as the required match gets stricter — low at section level, rising toward sub-class
+- The two architectures track each other closely at every level — essentially one shared curve, not two distinct ones
+
+:::
+
+## Explainability
+
+- Trust and auditability in an institutional setting
+- Detecting biases / systematic errors
+  - <!-- TODO: example of M/K/J confusions, semantically coherent -->
+- Assisting a coding officer rather than replacing them without recourse
+
+## The Real Problem — and Where It Leads
+
+> With a single predicted class, an error is an error.
+
+The score doesn't distinguish "close" (right section, wrong subclass) from "completely off." So far: **one model**, predicting the sub-class directly — a 679-way classification in a single pass, no notion of section / division / group / class along the way.
+
+- A fix: build hierarchy-awareness **into the model** itself, instead of just truncating one flat prediction after the fact
+- Idea: **5 independent heads** (section / division / group / class / subclass), trained jointly on a shared representation
+- Motivation: getting the fine detail wrong doesn't have to mean getting the big picture wrong too — **"smart mistakes"** instead of "wrong is wrong"
+
+::: {.fragment}
+**⇒ Towards Multi-Level Classification**
+:::
+
+# Towards Multi-Level Classification
+
+## The principle
+
+- 5 independent heads (section / division / group / class / subclass)
+- instead of truncating the subclass code to infer the rest
+- Hypothesis: getting the detail wrong doesn't mean getting the big picture wrong
+
+## It works
+
+- The independent section head is right **~61%** of the time when the subclass is wrong
+- vs. **~52%** when truncating the wrong answer
+- "Nothing correct" error rate: **~47% → ~34%**
+
+::: {.fragment}
+**That's what making smart mistakes looks like.**
+:::
+
+<!-- TODO: reuse a Python cell from the site here (pages/naf_multilevel.qmd,
+     fig-hierarchy-errors-naf-multilevel or fig-hierarchy-independence-naf-multilevel)
+     by copying its data loading + figure code -->
+
+## A limitation: the loss isn't distributed fairly
+
+- Each level weighs into the total loss in proportion to its number of classes
+- Section: **~1%** of total weight — Subclass: **~40%**
+- The section head — the most strategic one for a human who just wants to be "in the right ballpark" — is undertrained
+- To the point of not beating simple truncation from the single-level model
+
+# Conclusion
+
+## One sentence per part
+
+- <!-- TODO -->
+
+## Final message
+
+> Explainability turns a black box that codes into a tool that assists.

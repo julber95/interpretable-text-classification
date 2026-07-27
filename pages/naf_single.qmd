@@ -886,6 +886,7 @@ def _load_artifact_naf(method: str, name: str):
 
 cap_la, lat_la, cv_la, fai_la = (_load_artifact_naf("labatt",  n) for n in _ARTIFACT_NAMES_NAF)
 cap_pl, lat_pl, cv_pl, fai_pl = (_load_artifact_naf("pooling", n) for n in _ARTIFACT_NAMES_NAF)
+fai_la_lw = _load_artifact_naf("labatt", "faithfulness_labatt_weight.npz")  # labatt only: guided by its own attention weights instead of Captum
 
 HAS_LA   = cap_la is not None
 HAS_PL   = cap_pl is not None
@@ -910,6 +911,7 @@ else:
     LABEL_ATTN = {"labatt": lat_la, "pooling": lat_pl}
     CLASS_VECS = {"labatt": cv_la,  "pooling": cv_pl}
     FAITHFUL   = {"labatt": fai_la, "pooling": fai_pl}
+    FAITHFUL_LW = fai_la_lw
     MODEL_KEYS = [k for k in ("labatt", "pooling") if CAPTUM[k] is not None]
 
     def _class_sorted(cap, i: int) -> np.ndarray:
@@ -1138,8 +1140,7 @@ else:
     shown_sections = [s for s in SECTION_ORDER if s in top_sections]
 
     ROWS, COLS = 2, 3
-    _SECTION_LABEL_SHORT = {"M": "Act. spécialisées, scientifiques et techniques"}
-    titles = [f"{s} — {_SECTION_LABEL_SHORT.get(s, SECTION_LABEL[s])}" for s in shown_sections]
+    titles = [f"{s} — {SECTION_LABEL[s].replace('Activités', 'Act.')}" for s in shown_sections]
     fig_corp_naf = make_subplots(
         rows=ROWS, cols=COLS,
         subplot_titles=titles,
@@ -1174,10 +1175,12 @@ else:
         )
         fig_corp_naf.update_yaxes(tickfont=dict(size=11), showgrid=False, row=row, col=col)
 
+    _SMALL_TITLE_SECTIONS = {"G", "M"}
     for i, ann in enumerate(fig_corp_naf.layout.annotations):
         if i < len(shown_sections):
-            ann.font.size = 13
-            ann.font.color = SECTION_COLOR[shown_sections[i]]
+            sec = shown_sections[i]
+            ann.font.size = 10 if sec in _SMALL_TITLE_SECTIONS else 13
+            ann.font.color = SECTION_COLOR[sec]
 
     layout_extra = {}
     if HAS_BOTH:
@@ -1209,6 +1212,8 @@ else:
 *Method: raw label-attention weights*
 
 Unlike Amazon and CLINC150, neither NAF architecture has a transformer self-attention backbone (`n_layers=0` for both) — so there's nothing to compare against here the way "Self-attention and label attention" does on those two pages. What's still available is label attention's own mechanism: its 4 heads' raw cross-attention weights (class × word) for a single example, exactly as shown for Amazon and CLINC150.
+
+The y-axis shows the top 10 sub-classes by the model's final softmax confidence (i.e. its own ranking of which classes it considered), not the top 10 by attention weight — this ties the selection to the model's actual reasoning and keeps it identical across the 4 heads and the mean. If the true class isn't already among those 10, it replaces the last one so it's always visible, which can bring the count up to 11.
 
 ```{python}
 #| label: fig-explain-labatt-heads-naf
@@ -1364,6 +1369,8 @@ else:
     display(HTML(lab_nav_html_naf))
 ```
 
+The 4 heads tend to read different words from each other rather than duplicate one another, but how sharply each one commits varies — some land squarely on one or two words while others stay diffuse across the description, and it isn't always the same head that acts as the "decisive" one from one example to the next. Unlike the sentiment- or intent-based specialisation seen elsewhere, no head here consistently stands out as tracking a particular NAF section, nor as tracking correct versus incorrect predictions more than the others. The "mean over heads" row — the one used elsewhere as *the* label-attention explanation — smooths these individual patterns into a single blended view, which can quietly mask a head that was onto something the others weren't.
+
 ### Are these explanations faithful? A word-deletion stress test
 
 *Method: Captum (Integrated Gradients)*
@@ -1372,7 +1379,7 @@ Attribution scores are only meaningful if the model would *actually* change its 
 
 ```{python}
 #| label: fig-explain-faithfulness-naf
-#| fig-cap: "Faithfulness (comprehensiveness) test: mean probability retained by the originally-predicted class as the most-attributed words are progressively deleted (solid = guided removal by |Captum score|; dotted = random-removal control, averaged over 3 draws). Shaded bands show ±1 std across examples."
+#| fig-cap: "Faithfulness (comprehensiveness) test: mean probability retained by the originally-predicted class as the most-attributed words are progressively deleted (solid = guided removal, by |Captum score| or — for Label Attention — its own attention weights; dotted = random-removal control, averaged over 3 draws). Shaded bands show ±1 std across examples."
 
 HAS_FAI_NAF = HAS_LA and all(FAITHFUL.get(k) is not None for k in MODEL_KEYS)
 
@@ -1385,8 +1392,11 @@ else:
         fr    = fai["fractions"]
         color = "#1565C0" if key == "labatt" else "#B71C1C"
         rgb   = "21,101,192" if key == "labatt" else "183,28,28"
-        for arr, name, dash in [(fai["guided_probs"], "guided removal", "solid"),
-                                (fai["random_probs"], "random removal (control)", "dot")]:
+        series = [(fai["guided_probs"], "guided by Captum score", "solid", color)]
+        if key == "labatt" and FAITHFUL_LW is not None:
+            series.append((FAITHFUL_LW["guided_probs"], "guided by attention weights", "solid", "#64B5F6"))
+        series.append((fai["random_probs"], "random removal (control)", "dot", color))
+        for arr, name, dash, line_color in series:
             m, s = np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
             fig_fai_naf.add_trace(go.Scatter(
                 x=np.concatenate([fr, fr[::-1]]), y=np.concatenate([m + s, (m - s)[::-1]]),
@@ -1395,7 +1405,7 @@ else:
             ))
             fig_fai_naf.add_trace(go.Scatter(
                 x=fr, y=m, mode="lines+markers", name=f"{MODEL_LABELS[key]} — {name}",
-                line=dict(color=color, dash=dash, width=2.5), marker=dict(size=6, color=color),
+                line=dict(color=line_color, dash=dash, width=2.5), marker=dict(size=6, color=line_color),
             ))
     fig_fai_naf.update_layout(
         xaxis_title="Fraction of words removed",
@@ -1405,10 +1415,6 @@ else:
         legend=dict(x=1.02, y=1, xanchor="left"),
     )
     fig_fai_naf.show()
-
-    print("Faithfulness gap — area between the random and guided curves (higher = more faithful):\n")
-    for key in MODEL_KEYS:
-        fai = FAITHFUL[key]
-        gap = float(np.trapezoid(np.nanmean(fai["random_probs"], 0) - np.nanmean(fai["guided_probs"], 0), fai["fractions"]))
-        print(f"  {MODEL_LABELS[key]:<32} {gap:+.4f}")
 ```
+
+For Label Attention, its own attention weights turn out to be the *most* faithful guide of the three curves — deleting words by attention weight collapses the predicted-class probability faster and further than deleting by Captum score, both clearly separated from their random-removal controls. FastText's Captum-guided curve sits in between the two Label Attention curves, and its own random control tracks close behind it for most of the range — a smaller guided/random gap than Label Attention shows either way, suggesting Captum attributions are somewhat less decisive for the model that has no built-in attention mechanism to lean on.

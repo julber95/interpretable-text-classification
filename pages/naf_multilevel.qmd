@@ -319,7 +319,7 @@ HTML("""
 
 ## Hyperparameter sweep
 
-Architecture is fixed here (`n_layers=0`, i.e. FastText-style mean pooling — the multi-level trainer does not yet expose the FATE transformer variant), so the sweep covers `embedding_dim` in {64, 128, 256, 512} × `vocab_size` in {2000, 5000, 10000, 20000} × `n_heads_label_attention` in {none, 4} × `lr` in {0.0005, 0.001} — `lr=0.0001` was dropped from this grid, giving 4 × 4 × 2 × 2 = **64 runs** per `train_fraction` rather than 96. As with the [Single-level classification](naf_single.qmd) page, the `naf_multilevel` MLflow experiment mixes three `train_fraction` sweeps over the same grid: **0.13**, **0.26**, and **0.52**. The rest of this section uses **0.52** only (the largest, most recent sweep) — the figure below is the exception, comparing all three to isolate the effect of training-data size itself.
+Architecture is fixed here (`n_layers=0`, i.e. FastText-style mean pooling — the multi-level trainer does not yet expose the FATE transformer variant), so the sweep covers `embedding_dim` in {64, 128, 256, 512} × `vocab_size` in {2000, 5000, 10000, 20000} × `n_heads_label_attention` in {none, 4} × `lr` in {0.0005, 0.001} — `lr=0.0001` was dropped from this grid, giving 4 × 4 × 2 × 2 = **64 runs** per `train_fraction` rather than 96. As with the [Single-level classification](naf_single.qmd) page, the `naf_multilevel` MLflow experiment mixes four `train_fraction` sweeps over the same grid: **0.13**, **0.26**, **0.52**, and **1.0**. The rest of this section uses **1.0** only (the full, largest sweep) — the figure below is the exception, comparing all four to isolate the effect of training-data size itself.
 
 ```{python}
 #| label: fetch-mlflow-naf-multilevel
@@ -376,10 +376,13 @@ df_ml_frac13 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs
 # train_fraction=0.26 — intermediate sweep
 df_ml_frac26 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac26.csv"), train_fraction=0.26)
 
-# train_fraction=0.52 — latest, largest sweep — used as the main dataset below
+# train_fraction=0.52 — third sweep
 df_ml_frac52 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac52.csv"), train_fraction=0.52)
 
-df_ml = df_ml_frac52
+# train_fraction=1.0 — full usable set, the latest and largest sweep — used as the main dataset below
+df_ml_frac100 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac100.csv"), train_fraction=1.0)
+
+df_ml = df_ml_frac100
 ```
 
 ```{python}
@@ -392,17 +395,18 @@ COLORS_ML = {
     "FastText":                          "#2196F3",
     "FastText + Label Attention":        "#00BCD4",
 }
-N_TRAIN_ML = {0.13: 163615, 0.26: 327230, 0.52: 654461}
+N_TRAIN_ML = {0.13: 163615, 0.26: 327230, 0.52: 654461, 1.0: 1208579}
 
-means13 = df_ml_frac13.groupby("architecture")["min_val_loss"].mean()
-means26 = df_ml_frac26.groupby("architecture")["min_val_loss"].mean()
-means52 = df_ml_frac52.groupby("architecture")["min_val_loss"].mean()
+means13  = df_ml_frac13.groupby("architecture")["min_val_loss"].mean()
+means26  = df_ml_frac26.groupby("architecture")["min_val_loss"].mean()
+means52  = df_ml_frac52.groupby("architecture")["min_val_loss"].mean()
+means100 = df_ml_frac100.groupby("architecture")["min_val_loss"].mean()
 
 fig = go.Figure()
 for arch in COLORS_ML:
     fig.add_trace(go.Scatter(
-        x=[N_TRAIN_ML[0.13], N_TRAIN_ML[0.26], N_TRAIN_ML[0.52]],
-        y=[means13[arch], means26[arch], means52[arch]],
+        x=[N_TRAIN_ML[0.13], N_TRAIN_ML[0.26], N_TRAIN_ML[0.52], N_TRAIN_ML[1.0]],
+        y=[means13[arch], means26[arch], means52[arch], means100[arch]],
         mode="lines+markers", name=arch,
         line=dict(color=COLORS_ML[arch], width=2), marker=dict(size=9),
         hovertemplate="train size=%{x:,}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
@@ -411,15 +415,15 @@ for arch in COLORS_ML:
 fig.update_layout(
     xaxis_title="Training set size", yaxis_title="Mean validation loss",
     xaxis=dict(
-        tickvals=[N_TRAIN_ML[0.13], N_TRAIN_ML[0.26], N_TRAIN_ML[0.52]],
-        ticktext=["163,615", "327,230", "654,461"],
+        tickvals=[N_TRAIN_ML[0.13], N_TRAIN_ML[0.26], N_TRAIN_ML[0.52], N_TRAIN_ML[1.0]],
+        ticktext=["163,615", "327,230", "654,461", "1,208,579"],
     ),
     legend_title="Architecture", height=430,
 )
 fig.show()
 ```
 
-Growing the training data (163,615 → 327,230 → 654,461 examples) steadily improves mean validation loss for both architectures — FastText from ≈0.537 to ≈0.491 to ≈0.457, FastText + Label Attention from ≈0.723 to ≈0.591 to ≈0.492 — with the label-attention variant benefiting more at each step, the same pattern as [Single-level classification](naf_single.qmd): the gap between the two architectures narrows from ≈0.186 at 163,615 examples to ≈0.100 at 327,230 to ≈0.035 at 654,461, as label attention gets enough examples per class to learn meaningful per-class query vectors — here shared jointly across five hierarchy levels rather than one.
+Growing the training data (163,615 → 327,230 → 654,461 → 1,208,579 examples) steadily improves mean validation loss for both architectures — FastText from ≈0.537 to ≈0.491 to ≈0.457 to ≈0.439, FastText + Label Attention from ≈0.723 to ≈0.591 to ≈0.492 to ≈0.440 — with the label-attention variant benefiting more at each step, the same pattern as [Single-level classification](naf_single.qmd): the gap between the two architectures narrows from ≈0.186 at 163,615 examples to ≈0.100 at 327,230 to ≈0.035 at 654,461 to essentially **zero** (≈0.002) at 1,208,579, as label attention gets enough examples per class to learn meaningful per-class query vectors — here shared jointly across five hierarchy levels rather than one — and fully closes the gap with plain FastText once the full training set is used.
 
 ### Capacity & robustness
 
@@ -475,7 +479,7 @@ fig.update_layout(
 fig.show()
 ```
 
-As on the single-level page, there's no clean pareto frontier — `num_params` mixes together `vocab_size` and `emb_dim`, whose individual effects pull in different directions (see the interaction heatmap further down). Label attention consistently **hurts** here too, but the gap is modest at this data size (mean val loss ≈0.457 for FastText vs. ≈0.492 for FastText + Label Attention, a ≈0.035 gap) — five classification heads sharing one token encoder mean label attention gets exactly as many training examples per class as the single-level baseline, and the gap is comparable to `naf_single.qmd`'s.
+As on the single-level page, there's no clean pareto frontier — `num_params` mixes together `vocab_size` and `emb_dim`, whose individual effects pull in different directions (see the interaction heatmap further down). Label attention is on par with FastText on average here (≈0.441 vs. ≈0.439, a ≈0.002 gap — statistically indistinguishable) and its best configuration even beats FastText's best (≈0.417 vs. ≈0.426). But it's noisier: at its largest configuration (`emb_dim`=512, `vocab_size`=20000, ≈16.3M params) it spikes to the worst validation loss of either architecture (≈0.467), reproduced across both runs there — extra capacity seems to overfit rather than help.
 
 #### Stability
 
@@ -514,7 +518,7 @@ fig.update_layout(
 fig.show()
 ```
 
-FastText is also more stable, not just better on average: its results cluster tightly (std ≈0.0095) while Label Attention spreads almost twice as wide (std ≈0.0176) — the same direction as the single-level page, though slightly less extreme here.
+FastText is also more stable: its results cluster tightly (std ≈0.0081) while Label Attention spreads almost twice as wide (std ≈0.0150) — the same direction as the single-level page. Medians are nearly identical (≈0.439 vs. ≈0.440), so this spread, not the average, is what separates the two architectures here.
 
 :::
 
@@ -574,7 +578,7 @@ fig.update_layout(
 fig.show()
 ```
 
-FastText is essentially flat across vocabulary size (0.4615→0.4524→0.4549→0.4589 from 2,000 to 20,000 tokens, best at 5,000), while FastText + Label Attention degrades steadily and more steeply (0.4783→0.4834→0.4973→0.5106) — the same sparse-coverage effect as CLINC150 and the single-level page, and here it hits five classification heads at once instead of one.
+FastText is fairly flat across vocabulary size (0.4464→0.4363→0.4343→0.4376 from 2,000 to 20,000 tokens, best at 10,000), while FastText + Label Attention dips to its best at 5,000 (0.4328) before degrading sharply toward 20,000 (0.4541) — a sparse-coverage effect that only bites past a certain vocabulary size, compounded across five classification heads sharing one token embedder.
 
 #### Embedding dimension
 
@@ -626,7 +630,7 @@ fig.update_layout(
 fig.show()
 ```
 
-Both architectures follow a mild U-shape, best around emb_dim=256 (FastText: 0.4658→0.4530→0.4513→0.4575 from 64 to 512; Label Attention: 0.5046→0.4897→0.4820→0.4932) — unlike the single-level page, where FastText was essentially flat, here more capacity helps up to a point before overfitting the smaller `num_train` relative to the extra parameters five heads add.
+Both architectures follow a mild U-shape, best around emb_dim=256 (FastText: 0.4444→0.4350→0.4345→0.4408 from 64 to 512; Label Attention: 0.4524→0.4393→0.4346→0.4356) — the smallest embedding (64) is consistently the worst choice for either architecture, and label attention keeps improving up to 512, coming within 0.001 of its best score there.
 
 :::
 
@@ -668,7 +672,7 @@ fig.update_layout(
 fig.show()
 ```
 
-Label attention trains dramatically **slower** here — mean ≈25,490s (≈7.1h) vs. ≈5,050s (≈1.4h) for FastText, roughly a 5× gap and proportionally wider than on the single-level page (≈2.5×): five heads sharing one label-attention-driven sentence embedder mean five times the cross-attention computation per forward pass, and with enough data to keep improving the run rarely stops early, paying that per-step cost for the whole training budget.
+Label attention trains dramatically **slower** here — mean ≈53,930s (≈15.0h) vs. ≈9,520s (≈2.6h) for FastText, roughly a 5.7× gap: five heads sharing one label-attention-driven sentence embedder mean five times the cross-attention computation per forward pass, and with a full training set to keep improving on, the run rarely stops early, paying that per-step cost for the whole training budget.
 
 ### Interaction: embedding dimension × vocabulary size
 
@@ -733,11 +737,11 @@ fig.update_layout(height=500, width=790, margin=dict(l=50, r=20, t=40, b=130))
 fig.show()
 ```
 
-FastText is fairly flat across the grid — best cell (emb_dim=256, vocab=5,000, 0.447) and worst (emb_dim=64, vocab=2,000, 0.474) are close together. Label Attention is far more sensitive, and vocabulary size's effect compounds with embedding dimension exactly as on the single-level page: at emb_dim=64, growing the vocab from 2,000 to 20,000 pushes the loss from 0.486 to 0.533 (the single worst cell in the whole grid, a 0.046 swing), while the same vocab change at emb_dim=512 moves it only from 0.489 to 0.501 (a 0.012 swing) — more capacity in the token embedder makes label attention markedly more robust to a larger, sparser vocabulary.
+FastText is fairly flat across the grid — best cell (emb_dim=128, vocab=10,000, 0.430) and worst (emb_dim=64, vocab=2,000, 0.455) are close together. Label Attention is more sensitive, but not uniformly: at emb_dim=64, growing the vocab from 2,000 to 20,000 barely moves the loss (0.450→0.458, a 0.008 swing), while the same vocab change at emb_dim=512 swings much more (0.440→0.463, a 0.022 swing) — the single worst cell in the whole grid. A larger token embedder doesn't buy label attention robustness to vocabulary size here; if anything it makes the model more sensitive to it.
 
 ## Prediction analysis and comparison with single-level
 
-This section examines what the models actually predict, using the same two architectures as [Single-level classification](naf_single.qmd) — `FastText` and `FastText + Label Attention`. Unlike that page, exact-match accuracy on the 679 sub-classes is not the only thing available here: the model predicts all five hierarchy levels **directly**, through five independent classification heads sharing one token encoder, rather than deriving coarser levels by truncating a single sub-class prediction. On the single-level page, only the sub-class code is predicted (e.g. `6820G`); the coarser levels are never predicted themselves, just mechanically cut from that one string (`code[:2]` for the division, `code[:4]` for the class, etc.). Here, each level gets its own dedicated prediction, so — unlike a truncated code, which is right at every coarser level whenever the sub-class is right — the five levels can disagree with each other (e.g. a correct section with a wrong sub-class).
+This section examines what the models actually predict, using the same two architectures as [Single-level classification](naf_single.qmd) — `FastText` and `FastText + Label Attention`. For each architecture, the model is the single run from the hyperparameter sweep above with the best **sub-class** test accuracy — not the lowest overall (weighted) validation loss used to pick "best" in the sweep analysis — since sub-class is the finest, most demanding level and the one directly comparable to the single-level page. Unlike that page, exact-match accuracy on the 679 sub-classes is not the only thing available here: the model predicts all five hierarchy levels **directly**, through five independent classification heads sharing one token encoder, rather than deriving coarser levels by truncating a single sub-class prediction. On the single-level page, only the sub-class code is predicted (e.g. `6820G`); the coarser levels are never predicted themselves, just mechanically cut from that one string (`code[:2]` for the division, `code[:4]` for the class, etc.). Here, each level gets its own dedicated prediction, so — unlike a truncated code, which is right at every coarser level whenever the sub-class is right — the five levels can disagree with each other (e.g. a correct section with a wrong sub-class).
 
 ```{python}
 #| label: load-predictions-naf-multilevel
@@ -781,7 +785,7 @@ ARCHS_AVAIL_ML = list(preds_by_arch_ml.keys())
 
 # The npz predictions only carry integer-encoded labels, not raw text or NAF codes.
 # Both are fully reconstructible offline: the test split (seed=42, val_size=
-# test_size=25000, independent of train_fraction since only the train split is
+# test_size=50000, independent of train_fraction since only the train split is
 # subsampled) and the per-level label encoders (fit on the full deduplicated
 # corpus) are deterministic — see src/multilevel/naf_data.py::load_naf. Cached
 # here so this only re-downloads/re-fits once.
@@ -800,7 +804,7 @@ else:
     df_full_ml = pd.read_parquet(NAF_PARQUET_URL, columns=["libelle_cleaned"] + LEVEL_NAMES)
     df_full_ml = df_full_ml.dropna().reset_index(drop=True)
     df_full_ml = df_full_ml.sample(frac=1, random_state=42).reset_index(drop=True)
-    df_test_ml = df_full_ml.iloc[len(df_full_ml) - 25000:].reset_index(drop=True)
+    df_test_ml = df_full_ml.iloc[len(df_full_ml) - 50000:].reset_index(drop=True)
     df_test_ml.to_parquet(test_cache)
 
 X_TEST_ML = df_test_ml["libelle_cleaned"].values
@@ -868,11 +872,11 @@ fig.update_layout(
 fig.show()
 ```
 
-The same funnel shape as on the single-level page: 331 of the 470 sub-classes present in the test set have fewer than 20 test examples, and their accuracy swings across the entire 0–100% range; the 25 sub-classes with 200+ examples tighten into a 56–98% band (mean ≈88%). Sharing the token encoder with four auxiliary heads doesn't change this — sub-class accuracy is still driven by how much data that specific sub-class has, not by the auxiliary supervision.
+The same funnel shape as on the single-level page: 311 of the 513 sub-classes present in the test set have fewer than 20 test examples, and their accuracy swings across the entire 0–100% range; the 50 sub-classes with 200+ examples tighten into a 56–100% band (mean ≈89%). Sharing the token encoder with four auxiliary heads doesn't change this — sub-class accuracy is still driven by how much data that specific sub-class has, not by the auxiliary supervision.
 
 ### Hierarchical accuracy
 
-An earlier version of this section derived every coarser level by truncating the **sub-class head**'s prediction, exactly like [Single-level classification](naf_single.qmd) is forced to (it has no separate section/division/group/class head to ask). That method turned out to be misleading here: the multi-level model has four genuinely **independent** auxiliary heads, each trained with its own cross-entropy loss, and they are *not* reducible to a truncation of the sub-class guess. Checking directly — among examples where the sub-class head is wrong, how often is the **independent section head** still correct — gives 61.7–63.2%, against only 51.8–52.3% from truncating the (wrong) sub-class guess. The charts below query each head directly.
+An earlier version of this section derived every coarser level by truncating the **sub-class head**'s prediction, exactly like [Single-level classification](naf_single.qmd) is forced to (it has no separate section/division/group/class head to ask). That method turned out to be misleading here: the multi-level model has four genuinely **independent** auxiliary heads, each trained with its own cross-entropy loss, and they are *not* reducible to a truncation of the sub-class guess. Checking directly — among examples where the sub-class head is wrong, how often is the **independent section head** still correct — gives 61.4–61.5%, against only 52.4–53.0% from truncating the (wrong) sub-class guess. The charts below query each head directly.
 
 ```{python}
 #| label: fig-hierarchy-direct-naf-multilevel
@@ -965,7 +969,7 @@ fig.update_layout(
 fig.show()
 ```
 
-The gap isn't monotonic. At **Section**, truncating the single-level model's sub-class guess does about as well as — even fractionally better than — multi-level's own dedicated section head. From **Division to Class**, the multi-level curve pulls ahead and the gap widens, before narrowing again slightly at **Sub-class**, where multi-level still keeps a modest edge. That last point is worth flagging: single-level and multi-level are two *separately trained* models, not the same model with heads removed, so there's no reason to expect them to match exactly even on the one task (sub-class) both nominally solve directly — the fact that multi-level is still a bit more accurate there suggests its auxiliary per-level losses provide some regularisation benefit to its own sub-class head, not just to the coarser ones.
+The gap isn't monotonic in size, but it never reverses: truncating the single-level model's sub-class guess leads multi-level's own independent heads at every level, from over a point ahead at **Section** down to an exact tie at **Sub-class**, narrowing steadily through **Division**, **Group** and **Class** rather than crossing over. That convergence is worth flagging: single-level and multi-level are two *separately trained* models, not the same model with heads removed, so there's no reason to expect them to land this close even on the one task (sub-class) both nominally solve directly — whatever benefit the auxiliary per-level losses provide to multi-level's coarser heads, they don't appear to give its own sub-class head any edge over a model trained on that task alone.
 
 The next view zooms into the wrong sub-class predictions only, and buckets each one by the *finest* of Class/Group/Division/Section that still lands correctly. For single-level, that bucket is unambiguous — truncation is nested by construction, so a correct division always implies a correct section too (section is deterministically derived from division), and conversely a wrong section forces division, group and class to be wrong as well. For multi-level, it's less obvious than it sounds: **"No match" means all four independent heads miss at once**, not just the section head — since the four heads are separately trained and never consult each other, it's entirely possible for the division head to land correctly while the (equally independent) section head misses the very same example, an inconsistency truncation can never produce.
 
@@ -1070,7 +1074,7 @@ fig.update_layout(
 fig.show()
 ```
 
-The single-level bars (hatched) confirm this isn't just an artefact of the earlier derived comparison: on [Single-level classification](naf_single.qmd), ≈48–50% of errors are "No match" (not even the section is right) for both architectures, and only ≈8% stay within the correct class. Multi-level's independent heads do much better on both counts: "No match" is only **33.1%** for FastText and **25.7%** for Label Attention, and — unlike the single-level bars, which look nearly identical to each other — the two architectures now diverge meaningfully, with Label Attention landing in the **Class** bucket far more often (26.6% vs. 11.3% for FastText). When its finest guess is wrong, its independently-trained class head is much more likely to still be right, even though its raw sub-class accuracy is slightly lower. The auxiliary heads are doing real work that the single-level bars, sitting right next to them, simply cannot do.
+The single-level bars (hatched) confirm this isn't just an artefact of the earlier derived comparison: on [Single-level classification](naf_single.qmd), ≈47–48% of errors are "No match" (not even the section is right) for both architectures, and only ≈7–8% stay within the correct class. Multi-level's independent heads do much better on both counts: "No match" is only **34.0%** for FastText and **28.9%** for Label Attention, and — unlike the single-level bars, which look nearly identical to each other — the two architectures now diverge meaningfully, with Label Attention landing in the **Class** bucket far more often (25.1% vs. 11.3% for FastText). When its finest guess is wrong, its independently-trained class head is much more likely to still be right, even though its raw sub-class accuracy is slightly lower. The auxiliary heads are doing real work that the single-level bars, sitting right next to them, simply cannot do.
 
 ### Effect of independent heads
 
@@ -1135,7 +1139,7 @@ fig.update_layout(
 fig.show()
 ```
 
-For both architectures and both levels, the grey (truncated) bar is consistently well below the coloured (direct) bar — the independent head recovers real accuracy that a truncation-only view throws away: +9.4pp at section / +10.3pp at division for FastText, +11.4pp / +15.1pp for Label Attention. This is the concrete mechanism behind the previous tab's better "No match" rate: it isn't that the model becomes more accurate overall, it's that its mistakes are genuinely *localised to one head* — the sub-class head can misfire on the fine-grained decision while the division and section heads, trained with their own independent loss on the same shared token encoding, are unaffected and still answer correctly.
+For both architectures and both levels, the grey (truncated) bar is consistently well below the coloured (direct) bar — the independent head recovers real accuracy that a truncation-only view throws away: +8.6pp at section / +9.6pp at division for FastText, +9.9pp / +13.1pp for Label Attention. This is the concrete mechanism behind the previous tab's better "No match" rate: it isn't that the model becomes more accurate overall, it's that its mistakes are genuinely *localised to one head* — the sub-class head can misfire on the fine-grained decision while the division and section heads, trained with their own independent loss on the same shared token encoding, are unaffected and still answer correctly.
 
 **Why not group and class too?** 576 of the 651 NAF classes (88.5%) contain exactly **one** sub-class — for those, getting the class right and getting the sub-class right are the same event, so whenever the sub-class head is wrong, truncating that wrong guess to class level is *necessarily* also wrong: truncated accuracy collapses to ~0% at those two levels, which would make the comparison trivial rather than informative. Section and division are coarse enough that many different sub-classes map to the same coarser code, so truncation and direct prediction can genuinely diverge — that's what the chart above needs to be meaningful.
 
@@ -1195,7 +1199,7 @@ fig.update_layout(
 fig.show()
 ```
 
-The two largest flows both involve section **M** (scientific & technical activities) — confused with **K** (financial & insurance, 7.0% of FastText's section-level errors) and **J** (information & communication, 6.0%), with the reverse flow J→M also in the top three (5.8%). This is a symmetric, semantically coherent confusion: consulting, IT, and technical-services activities genuinely overlap in vocabulary with finance and information-services activities, and it shows up as a real bidirectional flow rather than a one-way drain into a single dominant class — unlike the OOS "catch-all" pattern seen on CLINC150.
+The two largest flows both involve section **M** (scientific & technical activities) — confused with **K** (financial & insurance, 7.0% of FastText's section-level errors) and **J** (information & communication, 6.2%), with the reverse flow J→M also in the top three (6.2%). This is a symmetric, semantically coherent confusion: consulting, IT, and technical-services activities genuinely overlap in vocabulary with finance and information-services activities, and it shows up as a real bidirectional flow rather than a one-way drain into a single dominant class — unlike the OOS "catch-all" pattern seen on CLINC150.
 
 ### Examples
 
@@ -1206,7 +1210,7 @@ The two largest flows both involve section **M** (scientific & technical activit
 import random
 random.seed(42)
 
-y_test_all_ml = preds_by_arch_ml[ARCHS_AVAIL_ML[0]]["y_test"]  # (25000, 5)
+y_test_all_ml = preds_by_arch_ml[ARCHS_AVAIL_ML[0]]["y_test"]  # (50000, 5)
 
 df_ex_ml = pd.DataFrame({"text": X_TEST_ML})
 for i, lvl in enumerate(LEVEL_NAMES):
@@ -1234,7 +1238,7 @@ def truncate_code_ml(level, code):
 
 # Text -> row lookup into the single-level page's own (separately trained)
 # test set, so each sampled utterance can be matched to its single-level
-# prediction too — verified to fully overlap (all 25k multi-level test texts
+# prediction too — verified to fully overlap (all 50k multi-level test texts
 # are also present in single-level's 50k test set, same cleaning pipeline).
 single_lookup_ml = {
     arch: {str(t): i for i, t in enumerate(d["X_test"])}
@@ -1359,4 +1363,629 @@ HTML(html)
 Browsing through these cards turns up the independent-heads quirk from the top of the page in concrete form: it's not rare to see the **sub-class** head land exactly right while the (independently predicted) **section** head misses — a combination truncation could never produce, since a correct sub-class would truncate down to a correct section every time. Here, the two heads simply disagree, each having made its own call from the shared encoding.
 
 :::
+
+## Explainability
+
+This section asks *why* the multi-level model predicts what it predicts — and, unlike [Single-level classification](naf_single.qmd), it can ask that question **five times over**, once per independent head. The same description now gets five separate explanations (section, division, group, class, sub-class), which opens a question single-level explainability can't: does the model rely on different words to justify a coarse call than a fine one? And when a "smart mistake" happens — right section, wrong sub-class, as seen throughout the Prediction analysis section above — what did each head actually look at?
+
+The comparison is again between **FastText** and **FastText + Label Attention**, each level's own independently-trained head, on the same 200 sampled test descriptions.
+
+Three complementary instruments, same as on the single-level page:
+
+- **Layer Integrated Gradients (Captum)**: word-level attribution, computed independently for each of the 5 heads. Run without any class cap here — the cap used for label attention below wasn't needed for Captum, whose arrays carry no per-head dimension.
+- **Label-attention weights** (Label Attention model only): the model's own cross-attention, also computed per level. Unlike Captum, this one *does* carry an extra head dimension (4 attention heads per level's mechanism) on top of the class dimension — summed across 5 levels' worth of ~1700 classes, the raw version was too large to log reliably, so it's capped to each level's top-100 predicted classes (no cap actually bites at section or division, which have fewer than 100 classes to begin with).
+- **Class direction vectors**: per level, the label-attention queries or the linear head's weight rows — five geometries to compare instead of one.
+
+```{python}
+#| label: load-explain-artifacts-naf-multilevel
+
+EXPLAIN_BUCKET_ML  = "https://minio.lab.sspcloud.fr/projet-text-classif/explanations/naf_multilevel"
+_ARTIFACT_NAMES_ML = ["captum.npz", "label_attn.npz", "class_vectors.npz", "faithfulness.npz"]
+_NOT_APPLICABLE_ML = {("pooling", "label_attn.npz")}  # mean pooling has no label attention mechanism
+
+def _load_artifact_explain_ml(method: str, name: str):
+    """Fetch (and cache) one multi-level explainability artifact; None if unavailable."""
+    if (method, name) in _NOT_APPLICABLE_ML:
+        return None
+    cache_dir = Path("results/naf_multilevel/explain") / method
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache = cache_dir / name
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{EXPLAIN_BUCKET_ML}/{method}/{name}", cache)
+        return np.load(cache, allow_pickle=True)
+    except Exception:
+        return None
+
+cap_la_ml, lat_la_ml, cv_la_ml, fai_la_ml = (_load_artifact_explain_ml("labatt",  n) for n in _ARTIFACT_NAMES_ML)
+cap_pl_ml, lat_pl_ml, cv_pl_ml, fai_pl_ml = (_load_artifact_explain_ml("pooling", n) for n in _ARTIFACT_NAMES_ML)
+
+HAS_EXPLAIN_LA_ML = cap_la_ml is not None
+
+if not HAS_EXPLAIN_LA_ML:
+    print("Explainability artifacts not yet available — re-run src/multilevel/explain.py")
+else:
+    EXPLAIN_MODEL_LABELS_ML = {"labatt": "FastText + Label Attention", "pooling": "FastText"}
+    EXPLAIN_CAPTUM_ML     = {"labatt": cap_la_ml, "pooling": cap_pl_ml}
+    EXPLAIN_LABEL_ATTN_ML = {"labatt": lat_la_ml, "pooling": lat_pl_ml}
+    EXPLAIN_CLASS_VECS_ML = {"labatt": cv_la_ml,  "pooling": cv_pl_ml}
+    EXPLAIN_FAITHFUL_ML   = {"labatt": fai_la_ml, "pooling": fai_pl_ml}
+    EXPLAIN_MODEL_KEYS_ML = [k for k in ("labatt", "pooling") if EXPLAIN_CAPTUM_ML[k] is not None]
+```
+
+### Word attributions across the hierarchy
+
+*Method: Captum (Integrated Gradients)*
+
+For a single description, each level's head reaches its own verdict from the same shared encoding — the figure below renders all five as **highlighted text**, stacked, using that level's own attribution for whatever class it actually predicted. Green pushes toward that level's prediction, red pushes away, colour intensity ∝ `|score| / max|score|` within that row.
+
+The examples below are deliberately picked to include the "smart mistakes" quantified earlier in Prediction analysis — right section, wrong sub-class — alongside a couple of clean sweeps (every level correct) and clean misses (every level wrong), so the shift in emphasis from coarse to fine rows is easy to compare.
+
+```{python}
+#| label: fig-explain-hierarchy-highlight-naf-multilevel
+#| fig-cap: "Captum attributions for the predicted class at each hierarchy level, same description throughout. Use the ← / → arrows to switch examples."
+
+import json
+from IPython.display import HTML, display
+
+if not HAS_EXPLAIN_LA_ML:
+    out_ml = HTML("<p>Artifacts not yet available.</p>")
+else:
+    def _cls_display_ml(level: str, idx: int) -> str:
+        code = code_of(level, idx)
+        lbl  = label_of(level, code)
+        return f"{code} — {lbl}" if lbl != code else code
+
+    rng_ml = np.random.default_rng(7)
+    picks_ml = []  # (arch, example_idx)
+    for arch in EXPLAIN_MODEL_KEYS_ML:
+        cap = EXPLAIN_CAPTUM_ML[arch]
+        correct_sec = cap["y_pred_sec"] == cap["y_true_sec"]
+        correct_sub = cap["y_pred_sub"] == cap["y_true_sub"]
+        seen  = {i for _, i in picks_ml}
+        smart = [i for i in np.where(correct_sec & ~correct_sub)[0] if i not in seen]
+        rng_ml.shuffle(smart)
+        picks_ml += [(arch, int(i)) for i in smart[:3]]
+        seen    = {i for _, i in picks_ml}
+        both_ok = [i for i in np.where(correct_sec & correct_sub)[0] if i not in seen]
+        rng_ml.shuffle(both_ok)
+        picks_ml += [(arch, int(i)) for i in both_ok[:2]]
+        seen       = {i for _, i in picks_ml}
+        both_wrong = [i for i in np.where(~correct_sec & ~correct_sub)[0] if i not in seen]
+        rng_ml.shuffle(both_wrong)
+        picks_ml += [(arch, int(i)) for i in both_wrong[:2]]
+
+    def _spans_html_ml(words, scores):
+        amax = max((abs(s) for s in scores), default=1) or 1
+        parts = []
+        for j, w in enumerate(words):
+            s = scores[j] if j < len(scores) else 0
+            t = abs(s) / amax
+            rgb = "57,255,20" if s >= 0 else "255,30,30"
+            alpha = round(0.10 + 0.65 * t, 2)
+            parts.append(
+                f'<span style="background-color:rgba({rgb},{alpha});'
+                f'padding:1px 3px;margin:0 1px;line-height:2.3;">{w}</span>'
+            )
+        return " ".join(parts)
+
+    cards_ml = []
+    for arch, i in picks_ml:
+        cap  = EXPLAIN_CAPTUM_ML[arch]
+        text = str(cap["texts"][i])[:200]
+        rows_html = ""
+        for lvl in LEVEL_NAMES:
+            words = [str(w) for w in list(cap[f"words_{lvl}"][i])[:40]]
+            mat   = cap[f"word_attn_{lvl}"][i]  # (n_classes, n_words), row 0 = predicted class
+            pred  = int(cap[f"y_pred_{lvl}"][i])
+            true  = int(cap[f"y_true_{lvl}"][i])
+            ok    = pred == true
+            nw    = min(len(words), mat.shape[1])
+            bc    = "#2E7D32" if ok else "#B71C1C"
+            mark  = "✓" if ok else "✗"
+            rows_html += (
+                f'<div style="margin:8px 0;">'
+                f'<div style="font-size:11.5px;color:#777;margin-bottom:2px;">'
+                f'<b style="color:#333;">{LEVEL_LABELS_ML[lvl]}</b> → '
+                f'{_cls_display_ml(lvl, pred)} <span style="color:{bc};">{mark}</span></div>'
+                f'<div style="line-height:2.4;">{_spans_html_ml(words[:nw], mat[0][:nw])}</div>'
+                f'</div>'
+            )
+        cards_ml.append(
+            f'<div style="border:1px solid #e2e2e2;border-radius:8px;padding:14px 16px;background:#fcfcfc;">'
+            f'<div style="font-size:13px;color:#444;margin-bottom:10px;">'
+            f'<b>{EXPLAIN_MODEL_LABELS_ML[arch]}</b> &mdash; <i>&ldquo;{text}&rdquo;</i></div>'
+            f'{rows_html}</div>'
+        )
+
+    nav_id_ml  = "hl-nav-ml"
+    n_cards_ml = len(cards_ml)
+    hl_html_ml = f"""
+<div style="font-family:sans-serif;font-size:14px;">
+  <div style="display:flex;align-items:center;gap:12px;justify-content:center;margin-bottom:12px;">
+    <button style="padding:6px 18px;background:#f0f0f0;border:1px solid #ccc;border-radius:5px;cursor:pointer;font-size:13px;"
+            onclick="hlNavMl(-1)">← Prev</button>
+    <span id="{nav_id_ml}-cnt" style="font-size:12px;color:#999;">1 / {n_cards_ml}</span>
+    <button style="padding:6px 18px;background:#f0f0f0;border:1px solid #ccc;border-radius:5px;cursor:pointer;font-size:13px;"
+            onclick="hlNavMl(1)">Next →</button>
+  </div>
+  <div id="{nav_id_ml}">{cards_ml[0] if cards_ml else ""}</div>
+</div>
+<script>
+(function() {{
+  window._hlCardsMl = {json.dumps(cards_ml)};
+  window._hlCurMl   = 0;
+  window.hlNavMl = function(d) {{
+    window._hlCurMl = (window._hlCurMl + d + window._hlCardsMl.length) % window._hlCardsMl.length;
+    document.getElementById('{nav_id_ml}').innerHTML = window._hlCardsMl[window._hlCurMl];
+    document.getElementById('{nav_id_ml}-cnt').textContent = (window._hlCurMl + 1) + ' / ' + window._hlCardsMl.length;
+  }};
+}})();
+</script>
+"""
+    out_ml = HTML(hl_html_ml)
+
+display(out_ml)
+```
+
+### Label attention across the hierarchy
+
+*Method: label-attention weights*
+
+Captum is a post-hoc reconstruction; label attention is the model's *own* explanation, built into the architecture — each level's head literally attends to specific words before deciding. For one description, here is that raw attention (averaged over the mechanism's 4 heads), one heatmap per level, restricted to the 10 classes each head found most plausible (plus the true class, if it happens to fall outside that top 10). Rows are sub-classes-of-that-level, columns are the description's words.
+
+```{python}
+#| label: fig-explain-labatt-hierarchy-naf-multilevel
+#| fig-cap: "Label attention (mean over heads) for one example, at each hierarchy level — top 10 predicted classes, plus the true class if not already among them."
+
+if not HAS_EXPLAIN_LA_ML or lat_la_ml is None:
+    print("Label attention artifacts not yet available.")
+else:
+    _TOP_K_LAH_ML = 10
+
+    cap0 = EXPLAIN_CAPTUM_ML["labatt"]
+    _correct_sec0 = cap0["y_pred_sec"] == cap0["y_true_sec"]
+    _correct_sub0 = cap0["y_pred_sub"] == cap0["y_true_sub"]
+    _smart0 = np.where(_correct_sec0 & ~_correct_sub0)[0]
+    ex_idx_lah_ml = int(_smart0[0]) if len(_smart0) else 0
+
+    fig = make_subplots(
+        rows=1, cols=len(LEVEL_NAMES),
+        subplot_titles=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES],
+        horizontal_spacing=0.04,
+    )
+    for col, lvl in enumerate(LEVEL_NAMES, start=1):
+        words       = [str(w) for w in lat_la_ml[f"words_{lvl}"][ex_idx_lah_ml]]
+        head_word   = lat_la_ml[f"head_word_attn_{lvl}"][ex_idx_lah_ml]  # (n_head, k_kept, n_words)
+        class_order = lat_la_ml[f"class_order_{lvl}"][ex_idx_lah_ml]    # (k_kept,) actual class idx, confidence order
+        true_cls    = int(lat_la_ml[f"y_true_{lvl}"][ex_idx_lah_ml])
+
+        sel = list(class_order[:_TOP_K_LAH_ML])
+        if true_cls not in sel and true_cls in class_order:
+            sel = sel[:-1] + [true_cls]
+        idx_map  = {int(c): k for k, c in enumerate(class_order)}
+        rows_sel = [idx_map[c] for c in sel]
+
+        mean_attn = head_word.mean(axis=0)  # (k_kept, n_words)
+        z = mean_attn[rows_sel]
+        y_labels = [code_of(lvl, c) for c in sel]
+
+        fig.add_trace(go.Heatmap(
+            z=z, x=words, y=y_labels, coloraxis="coloraxis",
+            hovertemplate="word=%{x}<br>class=%{y}<br>weight=%{z:.3f}<extra></extra>",
+        ), row=1, col=col)
+
+    fig.update_xaxes(showticklabels=False)
+    fig.update_layout(
+        height=380, coloraxis=dict(colorscale="Viridis"),
+        margin=dict(t=60, b=20, l=20, r=20),
+        paper_bgcolor="white",
+    )
+    fig.show()
+```
+
+Averaged over all 200 examples, the mean-over-heads attention shows the same pattern already seen for Captum: no clear coarse-to-fine trend in *how* concentrated it gets (a fairly flat 38–40% resting in the single most-attended word at every level). What visibly changes between the five panels above, for this one example, is *which* words and classes draw that attention, not how sharply it's split among them — the mechanism-level counterpart to the word-attribution shift shown just above.
+
+### Corpus-level word importance, direct at the section level
+
+*Method: Captum (Integrated Gradients)*
+
+On [Single-level classification](naf_single.qmd), the equivalent figure had to *approximate* section-level importance by grouping together the attributions of whichever sub-classes happen to fall under each section — there was no section-level prediction to ask directly. Here there is: the section head is independently trained, so the word importance below comes straight from it, for the 6 best-represented sections in the test sample.
+
+```{python}
+#| label: fig-explain-corpus-sec-naf-multilevel
+#| fig-cap: "Top attributed words for the 6 best-represented NAF sections, using the section head's own direct predictions."
+
+from plotly.subplots import make_subplots
+
+if not HAS_EXPLAIN_LA_ML:
+    print("Artifacts not yet available.")
+else:
+    def _section_top_ml(cap, sec_code, top_n=8):
+        idx = np.where(np.array([code_of("sec", c) for c in cap["y_pred_sec"]]) == sec_code)[0]
+        scores, counts = {}, {}
+        for i in idx:
+            words = [str(w) for w in cap["words_sec"][i]]
+            attn  = np.abs(cap["word_attn_sec"][i][0][:len(words)])
+            for w, s in zip(words, attn):
+                w_l = w.lower()
+                scores[w_l] = scores.get(w_l, 0.0) + float(s)
+                counts[w_l] = counts.get(w_l, 0) + 1
+        if not scores:
+            return []
+        ranked = sorted(scores.items(), key=lambda kv: -kv[1] / counts[kv[0]])
+        return [(w, s / counts[w]) for w, s in ranked[:top_n]]
+
+    _key_corpus_ml = "labatt" if "labatt" in EXPLAIN_MODEL_KEYS_ML else EXPLAIN_MODEL_KEYS_ML[0]
+    cap_corpus_ml  = EXPLAIN_CAPTUM_ML[_key_corpus_ml]
+
+    sec_counts_ml       = pd.Series([code_of("sec", c) for c in cap_corpus_ml["y_true_sec"]]).value_counts()
+    N_SECTIONS_SHOWN_ML = 6
+    shown_sections_ml   = sec_counts_ml.index[:N_SECTIONS_SHOWN_ML].tolist()
+
+    ROWS_ML, COLS_ML = 2, 3
+    titles_ml = [f"{s} — {SECTION_LABEL_ML[s].replace('Activités', 'Act.')}" for s in shown_sections_ml]
+    fig = make_subplots(rows=ROWS_ML, cols=COLS_ML, subplot_titles=titles_ml,
+                         horizontal_spacing=0.09, vertical_spacing=0.20)
+
+    for si, sec in enumerate(shown_sections_ml):
+        row, col = si // COLS_ML + 1, si % COLS_ML + 1
+        top = _section_top_ml(cap_corpus_ml, sec)[::-1]
+        fig.add_trace(go.Bar(
+            x=[s for _, s in top], y=[w for w, _ in top], orientation="h",
+            marker=dict(color=SECTION_COLOR_ML.get(sec, "#888888"), line=dict(width=0)),
+            width=0.6, opacity=0.9, showlegend=False,
+            hovertemplate="<b>%{y}</b><br>Mean |IG|: %{x:.4f}<extra></extra>",
+        ), row=row, col=col)
+
+    for i, ann in enumerate(fig.layout.annotations):
+        if i < len(shown_sections_ml):
+            ann.font.size = 13
+            ann.font.color = SECTION_COLOR_ML.get(shown_sections_ml[i], "#333")
+
+    fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", tickfont=dict(size=10))
+    fig.update_yaxes(tickfont=dict(size=11), showgrid=False)
+    fig.update_layout(height=620, margin=dict(t=70, b=30, l=20, r=20), paper_bgcolor="white", plot_bgcolor="white")
+    fig.show()
+```
+
+### How concentrated are these explanations?
+
+*Method: Captum (Integrated Gradients)*
+
+A different question from *which* words matter: *how many* of them does the model actually lean on? For each description, we take its predicted class's attribution row and measure what share of the total `|attribution|` mass sits in the single most-attributed word — averaged across examples, per level.
+
+```{python}
+#| label: fig-explain-concentration-naf-multilevel
+#| fig-cap: "Mean share of a description's total |attribution| mass carried by its single most-attributed word, for the predicted class, by hierarchy level."
+
+if not HAS_EXPLAIN_LA_ML:
+    print("Artifacts not yet available.")
+else:
+    def _top_word_share_ml(cap, lvl):
+        shares = []
+        for i in range(len(cap[f"word_attn_{lvl}"])):
+            row   = np.abs(cap[f"word_attn_{lvl}"][i][0])
+            total = row.sum()
+            if total > 0:
+                shares.append(row.max() / total)
+        return float(np.mean(shares)) * 100
+
+    concentration_ml = {
+        arch: [_top_word_share_ml(EXPLAIN_CAPTUM_ML[arch], lvl) for lvl in LEVEL_NAMES]
+        for arch in EXPLAIN_MODEL_KEYS_ML
+    }
+
+    fig = go.Figure()
+    for arch in EXPLAIN_MODEL_KEYS_ML:
+        fig.add_trace(go.Scatter(
+            x=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES], y=concentration_ml[arch],
+            mode="lines+markers", name=EXPLAIN_MODEL_LABELS_ML[arch],
+            line=dict(color=COLORS_ML.get(EXPLAIN_MODEL_LABELS_ML[arch], "grey"), width=2.5),
+            marker=dict(size=9),
+        ))
+    fig.update_layout(
+        xaxis_title="Hierarchy level", yaxis_title="Mean top-word share of |attribution| (%)",
+        legend_title="Architecture", height=420, yaxis=dict(range=[30, 50]),
+    )
+    fig.show()
+```
+
+Label Attention's explanations are consistently more concentrated in a single word than FastText's — roughly 3 to 6 points higher at every level (≈41–45% vs. ≈37–40%) — but neither architecture shows a clear coarse-to-fine trend: both hover in a narrow band regardless of whether the head is making a 20-way section call or a 679-way sub-class call. The gap is between architectures, not between levels: label attention's per-class query vectors appear to latch onto a narrower keyword signature than mean pooling's more diffuse bag-of-embeddings attribution, at every granularity.
+
+### Are these explanations faithful across the hierarchy?
+
+*Method: Captum (Integrated Gradients), word-deletion stress test*
+
+The same faithfulness test used on the single-level page — delete the words Captum ranked as most important and watch the predicted class's probability collapse, against a random-removal control — run independently at each level. First, the raw curves themselves, one small panel per level; then the **gap** between the two curves (area between random and guided) as a single headline number per level: bigger means Captum's ranking is a more trustworthy guide to what that level's head actually uses.
+
+```{python}
+#| label: fig-explain-faithfulness-curves-naf-multilevel
+#| fig-cap: "Faithfulness (comprehensiveness) test at each hierarchy level: mean probability retained by the predicted class as the most-attributed words are progressively deleted (solid = guided removal by |Captum score|; dotted = random-removal control). Shaded bands show ±1 std across examples."
+
+if not HAS_EXPLAIN_LA_ML:
+    print("Artifacts not yet available.")
+else:
+    RGB_ML = {"FastText": "33,150,243", "FastText + Label Attention": "0,188,212"}
+
+    ROWS_FAI_ML, COLS_FAI_ML = 2, 3
+    fig = make_subplots(
+        rows=ROWS_FAI_ML, cols=COLS_FAI_ML,
+        subplot_titles=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES],
+        horizontal_spacing=0.06, vertical_spacing=0.16,
+    )
+
+    for li, lvl in enumerate(LEVEL_NAMES):
+        row, col = li // COLS_FAI_ML + 1, li % COLS_FAI_ML + 1
+        for arch in EXPLAIN_MODEL_KEYS_ML:
+            fai   = EXPLAIN_FAITHFUL_ML[arch]
+            fr    = fai[f"fractions_{lvl}"]
+            label = EXPLAIN_MODEL_LABELS_ML[arch]
+            color = COLORS_ML.get(label, "grey")
+            rgb   = RGB_ML.get(label, "120,120,120")
+            for arr, dash in [(fai[f"guided_probs_{lvl}"], "solid"), (fai[f"random_probs_{lvl}"], "dot")]:
+                m, s = np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
+                fig.add_trace(go.Scatter(
+                    x=np.concatenate([fr, fr[::-1]]), y=np.concatenate([m + s, (m - s)[::-1]]),
+                    fill="toself", fillcolor=f"rgba({rgb},0.10)", line=dict(width=0),
+                    mode="lines", showlegend=False, hoverinfo="skip",
+                ), row=row, col=col)
+                fig.add_trace(go.Scatter(
+                    x=fr, y=m, mode="lines", line=dict(color=color, dash=dash, width=2),
+                    name=label, legendgroup=label,
+                    showlegend=(li == 0 and dash == "solid"),
+                    hovertemplate="fraction removed=%{x}<br>retained prob.=%{y:.3f}<extra>" + label + "</extra>",
+                ), row=row, col=col)
+        fig.update_yaxes(range=[0, 1.02], row=row, col=col)
+
+    fig.update_layout(
+        height=560, margin=dict(t=60, b=20, l=20, r=20),
+        paper_bgcolor="white", plot_bgcolor="white",
+    )
+    fig.show()
+```
+
+```{python}
+#| label: fig-explain-faithfulness-hierarchy-naf-multilevel
+#| fig-cap: "Faithfulness gap (area between random- and guided-removal curves) by hierarchy level."
+
+if not HAS_EXPLAIN_LA_ML:
+    print("Artifacts not yet available.")
+else:
+    def _faithfulness_gap_ml(fai, lvl):
+        g = np.nanmean(fai[f"guided_probs_{lvl}"], axis=0)
+        r = np.nanmean(fai[f"random_probs_{lvl}"], axis=0)
+        return float(np.trapezoid(r - g, fai[f"fractions_{lvl}"]))
+
+    gaps_ml = {
+        arch: [_faithfulness_gap_ml(EXPLAIN_FAITHFUL_ML[arch], lvl) for lvl in LEVEL_NAMES]
+        for arch in EXPLAIN_MODEL_KEYS_ML
+    }
+
+    fig = go.Figure()
+    for arch in EXPLAIN_MODEL_KEYS_ML:
+        fig.add_trace(go.Scatter(
+            x=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES], y=gaps_ml[arch],
+            mode="lines+markers", name=EXPLAIN_MODEL_LABELS_ML[arch],
+            line=dict(color=COLORS_ML.get(EXPLAIN_MODEL_LABELS_ML[arch], "grey"), width=2.5),
+            marker=dict(size=9),
+        ))
+    fig.update_layout(
+        xaxis_title="Hierarchy level", yaxis_title="Faithfulness gap (random − guided)",
+        legend_title="Architecture", height=420,
+    )
+    fig.show()
+```
+
+FastText's Captum ranking is the more trustworthy guide overall, by a wide and stable margin: its gap sits at ≈0.31 at every level except section (≈0.25), meaning its top-ranked words collapse the predicted class roughly 3× faster than random removal, regardless of hierarchy depth. Label Attention's gap is smaller everywhere — its post-hoc Captum explanation is a noticeably less reliable guide to what it actually uses — and, unlike FastText, it drifts upward from coarse to fine (0.045 at group → 0.133 at class → 0.171 at sub-class), though section (0.076) breaks strict monotonicity by sitting above group. Label attention's explanations only approach FastText's level of faithfulness at the finest sub-class head — consistent with the sharper-but-less-validated attributions seen just above.
+
+### Class geometry across the hierarchy
+
+*Method: class direction vectors*
+
+Does the classification space get more crowded as the hierarchy narrows? For each level, we take that level's class vectors (label-attention query vectors for Label Attention, linear classification-head weight rows for FastText) and compute the mean pairwise cosine similarity between classes — higher means classes sit closer together in that space.
+
+```{python}
+#| label: fig-explain-geometry-hierarchy-naf-multilevel
+#| fig-cap: "Mean pairwise cosine similarity between class direction vectors, by hierarchy level."
+
+if not HAS_EXPLAIN_LA_ML:
+    print("Artifacts not yet available.")
+else:
+    def _mean_cos_sim_ml(vecs, sample=2000, seed=0):
+        v = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9)
+        n = v.shape[0]
+        rng = np.random.default_rng(seed)
+        if n > sample:
+            idx = rng.choice(n, size=sample, replace=False)
+            v = v[idx]
+        sim = v @ v.T
+        iu = np.triu_indices(v.shape[0], k=1)
+        return float(sim[iu].mean())
+
+    geometry_ml = {
+        arch: [
+            _mean_cos_sim_ml(EXPLAIN_CLASS_VECS_ML[arch][f"class_vectors_{lvl}"])
+            for lvl in LEVEL_NAMES
+        ]
+        for arch in EXPLAIN_MODEL_KEYS_ML
+    }
+
+    fig = go.Figure()
+    for arch in EXPLAIN_MODEL_KEYS_ML:
+        fig.add_trace(go.Scatter(
+            x=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES], y=geometry_ml[arch],
+            mode="lines+markers", name=EXPLAIN_MODEL_LABELS_ML[arch],
+            line=dict(color=COLORS_ML.get(EXPLAIN_MODEL_LABELS_ML[arch], "grey"), width=2.5),
+            marker=dict(size=9),
+        ))
+    fig.update_layout(
+        xaxis_title="Hierarchy level", yaxis_title="Mean pairwise cosine similarity",
+        legend_title="Architecture", height=420,
+    )
+    fig.show()
+```
+
+FastText's classification-head geometry crowds together steadily as the hierarchy narrows: classes go from nearly orthogonal at section (mean cosine ≈ −0.02, 20 classes) to noticeably closer at sub-class (≈0.18, 679 classes) — roughly what you'd expect from packing more categories into the same embedding space. Label Attention's query vectors don't follow that pattern: they hover in a narrow ≈0.10–0.15 band at every level, with no clear crowding effect as the class count grows thirtyfold. Label attention's per-class query mechanism seems to carve out its own consistent notion of "how far apart classes should be," largely independent of how many there are — plain mean pooling's classification head has no such mechanism, and pays for it in geometry as classes multiply.
+
+### Do levels agree on which word matters?
+
+*Method: label-attention weights*
+
+Word attributions across the hierarchy already hinted that different levels can lean on different words for the same description. Here it's quantified across all 200 examples: does the single most-attended word at a coarser level match the single most-attended word at the sub-class level (Label Attention, mean over heads, predicted class)?
+
+```{python}
+#| label: fig-explain-agreement-hierarchy-naf-multilevel
+#| fig-cap: "Share of examples where the top-attended word at each level matches the top-attended word at the sub-class level (Label Attention)."
+
+if not HAS_EXPLAIN_LA_ML or lat_la_ml is None:
+    print("Label attention artifacts not yet available.")
+else:
+    def _top_word_ml(lvl, i):
+        words = lat_la_ml[f"words_{lvl}"][i]
+        row = np.abs(lat_la_ml[f"word_attn_{lvl}"][i][0])
+        n = min(len(words), len(row))
+        if n == 0:
+            return None
+        return str(words[int(np.argmax(row[:n]))]).lower()
+
+    _n_ex_lah_ml = len(lat_la_ml["words_sec"])
+    _coarser_levels_ml = [l for l in LEVEL_NAMES if l != "sub"]
+    agreement_ml = {}
+    for lvl in _coarser_levels_ml:
+        match, total = 0, 0
+        for i in range(_n_ex_lah_ml):
+            w_ref, w_lvl = _top_word_ml("sub", i), _top_word_ml(lvl, i)
+            if w_ref is not None and w_lvl is not None:
+                total += 1
+                match += int(w_ref == w_lvl)
+        agreement_ml[lvl] = 100 * match / total if total else 0.0
+
+    fig = go.Figure(go.Bar(
+        x=[LEVEL_LABELS_ML[l] for l in _coarser_levels_ml],
+        y=[agreement_ml[l] for l in _coarser_levels_ml],
+        marker=dict(color="#00BCD4"),
+        text=[f"{agreement_ml[l]:.0f}%" for l in _coarser_levels_ml], textposition="outside",
+    ))
+    fig.update_layout(
+        xaxis_title="Hierarchy level", yaxis_title="Share of examples agreeing with sub-class (%)",
+        height=380, yaxis=dict(range=[0, 70]),
+    )
+    fig.show()
+```
+
+The same word tops the ranking at both ends of the hierarchy about **half the time** — 45–49% across section, division, group and class, with no meaningful trend by depth. So the model is neither purely "reusing the same evidence at every level" nor "picking entirely fresh evidence each time": roughly one description in two gets the same star witness for its coarse and fine verdicts, and one in two doesn't — consistent with the geometry finding above, where label attention doesn't obviously reorganise itself level by level either.
+
+### Do confused sections share vocabulary?
+
+*Method: Captum (Integrated Gradients)*
+
+[Top section confusions](#top-section-confusions) found the model confuses **M** with **K** and **J** far more than other section pairs. Does that confusion show up as shared vocabulary — do the top attributed words for M-predicted examples overlap with those for K- or J-predicted examples more than for an unrelated pair of sections?
+
+```{python}
+#| label: fig-explain-confusion-vocab-naf-multilevel
+#| fig-cap: "Jaccard overlap between the top-15 attributed words of each section's predicted examples, for the most-confused pairs vs. a random baseline."
+
+if not HAS_EXPLAIN_LA_ML:
+    print("Artifacts not yet available.")
+else:
+    def _section_words_ml(cap, sec_code, top_n=15):
+        idx = np.where(np.array([code_of("sec", c) for c in cap["y_pred_sec"]]) == sec_code)[0]
+        scores, counts = {}, {}
+        for i in idx:
+            words = [str(w).lower() for w in cap["words_sec"][i]]
+            attn  = np.abs(cap["word_attn_sec"][i][0][:len(words)])
+            for w, s in zip(words, attn):
+                scores[w] = scores.get(w, 0.0) + float(s)
+                counts[w] = counts.get(w, 0) + 1
+        if not scores:
+            return set()
+        ranked = sorted(scores.items(), key=lambda kv: -kv[1] / counts[kv[0]])
+        return set(w for w, _ in ranked[:top_n])
+
+    def _jaccard_ml(a, b):
+        return len(a & b) / len(a | b) if a and b else None
+
+    _key_conf_ml  = "labatt" if "labatt" in EXPLAIN_MODEL_KEYS_ML else EXPLAIN_MODEL_KEYS_ML[0]
+    cap_conf_ml   = EXPLAIN_CAPTUM_ML[_key_conf_ml]
+    _pred_sec_ml  = np.array([code_of("sec", c) for c in cap_conf_ml["y_pred_sec"]])
+    _sections_present_ml = sorted(set(_pred_sec_ml.tolist()))
+    _sec_words_ml = {s: _section_words_ml(cap_conf_ml, s) for s in _sections_present_ml}
+
+    CONFUSED_PAIRS_ML = [("M", "K"), ("M", "J"), ("N", "M")]  # from Top section confusions above (unordered, direction doesn't change vocabulary overlap)
+    labels_conf_ml, vals_conf_ml = [], []
+    for a, b in CONFUSED_PAIRS_ML:
+        j = _jaccard_ml(_sec_words_ml.get(a, set()), _sec_words_ml.get(b, set()))
+        if j is not None:
+            labels_conf_ml.append(f"{a} / {b}")
+            vals_conf_ml.append(j)
+
+    rng_conf_ml       = np.random.default_rng(3)
+    _confused_codes_ml = {"M", "K", "J", "N"}
+    _others_ml        = [s for s in _sections_present_ml if s not in _confused_codes_ml]
+    _rand_pairs_ml    = [(a, b) for i, a in enumerate(_others_ml) for b in _others_ml[i + 1:]]
+    rng_conf_ml.shuffle(_rand_pairs_ml)
+    _baseline_js_ml = [
+        j for a, b in _rand_pairs_ml[:10]
+        if (j := _jaccard_ml(_sec_words_ml.get(a, set()), _sec_words_ml.get(b, set()))) is not None
+    ]
+    labels_conf_ml.append("random pairs (mean)")
+    vals_conf_ml.append(float(np.mean(_baseline_js_ml)) if _baseline_js_ml else 0.0)
+
+    fig = go.Figure(go.Bar(
+        x=labels_conf_ml, y=vals_conf_ml,
+        marker=dict(color=["#B71C1C"] * (len(labels_conf_ml) - 1) + ["#999999"]),
+        text=[f"{v:.3f}" for v in vals_conf_ml], textposition="outside",
+    ))
+    fig.update_layout(
+        xaxis_title=None, yaxis_title="Jaccard overlap (top-15 words)",
+        height=380, yaxis=dict(range=[0, 0.15]),
+    )
+    fig.show()
+```
+
+Barely at all: the top-15 attributed words for the confused M/K and M/J pairs overlap almost as little (Jaccard ≈ 0.00–0.03) as a random baseline pair of unrelated sections (≈0.01). The model's confusion between these sections isn't explained by them literally keying off the same words — whatever drives M getting mistaken for K or J happens example by example, or through subtler semantic proximity that a top-15-word overlap is too coarse to catch, not through a shared vocabulary visible at the corpus level.
+
+### Do attention heads specialize more at finer levels?
+
+*Method: label-attention weights*
+
+Label attention's 4 heads don't have to agree with each other. Here we ask whether that disagreement is itself a function of hierarchy depth: for the predicted class, how much do the 4 heads' individual "how concentrated is my attention" scores differ from one another, averaged across examples, per level?
+
+```{python}
+#| label: fig-explain-head-spec-naf-multilevel
+#| fig-cap: "Mean standard deviation, across the 4 attention heads, of each head's top-word attribution share (predicted class), by hierarchy level — higher means the heads behave more differently from one another."
+
+if not HAS_EXPLAIN_LA_ML or lat_la_ml is None:
+    print("Label attention artifacts not yet available.")
+else:
+    def _head_specialization_ml(lvl):
+        hw = lat_la_ml[f"head_word_attn_{lvl}"]  # (n_head, k_kept, n_words) per example
+        stds = []
+        for i in range(len(hw)):
+            m = hw[i][:, 0, :]  # (n_head, n_words), predicted class row
+            shares = []
+            for h in range(m.shape[0]):
+                row = np.abs(m[h])
+                total = row.sum()
+                if total > 0:
+                    shares.append(row.max() / total)
+            if len(shares) == m.shape[0]:
+                stds.append(np.std(shares))
+        return float(np.mean(stds)) * 100
+
+    spec_ml = [_head_specialization_ml(lvl) for lvl in LEVEL_NAMES]
+
+    fig = go.Figure(go.Scatter(
+        x=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES], y=spec_ml,
+        mode="lines+markers", line=dict(color="#00BCD4", width=2.5), marker=dict(size=9),
+    ))
+    fig.update_layout(
+        xaxis_title="Hierarchy level", yaxis_title="Std. across heads of top-word share (pp)",
+        height=380, yaxis=dict(range=[9, 12.5]),
+    )
+    fig.show()
+```
+
+A small but consistent climb: from 10.6 percentage points at section to 11.4 at sub-class, rising at every step in between. It's a modest effect, not a dramatic one, but it points the same direction as the concentration and geometry findings above: the finer the level, the more room — and apparently the more need — for the 4 heads to carve up the explanation differently from each other, rather than converging on the same handful of words.
 
