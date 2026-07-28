@@ -60,7 +60,14 @@ format:
 - The real problem
 :::
 
+::: {.toc-item}
 **IV. Towards Multi-Level Classification**
+
+- Architecture
+- Label attention
+- Predictions
+- Taking it further
+:::
 
 **V. Conclusion**
 :::
@@ -396,9 +403,9 @@ format:
 :::: {.columns}
 
 ::: {.column width="34%"}
-- Every token embedding contributes **equally** to the sentence vector: $v = \frac{1}{T}\sum_t e_t$
+- Every token embedding contributes **equally** to the sentence vector: v = (1/T) · Σ<sub>t</sub> e<sub>t</sub>
 - No notion of importance — a keyword and a stopword count the same
-- The **same pooled vector** $v$ is then reused by the linear head, for every class alike
+- The **same pooled vector** *v* is then reused by the linear head, for every class alike
 - Simple and fast, a strong baseline — but blind to *which* words actually drove the decision
 :::
 
@@ -477,8 +484,8 @@ format:
 :::: {.columns}
 
 ::: {.column width="34%"}
-- Each class $c$ learns its own **attention query**, giving weights $\alpha_{c,t}$ over the tokens (softmax, sums to 1)
-- Class vector: $v_c = \sum_t \alpha_{c,t}\, e_t$ — a **different weighted combination per class**
+- Each class *c* learns its own **attention query**, giving weights α<sub>c,t</sub> over the tokens (softmax, sums to 1)
+- Class vector: v<sub>c</sub> = Σ<sub>t</sub> α<sub>c,t</sub> · e<sub>t</sub> — a **different weighted combination per class**
 - The weights double as an **explanation**: which words mattered, *for which class*
 - More expressive than mean pooling — and interpretable **by construction**, not after the fact
 :::
@@ -1563,7 +1570,7 @@ else:
 - Describe an activity in free text → one code among 679 subclasses (in our dataset, 747 in real)
 - Official nomenclature of economic activities (NACE Rev. 2.1-aligned), **5 nested levels**
 - A few sections, for scale: **A** — Agriculture, **C** — Manufacturing, **J** — Information & Communication
-- **~1.3M labeled examples** used for training
+- **~1.2M labeled examples** used for training
 :::
 
 ::: {.column width="66%"}
@@ -2049,12 +2056,431 @@ fig.show()
 
 :::
 
-## Explainability
+## Explainability {.smaller}
 
-- Trust and auditability in an institutional setting
-- Detecting biases / systematic errors
-  - <!-- TODO: example of M/K/J confusions, semantically coherent -->
-- Assisting a coding officer rather than replacing them without recourse
+::: {.panel-tabset}
+
+### Why It Matters Here
+
+::: {.explain-why-bigger}
+- In an institutional setting, a single predicted code isn't enough on its own — trust and auditability require knowing **why** the model chose it
+- Understand what in the text pushes the model toward one sub-class **rather than a close competitor**, not just that it picked class X
+- Understand **why** the model gets it wrong — distinguish a "smart mistake" (right neighborhood, wrong label) from an outright confusion
+- Ultimately: assisting a coding officer rather than replacing them without recourse
+:::
+
+```{=html}
+<style>
+.explain-why-bigger ul { font-size: 1.15em; line-height: 1.6; }
+</style>
+```
+
+### Captum
+
+*Layer Integrated Gradients (Captum) — the same post-hoc method introduced earlier, now applied word-by-word to real NAF descriptions. When the model is wrong, toggle between predicted and true class.*
+
+```{python}
+#| label: load-explain-artifacts-naf-slide
+
+import urllib.request
+from pathlib import Path
+from collections import defaultdict
+
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+EXPLAIN_BUCKET_NAF  = "https://minio.lab.sspcloud.fr/projet-text-classif/explanations/naf"
+_ARTIFACT_NAMES_NAF = ["captum.npz", "label_attn.npz", "class_vectors.npz", "faithfulness.npz"]
+_NOT_APPLICABLE_NAF = {("pooling", "label_attn.npz")}  # mean pooling has no label attention mechanism
+
+def _load_artifact_naf(method: str, name: str):
+    """Fetch (and cache) one NAF explainability artifact; None if unavailable."""
+    if (method, name) in _NOT_APPLICABLE_NAF:
+        return None
+    cache_dir = Path("results/naf/explain") / method
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache = cache_dir / name
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{EXPLAIN_BUCKET_NAF}/{method}/{name}", cache)
+        return np.load(cache, allow_pickle=True)
+    except Exception:
+        return None
+
+cap_la, lat_la, cv_la, fai_la = (_load_artifact_naf("labatt",  n) for n in _ARTIFACT_NAMES_NAF)
+cap_pl, lat_pl, cv_pl, fai_pl = (_load_artifact_naf("pooling", n) for n in _ARTIFACT_NAMES_NAF)
+fai_la_lw = _load_artifact_naf("labatt", "faithfulness_labatt_weight.npz")  # labatt only: guided by its own attention weights instead of Captum
+
+HAS_LA   = cap_la is not None
+HAS_PL   = cap_pl is not None
+HAS_BOTH = HAS_LA and HAS_PL
+
+if HAS_LA:
+    N_CLS = cap_la["word_attn"][0].shape[0]
+
+    CLASS_CODE  = [class_code(i) for i in range(N_CLS)]
+    CLASS_LABEL = [code_label(c) for c in CLASS_CODE]
+
+    MODEL_LABELS = {"labatt": "FastText + Label Attention", "pooling": "FastText"}
+    CAPTUM     = {"labatt": cap_la, "pooling": cap_pl}
+    LABEL_ATTN = {"labatt": lat_la, "pooling": lat_pl}
+    FAITHFUL   = {"labatt": fai_la, "pooling": fai_pl}
+    FAITHFUL_LW = fai_la_lw
+    MODEL_KEYS = [k for k in ("labatt", "pooling") if CAPTUM[k] is not None]
+
+    def _class_sorted(cap, i: int) -> np.ndarray:
+        """Reorder word_attn[i]'s rows from confidence rank back to actual class index."""
+        inv = np.argsort(cap["class_order"][i])
+        return cap["word_attn"][i][inv]
+```
+
+```{python}
+#| label: fig-explain-highlight-naf-slide
+#| fig-cap: "Highlighted-text view of Captum attributions for both architectures, plus Label Attention's own attention weights as a third row. When pred ≠ true, toggle between predicted and true class."
+import json
+from IPython.display import HTML, display
+
+if not HAS_LA:
+    out = HTML("<p>Artifacts not yet available.</p>")
+else:
+    y_true_la = cap_la["y_true"].astype(int)
+    y_pred_la = cap_la["y_pred"].astype(int)
+    rng = np.random.default_rng(11)
+
+    def _cls_display(idx: int) -> str:
+        return f"{CLASS_CODE[idx]} — {CLASS_LABEL[idx]}"
+
+    picks: list = []
+    if HAS_BOTH:
+        y_pred_pl = cap_pl["y_pred"].astype(int)
+        disagree  = np.where(y_pred_la != y_pred_pl)[0]
+        rng.shuffle(disagree)
+        picks += disagree[:3].tolist()
+        agree_ok = np.where((y_pred_la == y_pred_pl) & (y_pred_la == y_true_la))[0]
+        rng.shuffle(agree_ok)
+        picks += [int(i) for i in agree_ok if i not in picks][:2]
+        both_wrong = np.where((y_pred_la != y_true_la) & (y_pred_pl != y_true_la))[0]
+        rng.shuffle(both_wrong)
+        picks += [int(i) for i in both_wrong if i not in picks][:2]
+        pl_right_la_wrong = np.where((y_pred_pl == y_true_la) & (y_pred_la != y_true_la))[0]
+        rng.shuffle(pl_right_la_wrong)
+        picks += [int(i) for i in pl_right_la_wrong if i not in picks][:2]
+    else:
+        ok = np.where(y_pred_la == y_true_la)[0]
+        rng.shuffle(ok)
+        picks = ok[:5].tolist()
+
+    HAS_LAT = HAS_LA and lat_la is not None
+    if HAS_LAT:
+        _sample = np.concatenate([lat_la["word_attn"][i].ravel()
+                                   for i in range(min(len(lat_la["word_attn"]), 100))])
+        HAS_LAT = bool(_sample.std() > 1e-9)
+
+    examples_explain = []
+    for i in picks:
+        i = int(i)
+        y_true_i = int(cap_la["y_true"][i])
+        words = [str(w) for w in list(cap_la["words"][i])[:40]]
+        entry = {
+            "y_true": y_true_i,
+            "text":   str(cap_la["texts"][i])[:200],
+            "models": [],
+        }
+        for key in MODEL_KEYS:
+            cap  = CAPTUM[key]
+            pred = int(cap["y_pred"][i])
+            mat  = _class_sorted(cap, i)
+            nw   = len(words)
+            short_name = "Label Attention" if key == "labatt" else "Mean Pooling"
+            entry["models"].append({
+                "name":        short_name + (" — Captum IG" if key == "labatt" else ""),
+                "pred":        pred,
+                "kind":        "signed",
+                "words":       words,
+                "pred_scores": mat[pred][:nw].tolist(),
+                "true_scores": mat[y_true_i][:nw].tolist() if pred != y_true_i else None,
+            })
+            if key == "labatt" and HAS_LAT:
+                lat_mat = lat_la["word_attn"][i]
+                nw2 = min(nw, lat_mat.shape[1])
+                entry["models"].append({
+                    "name":        "Label Attention — attention weights",
+                    "pred":        pred,
+                    "kind":        "unsigned",
+                    "words":       words[:nw2],
+                    "pred_scores": lat_mat[pred][:nw2].tolist(),
+                    "true_scores": lat_mat[y_true_i][:nw2].tolist() if pred != y_true_i else None,
+                })
+        examples_explain.append(entry)
+
+    def _spans_html(words, scores, signed=True):
+        amax = max((abs(s) for s in scores), default=1) or 1
+        parts = []
+        for j, w in enumerate(words):
+            s = scores[j] if j < len(scores) else 0
+            t = abs(s) / amax
+            rgb = ("57,255,20" if s >= 0 else "255,30,30") if signed else "21,101,192"
+            alpha = round(0.10 + 0.65 * t, 2)
+            parts.append(
+                f'<span style="background-color:rgba({rgb},{alpha});'
+                f'padding:1px 3px;margin:0 1px;line-height:2.3;">{w}</span>'
+            )
+        return " ".join(parts)
+
+    cards_html = []
+    for ex in examples_explain:
+        y_true = ex["y_true"]
+        meta = (
+            f'<div style="font-size:13px;color:#444;margin-bottom:10px;">'
+            f'<b>true sub-class:</b> <span style="font-weight:700;">{_cls_display(y_true)}</span>'
+            f' &mdash; <i>&ldquo;{ex["text"]}&rdquo;</i></div>'
+        )
+        models_html = ""
+        for m in ex["models"]:
+            ok  = m["pred"] == y_true
+            bc  = "#2E7D32" if ok else "#B71C1C"
+            mark = "✓ correct" if ok else "✗ incorrect"
+            models_html += (
+                f'<div style="margin:6px 0 12px 0;">'
+                f'<div style="font-size:12.5px;color:#555;margin-bottom:4px;">'
+                f'<b>{m["name"]}</b> → predicts '
+                f'<span style="color:#222;font-weight:700;">{_cls_display(m["pred"])}</span> '
+                f'<span style="color:{bc};font-size:11px;">({mark})</span>'
+                f'</div>'
+            )
+            signed = m.get("kind", "signed") != "unsigned"
+            models_html += (
+                f'<div style="font-size:11px;color:#777;margin-bottom:2px;">predicted class</div>'
+                f'<div style="line-height:2.5;">{_spans_html(m["words"], m["pred_scores"], signed)}</div>'
+            )
+            if m["true_scores"] is not None:
+                models_html += (
+                    f'<div style="font-size:11px;color:#777;margin:6px 0 2px 0;">true class</div>'
+                    f'<div style="line-height:2.5;">{_spans_html(m["words"], m["true_scores"], signed)}</div>'
+                )
+            models_html += "</div>"
+        cards_html.append(
+            f'<div style="border:1px solid #e2e2e2;border-radius:8px;padding:14px 16px;'
+            f'background:#fcfcfc;">{meta}{models_html}</div>'
+        )
+
+    nav_id = "hl-nav-naf-slide"
+    n_cards = len(cards_html)
+    hl_html = f"""
+<div style="zoom:0.72;">
+<div style="font-family:sans-serif;font-size:14px;">
+  <div style="display:flex;align-items:center;gap:12px;justify-content:center;margin-bottom:12px;">
+    <button style="padding:6px 18px;background:#f0f0f0;border:1px solid #ccc;border-radius:5px;cursor:pointer;font-size:13px;"
+            onclick="hlNavNafSlide(-1)">← Prev</button>
+    <span id="{nav_id}-cnt" style="font-size:12px;color:#999;">1 / {n_cards}</span>
+    <button style="padding:6px 18px;background:#f0f0f0;border:1px solid #ccc;border-radius:5px;cursor:pointer;font-size:13px;"
+            onclick="hlNavNafSlide(1)">Next →</button>
+  </div>
+  <div id="{nav_id}">{cards_html[0] if cards_html else ""}</div>
+</div>
+</div>
+<script>
+(function() {{
+  window._hlCardsNafSlide = {json.dumps(cards_html)};
+  window._hlCurNafSlide   = 0;
+  window.hlNavNafSlide = function(d) {{
+    window._hlCurNafSlide = (window._hlCurNafSlide + d + window._hlCardsNafSlide.length) % window._hlCardsNafSlide.length;
+    document.getElementById('{nav_id}').innerHTML = window._hlCardsNafSlide[window._hlCurNafSlide];
+    document.getElementById('{nav_id}-cnt').textContent = (window._hlCurNafSlide + 1) + ' / ' + window._hlCardsNafSlide.length;
+  }};
+}})();
+</script>
+"""
+    out = HTML(hl_html)
+
+display(out)
+```
+
+### Label Attention
+
+```{python}
+#| label: fig-explain-labatt-heads-naf-slide
+#| fig-cap: "Label-attention weights for one example description: each of the 4 heads' (sub-class × word) attention matrix, and the aggregated matrix (mean over heads, bottom row). Use the ← / → arrows to switch between examples."
+
+import textwrap
+
+HAS_LAT_HEADS_NAF = HAS_LA and lat_la is not None and "head_word_attn" in lat_la.files
+
+if not HAS_LAT_HEADS_NAF:
+    print("Per-head label-attention artifacts not yet available.")
+else:
+    lab_lengths_naf = [len(w) for w in lat_la["words"]]
+    lab_mid_idx_naf = [i for i, n in enumerate(lab_lengths_naf) if 6 <= n <= 16]
+    lab_idx_list_naf = lab_mid_idx_naf[:8] if lab_mid_idx_naf else [int(np.argmin(lab_lengths_naf))]
+
+    n_heads_lah_naf = lat_la["head_word_attn"][lab_idx_list_naf[0]].shape[0]
+
+    def _title_for_lab_naf(idx):
+        text   = str(lat_la["texts"][idx])
+        y_true = int(cap_la["y_true"][idx])
+        y_pred = int(cap_la["y_pred"][idx])
+        ok     = y_pred == y_true
+        mark   = "✓" if ok else "✗"
+        col    = "#2E7D32" if ok else "#B71C1C"
+        true_bit = f"true: <b>{CLASS_CODE[y_true]} — {CLASS_LABEL[y_true]}</b>"
+        pred_bit = (
+            f"predicted: "
+            f"<span style='color:{col};font-weight:700;'>{CLASS_CODE[y_pred]} — {CLASS_LABEL[y_pred]} {mark}</span>"
+        )
+        header = f'Label attention — "{text}"'
+        return "<br>".join(textwrap.wrap(header, width=70) + [true_bit, pred_bit])
+
+    _TOP_K_LAH_NAF = 10
+
+    def _frame_for_lab_naf(idx):
+        words     = [str(w) for w in lat_la["words"][idx]]
+        head_attn = lat_la["head_word_attn"][idx]
+        agg_attn  = lat_la["word_attn"][idx]
+        y_true_i  = int(cap_la["y_true"][idx])
+
+        ranked   = [int(c) for c in cap_la["class_order"][idx]]
+        selected = ranked[:_TOP_K_LAH_NAF]
+        if y_true_i not in selected:
+            selected = selected[:-1] + [y_true_i]
+
+        z_list, x_list, y_list = [], [], []
+        for mat in [head_attn[h] for h in range(n_heads_lah_naf)] + [agg_attn]:
+            z_list.append(mat[selected])
+            x_list.append(words)
+            y_list.append([CLASS_CODE[c] for c in selected])
+        return z_list, x_list, y_list, _title_for_lab_naf(idx)
+
+    z0, x0, y0, title0 = _frame_for_lab_naf(lab_idx_list_naf[0])
+
+    n_words_lah_naf   = len(x0[0])
+    n_classes_lah_naf = max(len(yy) for yy in y0)
+    cell_px_lah_naf   = 11
+    row_px_lah_naf    = 21
+    COLS_LAH_NAF      = 5
+    subplot_titles_lah_naf = ["Head 1", "Head 2", "Head 3", "Head 4", "Mean over heads"]
+
+    fig_lah_naf = make_subplots(
+        rows=1, cols=COLS_LAH_NAF,
+        subplot_titles=subplot_titles_lah_naf,
+        column_widths=[0.2, 0.2, 0.2, 0.2, 0.2],
+        horizontal_spacing=0.05,
+    )
+    for i in range(COLS_LAH_NAF):
+        fig_lah_naf.add_trace(go.Heatmap(
+            z=z0[i], x=x0[i], y=y0[i], coloraxis="coloraxis",
+            hovertemplate="word=%{x}<br>class=%{y}<br>weight=%{z:.3f}<extra></extra>",
+        ), row=1, col=i + 1)
+
+    fig_lah_naf.update_xaxes(showticklabels=False)
+    fig_lah_naf.update_yaxes(showticklabels=False)
+
+    for ann in fig_lah_naf.layout.annotations:
+        ann.font.size = 15
+
+    fig_lah_naf.update_layout(
+        width=cell_px_lah_naf * n_words_lah_naf * 5.3 + 40,
+        height=row_px_lah_naf * n_classes_lah_naf + 215,
+        coloraxis=dict(colorscale="Viridis", colorbar=dict(
+            title="weight", orientation="h",
+            x=0.5, xanchor="center", y=-0.22, yanchor="top",
+            len=0.5, thickness=16,
+        )),
+        paper_bgcolor="white", plot_bgcolor="white",
+        margin=dict(t=120, b=90, l=20, r=20),
+        title_text=title0, title_font_size=13,
+        title_x=0.5, title_y=0.95, title_yanchor="top",
+    )
+
+    lab_frames_naf = []
+    for idx in lab_idx_list_naf:
+        z_i, x_i, y_i, title_i = _frame_for_lab_naf(idx)
+        lab_frames_naf.append({"z": [zz.tolist() for zz in z_i], "x": x_i, "y": y_i, "title": title_i})
+
+    lab_div_id_naf    = "labatt-heads-fig-naf-slide"
+    lab_plot_html_naf = fig_lah_naf.to_html(full_html=False, include_plotlyjs=False, div_id=lab_div_id_naf)
+
+    lab_nav_html_naf = f"""
+<style>
+  .lah-naf-slide-nav   {{ display:flex; align-items:center; gap:12px;
+                     justify-content:center; margin-bottom:20px; }}
+  .lah-naf-slide-btn   {{ padding:6px 18px; background:#f0f0f0; border:1px solid #ccc;
+                     border-radius:5px; cursor:pointer; font-size:13px; }}
+  .lah-naf-slide-btn:hover {{ background:#e0e0e0; }}
+  .lah-naf-slide-count {{ font-size:12px; color:#999; }}
+  .lah-naf-slide-center {{ display:flex; justify-content:safe center; overflow-x:auto; }}
+</style>
+<div class="lah-naf-slide-nav">
+  <button class="lah-naf-slide-btn" onclick="labattHeadsNavNafSlide(-1)">← Prev</button>
+  <span class="lah-naf-slide-count" id="lah-naf-slide-count"></span>
+  <button class="lah-naf-slide-btn" onclick="labattHeadsNavNafSlide(1)">Next →</button>
+</div>
+<div class="lah-naf-slide-center">
+{lab_plot_html_naf}
+</div>
+<script>
+(function() {{
+  const FRAMES = {json.dumps(lab_frames_naf)};
+  let cur = 0;
+  window.labattHeadsNavNafSlide = function(d) {{
+    cur = (cur + d + FRAMES.length) % FRAMES.length;
+    const f  = FRAMES[cur];
+    const gd = document.getElementById("{lab_div_id_naf}");
+    Plotly.update(gd, {{z: f.z, x: f.x, y: f.y}}, {{"title.text": f.title}});
+    document.getElementById("lah-naf-slide-count").textContent = (cur + 1) + " / " + FRAMES.length;
+  }};
+  document.getElementById("lah-naf-slide-count").textContent = "1 / " + FRAMES.length;
+}})();
+</script>
+"""
+    display(HTML(lab_nav_html_naf))
+```
+
+### Faithfulness
+
+*A word-deletion stress test: do the words flagged as important actually matter to the model? Progressively delete them and watch the predicted class's probability collapse, against a random-removal control.*
+
+```{python}
+#| label: fig-explain-faithfulness-naf-slide
+#| fig-cap: "Faithfulness (comprehensiveness) test: mean probability retained by the originally-predicted class as the most-attributed words are progressively deleted (solid = guided removal, by |Captum score| or — for Label Attention — its own attention weights; dotted = random-removal control, averaged over 3 draws). Shaded bands show ±1 std across examples."
+
+HAS_FAI_NAF = HAS_LA and all(FAITHFUL.get(k) is not None for k in MODEL_KEYS)
+
+if not HAS_FAI_NAF:
+    print("Faithfulness artifacts not yet available.")
+else:
+    fig_fai_naf = go.Figure()
+    for key in MODEL_KEYS:
+        fai   = FAITHFUL[key]
+        fr    = fai["fractions"]
+        color = "#1565C0" if key == "labatt" else "#B71C1C"
+        rgb   = "21,101,192" if key == "labatt" else "183,28,28"
+        series = [(fai["guided_probs"], "guided by Captum score", "solid", color)]
+        if key == "labatt" and FAITHFUL_LW is not None:
+            series.append((FAITHFUL_LW["guided_probs"], "guided by attention weights", "solid", "#64B5F6"))
+        series.append((fai["random_probs"], "random removal (control)", "dot", color))
+        for arr, name, dash, line_color in series:
+            m, s = np.nanmean(arr, axis=0), np.nanstd(arr, axis=0)
+            fig_fai_naf.add_trace(go.Scatter(
+                x=np.concatenate([fr, fr[::-1]]), y=np.concatenate([m + s, (m - s)[::-1]]),
+                fill="toself", fillcolor=f"rgba({rgb},0.10)", line=dict(width=0),
+                mode="lines", showlegend=False, hoverinfo="skip",
+            ))
+            fig_fai_naf.add_trace(go.Scatter(
+                x=fr, y=m, mode="lines+markers", name=f"{MODEL_LABELS[key]} — {name}",
+                line=dict(color=line_color, dash=dash, width=2.5), marker=dict(size=6, color=line_color),
+            ))
+    fig_fai_naf.update_layout(
+        xaxis_title="Fraction of words removed",
+        yaxis_title="Mean retained probability of the predicted class",
+        yaxis_range=[0, 1.02], paper_bgcolor="white", plot_bgcolor="white",
+        height=380, margin=dict(t=30, b=20, l=10, r=10),
+        legend=dict(x=1.02, y=1, xanchor="left"),
+    )
+    fig_fai_naf.show()
+```
+
+:::
 
 ## The Real Problem — and Where It Leads
 
@@ -2072,39 +2498,772 @@ The score doesn't distinguish "close" (right section, wrong subclass) from "comp
 
 # Towards Multi-Level Classification
 
-## The principle
+## Architecture: One Encoder, Five Heads, One Joint Loss {.smaller}
 
-- 5 independent heads (section / division / group / class / subclass)
-- instead of truncating the subclass code to infer the rest
-- Hypothesis: getting the detail wrong doesn't mean getting the big picture wrong
+::: {.panel-tabset}
 
-## It works
+### Intuition
 
-- The independent section head is right **~61%** of the time when the subclass is wrong
-- vs. **~52%** when truncating the wrong answer
-- "Nothing correct" error rate: **~47% → ~34%**
+- Give the model that hierarchy explicitly — one independent head per level, on top of a **shared token encoder**
+- Each head gets its own cross-entropy loss — **why harmonize them into one loss** rather than train five separate models? Because summing them and back-propagating jointly forces the *shared* representation to stay useful at every granularity at once
+- ℒ = ℒ<sub>sec</sub> + ℒ<sub>div</sub> + ℒ<sub>grp</sub> + ℒ<sub>cls</sub> + ℒ<sub>sub</sub>
+- That sum is **unweighted** — every level counts 1× in the formula — but cross-entropy naturally scales with the number of classes, so the finer levels (more classes) end up pulling harder on the shared trunk than the coarser ones *(a subtlety we'll come back to)*
+- The bet: learning on **every level at once**, not just the finest one, might push past the ceiling a lone single-level model hits on a 679-way problem
+- And even where the top-line accuracy doesn't move much, it changes *how* the model fails: the sub-class head can misfire while the section/division heads — never chained to that one prediction — still land correctly
+- The goal isn't just fewer errors, it's **smarter ones**
 
-::: {.fragment}
-**That's what making smart mistakes looks like.**
+### Architecture
+
+```{=html}
+<div style="zoom:0.6;display:flex;justify-content:center;">
+<style>
+.ml-outer {
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  margin: 0;
+}
+.ml-card {
+  border: 2px solid #d0d0d0;
+  border-radius: 14px;
+  background: #fff;
+  padding: 28px 24px 20px;
+  box-shadow: 0 2px 14px rgba(0,0,0,.06);
+}
+.ml-blk {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  padding: 9px 12px;
+  text-align: center;
+}
+.ml-icon { font-size: 17px; line-height: 1; }
+.ml-name { font-size: 11px; font-weight: 700; margin-top: 3px; }
+.ml-sub  { font-size: 8.5px; margin-top: 2px; }
+.ml-arr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 4px;
+  gap: 1px;
+  flex-shrink: 0;
+}
+/* hoverable blocks — same as .ah-block in index.qmd */
+.ml-tip-target {
+  cursor: default;
+  transition: box-shadow .15s, transform .15s;
+}
+.ml-tip-target:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,.18);
+  transform: translateY(-2px);
+}
+.ml-ashape { font-size: 8px;  font-weight: 600; color: #888; white-space: nowrap; }
+.ml-aline  { font-size: 11px; color: #ccc; }
+</style>
+
+<div class="ml-outer">
+
+<div class="ml-card">
+
+  <!-- INPUT -->
+  <div style="display:flex;justify-content:center;margin-bottom:6px;">
+    <div style="background:#f8f9fa;border:1.5px solid #ccc;border-radius:8px;padding:8px 24px;text-align:center;">
+      <div style="font-size:9px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px;">Input</div>
+      <div style="font-size:12px;color:#333;font-style:italic;">"Conseil en stratégie et management"</div>
+      <div style="font-size:8.5px;color:#bbb;margin-top:2px;">(B,)&nbsp;&middot;&nbsp;str</div>
+    </div>
+  </div>
+
+  <!-- arrow input → trunk -->
+  <div style="display:flex;justify-content:center;height:18px;">
+    <div style="display:flex;flex-direction:column;align-items:center;">
+      <div style="width:1.5px;flex:1;background:#ccc;"></div>
+      <div style="width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:7px solid #ccc;"></div>
+    </div>
+  </div>
+
+  <!-- SHARED TRUNK -->
+  <div class="ml-tip-target" style="background:#f3f5fa;border:1.5px solid #90a4ae;border-radius:10px;padding:14px 18px;">
+    <div style="font-size:9px;font-weight:700;color:#78909c;text-transform:uppercase;letter-spacing:.1em;text-align:center;margin-bottom:10px;">
+      Shared Token Encoder &mdash; weights shared across all levels
+    </div>
+    <div style="display:flex;align-items:center;justify-content:center;flex-wrap:nowrap;gap:0;">
+
+      <!-- WordPiece -->
+      <div class="ml-blk" style="background:#eceff1;border:1.5px solid #78909c;min-width:78px;">
+        <div class="ml-icon" style="color:#546e7a;">&#9000;</div>
+        <div class="ml-name" style="color:#37474f;">WordPiece</div>
+        <div class="ml-sub"  style="color:#78909c;">vocab_size</div>
+      </div>
+      <div class="ml-arr">
+        <div class="ml-ashape">(B, L)&nbsp;&middot;&nbsp;int64</div>
+        <div class="ml-aline">&#9472;&#9472;&#9472;&#9472;&#9658;</div>
+      </div>
+
+      <!-- Embedding -->
+      <div class="ml-blk" style="background:#e3f2fd;border:1.5px solid #1976d2;min-width:90px;">
+        <div class="ml-icon" style="color:#1565c0;">&#8862;</div>
+        <div class="ml-name" style="color:#0d47a1;">Embedding</div>
+        <div class="ml-sub"  style="color:#1976d2;">V &times; d</div>
+      </div>
+      <div class="ml-arr">
+        <div class="ml-ashape">(B, L, d)&nbsp;&middot;&nbsp;float32</div>
+        <div class="ml-aline">&#9472;&#9472;&#9472;&#9472;&#9658;</div>
+      </div>
+
+      <!-- RMSNorm -->
+      <div class="ml-blk" style="background:#e0f7fa;border:1.5px solid #0097a7;min-width:56px;">
+        <div style="font-size:14px;font-weight:700;color:#006064;">&sigma;</div>
+        <div class="ml-name" style="color:#00838f;">RMSNorm</div>
+      </div>
+      <div class="ml-arr">
+        <div class="ml-ashape">(B, L, d)&nbsp;&middot;&nbsp;float32</div>
+        <div class="ml-aline">&#9472;&#9472;&#9472;&#9472;&#9658;</div>
+      </div>
+
+      <!-- Token embeddings output label -->
+      <div class="ml-tip-target ml-blk" style="background:#ede7f6;border:1.5px solid #7b1fa2;min-width:100px;">
+        <div style="font-size:13px;font-weight:700;color:#6a1b9a;">T</div>
+        <div class="ml-name" style="color:#4a148c;">Token embeddings</div>
+        <div class="ml-sub" style="color:#7b1fa2;">reused by every head</div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- FORK: trunk → 3 drops -->
+  <div style="position:relative;height:50px;">
+    <div style="position:absolute;top:0;left:50%;width:1.5px;height:26px;background:#bbb;transform:translateX(-50%);"></div>
+    <div style="position:absolute;top:26px;left:12%;right:12%;height:1.5px;background:#bbb;"></div>
+    <!-- left drop (Division) -->
+    <div style="position:absolute;top:26px;left:12%;width:1.5px;height:22px;background:#1565C0;opacity:.6;transform:translateX(-50%);"></div>
+    <div style="position:absolute;bottom:0;left:12%;transform:translateX(-50%);width:0;height:0;
+                border-left:4px solid transparent;border-right:4px solid transparent;border-top:7px solid #1565C0;opacity:.6;"></div>
+    <!-- centre drop (ghost) -->
+    <div style="position:absolute;top:26px;left:50%;width:1.5px;height:22px;background:#aaa;opacity:.4;transform:translateX(-50%);"></div>
+    <div style="position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:0;height:0;
+                border-left:3px solid transparent;border-right:3px solid transparent;border-top:6px solid #aaa;opacity:.4;"></div>
+    <!-- right drop (Sub-class) -->
+    <div style="position:absolute;top:26px;right:12%;width:1.5px;height:22px;background:#1e88e5;opacity:.6;transform:translateX(50%);"></div>
+    <div style="position:absolute;bottom:0;right:12%;transform:translateX(50%);width:0;height:0;
+                border-left:4px solid transparent;border-right:4px solid transparent;border-top:7px solid #1e88e5;opacity:.6;"></div>
+  </div>
+
+  <!-- Division | ··· | ghost Level k | ··· | Sub-class -->
+  <div style="display:grid;grid-template-columns:5fr auto 4fr auto 5fr;gap:0;align-items:stretch;">
+
+    <!-- ── SECTION (Level 1) ── -->
+    <div style="display:flex;flex-direction:column;align-items:center;gap:7px;">
+      <div class="ml-tip-target" style="background:#e8edf8;border:1.5px solid #1565C0;border-radius:20px;padding:3px 10px;
+                  font-size:8.5px;font-weight:700;color:#1565C0;letter-spacing:.05em;white-space:nowrap;">
+        Level 1 &middot; Section
+      </div>
+      <div class="ml-tip-target" style="width:100%;background:#e8edf8;border:1.5px solid #1565C0;border-radius:9px;padding:9px 6px;text-align:center;">
+        <div style="font-size:13px;color:#1565C0;">&#x2211;&divide;n</div>
+        <div style="font-size:10px;font-weight:700;color:#0d47a1;">SentenceEmbedder</div>
+        <div style="font-size:7.5px;color:#1976d2;margin-top:2px;">Mean Pool or Label Attn</div>
+        <div style="font-size:7.5px;color:#888;margin-top:1px;">(B, d) or (B, C, d)</div>
+      </div>
+      <div style="width:1.5px;height:10px;background:#1565C0;opacity:.4;"></div>
+      <div class="ml-tip-target" style="width:100%;background:#fff3e0;border:1.5px solid #f57c00;border-radius:9px;padding:9px 6px;text-align:center;">
+        <div style="font-size:13px;color:#e65100;">&#x22B8;</div>
+        <div style="font-size:10px;font-weight:700;color:#bf360c;">Linear</div>
+        <div style="font-size:7.5px;color:#f57c00;">d &rarr; 20&nbsp;<span style="color:#bbb;">|</span>&nbsp;1&times;d</div>
+      </div>
+      <div style="width:1.5px;height:10px;background:#bbb;"></div>
+      <div style="width:100%;background:#f8f9fa;border:1.5px solid #90a4ae;border-radius:9px;padding:7px 6px;text-align:center;">
+        <div style="font-size:11.5px;font-weight:700;color:#333;">&#375;&#770;<sub>1</sub></div>
+        <div style="font-size:8px;color:#555;font-family:monospace;margin-top:2px;">"A"</div>
+        <div style="font-size:7.5px;color:#888;margin-top:1px;">20 classes</div>
+      </div>
+      <div style="font-size:11px;color:#c62828;font-weight:700;">&Lscr;<sub>sec</sub></div>
+    </div>
+
+    <!-- ── SEPARATOR LEFT ── -->
+    <div style="display:flex;align-items:center;justify-content:center;padding:0 10px;">
+      <span style="font-size:15px;color:#777;letter-spacing:4px;white-space:nowrap;">· · ·</span>
+    </div>
+
+    <!-- ── GHOST Level k ── -->
+    <div style="display:flex;flex-direction:column;align-items:center;gap:7px;opacity:.82;">
+      <div class="ml-tip-target" style="background:#f0f1f5;border:1.5px dashed #b0b8cc;border-radius:20px;padding:3px 10px;
+                  font-size:8.5px;font-weight:700;color:#8890a8;letter-spacing:.05em;white-space:nowrap;">
+        Level k &middot; &hellip;
+      </div>
+      <div style="width:100%;background:#f0f2f7;border:1.5px dashed #b8bece;border-radius:9px;padding:9px 6px;text-align:center;">
+        <div style="font-size:13px;color:#a0a8be;">&#x2211;&divide;n</div>
+        <div style="font-size:10px;font-weight:700;color:#8890a8;">SentenceEmbedder</div>
+        <div style="font-size:7.5px;color:#aab0c0;margin-top:2px;">Mean Pool or Label Attn</div>
+        <div style="font-size:7.5px;color:#bbbfca;margin-top:1px;">(B, d) or (B, C, d)</div>
+      </div>
+      <div style="width:1.5px;height:10px;background:#c0c8d8;"></div>
+      <div style="width:100%;background:#f5f3ee;border:1.5px dashed #ccc4b0;border-radius:9px;padding:9px 6px;text-align:center;">
+        <div style="font-size:13px;color:#c0b898;">&#x22B8;</div>
+        <div style="font-size:10px;font-weight:700;color:#a8a090;">Linear</div>
+        <div style="font-size:7.5px;color:#bcb49a;">d &rarr; C<sub>k</sub></div>
+      </div>
+      <div style="width:1.5px;height:10px;background:#c8c8c8;"></div>
+      <div style="width:100%;background:#f8f8f8;border:1.5px dashed #c0c4cc;border-radius:9px;padding:7px 6px;text-align:center;">
+        <div style="font-size:11.5px;font-weight:700;color:#9098a8;">&#375;&#770;<sub>k</sub></div>
+        <div style="font-size:7.5px;color:#a8aab8;margin-top:2px;">C<sub>k</sub> classes</div>
+      </div>
+      <div style="font-size:11px;color:#b06060;font-weight:700;">&Lscr;<sub>k</sub></div>
+    </div>
+
+    <!-- ── SEPARATOR RIGHT ── -->
+    <div style="display:flex;align-items:center;justify-content:center;padding:0 10px;">
+      <span style="font-size:15px;color:#777;letter-spacing:4px;white-space:nowrap;">· · ·</span>
+    </div>
+
+    <!-- ── SUB-CLASS (Level N) ── -->
+    <div style="display:flex;flex-direction:column;align-items:center;gap:7px;">
+      <div class="ml-tip-target" style="background:#dce8f5;border:1.5px solid #1e88e5;border-radius:20px;padding:3px 10px;
+                  font-size:8.5px;font-weight:700;color:#1565c0;letter-spacing:.05em;white-space:nowrap;">
+        Level 5 &middot; Sub-class
+      </div>
+      <div class="ml-tip-target" style="width:100%;background:#dce8f5;border:1.5px solid #1e88e5;border-radius:9px;padding:9px 6px;text-align:center;">
+        <div style="font-size:13px;color:#1e88e5;">&#x2211;&divide;n</div>
+        <div style="font-size:10px;font-weight:700;color:#0d47a1;">SentenceEmbedder</div>
+        <div style="font-size:7.5px;color:#1976d2;margin-top:2px;">Mean Pool or Label Attn</div>
+        <div style="font-size:7.5px;color:#888;margin-top:1px;">(B, d) or (B, C, d)</div>
+      </div>
+      <div style="width:1.5px;height:10px;background:#1e88e5;opacity:.4;"></div>
+      <div class="ml-tip-target" style="width:100%;background:#fff3e0;border:1.5px solid #f57c00;border-radius:9px;padding:9px 6px;text-align:center;">
+        <div style="font-size:13px;color:#e65100;">&#x22B8;</div>
+        <div style="font-size:10px;font-weight:700;color:#bf360c;">Linear</div>
+        <div style="font-size:7.5px;color:#f57c00;">d &rarr; 679&nbsp;<span style="color:#bbb;">|</span>&nbsp;1&times;d</div>
+      </div>
+      <div style="width:1.5px;height:10px;background:#bbb;"></div>
+      <div style="width:100%;background:#f8f9fa;border:1.5px solid #90a4ae;border-radius:9px;padding:7px 6px;text-align:center;">
+        <div style="font-size:11.5px;font-weight:700;color:#333;">&#375;&#770;<sub>N</sub></div>
+        <div style="font-size:8px;color:#555;font-family:monospace;margin-top:2px;">"7010Y"</div>
+        <div style="font-size:7.5px;color:#888;margin-top:1px;">679 classes</div>
+      </div>
+      <div style="font-size:11px;color:#c62828;font-weight:700;">&Lscr;<sub>sub</sub></div>
+    </div>
+
+  </div><!-- end grid -->
+
+  <!-- JOINT LOSS -->
+  <div style="margin-top:16px;display:flex;justify-content:center;">
+    <div class="ml-tip-target" style="background:#fce4ec;border:1.5px solid #e91e63;border-radius:9px;padding:10px 28px;text-align:center;max-width:480px;">
+      <div style="font-size:9px;font-weight:700;color:#880e4f;text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px;">
+        Joint training loss
+      </div>
+      <div style="font-size:15px;font-weight:700;color:#c2185b;">
+        &Lscr; = &Lscr;<sub>sec</sub> + &Lscr;<sub>div</sub> + &Lscr;<sub>grp</sub> + &Lscr;<sub>cls</sub> + &Lscr;<sub>sub</sub>
+      </div>
+      <div style="font-size:8.5px;color:#ad1457;margin-top:4px;">
+        Independent cross-entropy at each level &mdash; summed and back-propagated through the shared trunk
+      </div>
+    </div>
+  </div>
+
+</div><!-- end ml-card -->
+
+<p style="font-size:10px;color:#aaa;text-align:center;margin-top:8px;">
+  Class counts (20 / 84 / 274 / 586 / 679) reflect codes observed in the training split (train_fraction = 0.13 of the full corpus). Full NAF 2025: 21 / 87 / 287 / 651 / 747.
+</p>
+
+</div><!-- end ml-outer -->
+</div>
+```
+
 :::
 
-<!-- TODO: reuse a Python cell from the site here (pages/naf_multilevel.qmd,
-     fig-hierarchy-errors-naf-multilevel or fig-hierarchy-independence-naf-multilevel)
-     by copying its data loading + figure code -->
+## Label Attention on Multi-Level NAF {.center}
 
-## A limitation: the loss isn't distributed fairly
+:::: {.columns}
 
-- Each level weighs into the total loss in proportion to its number of classes
-- Section: **~1%** of total weight — Subclass: **~40%**
-- The section head — the most strategic one for a human who just wants to be "in the right ballpark" — is undertrained
-- To the point of not beating simple truncation from the single-level model
+::: {.column width="34%"}
+- Same pattern as single-level: label attention starts far behind FastText on small samples, but catches up fast as training size grows
+- Gap narrows from ≈0.186 (163,615 examples) to ≈0.035 (654,461) to essentially **zero** (1.2M) — even with query vectors now shared jointly across all five hierarchy levels
+- From here on, all multi-level results use the full 1.2M-example training set
+:::
+
+::: {.column width="66%"}
+```{python}
+#| label: fetch-mlflow-naf-multilevel-slide
+
+from pathlib import Path
+import mlflow
+import pandas as pd
+
+RENAME_COLS_ML = {
+    "params.embedding_dim":            "emb_dim",
+    "params.vocab_size":               "vocab_size",
+    "params.n_heads_label_attention":  "n_heads_label_attn",
+    "params.lr":                       "lr",
+    "metrics.num_params":              "num_params",
+    "metrics.train_time_s":            "train_time_s",
+    "metrics.val_loss":                "min_val_loss",
+}
+KEY_COLS_ML = ["emb_dim", "vocab_size", "n_heads_label_attn", "lr"]
+
+def arch_label_ml(row):
+    la = str(row["n_heads_label_attn"]) == "4"
+    return "FastText + Label Attention" if la else "FastText"
+
+def fetch_runs_ml(experiment_name: str, cache_path: Path, train_fraction: float) -> pd.DataFrame:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    if cache_path.exists():
+        return pd.read_csv(cache_path)
+    raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
+    raw = raw[raw["status"] == "FINISHED"].copy()
+    raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
+    raw = raw.rename(columns={k: v for k, v in RENAME_COLS_ML.items() if k in raw.columns})
+    for col in ["emb_dim", "vocab_size"]:
+        raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
+    raw["lr"]         = raw["lr"].astype(float)
+    raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
+    raw["architecture"] = raw.apply(arch_label_ml, axis=1)
+    raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS_ML, keep="first")
+    raw.to_csv(cache_path, index=False)
+    return raw
+
+df_ml_frac13  = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac13.csv"),  train_fraction=0.13)
+df_ml_frac26  = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac26.csv"),  train_fraction=0.26)
+df_ml_frac52  = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac52.csv"),  train_fraction=0.52)
+df_ml_frac100 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac100.csv"), train_fraction=1.0)
+```
+
+```{python}
+#| label: fig-trainsize-naf-multilevel-slide
+#| fig-cap: "Validation loss vs. training set size, by architecture"
+
+import plotly.graph_objects as go
+
+COLORS_ML = {
+    "FastText":                          "#2196F3",
+    "FastText + Label Attention":        "#00BCD4",
+}
+N_TRAIN_ML = {0.13: 163615, 0.26: 327230, 0.52: 654461, 1.0: 1208579}
+
+means13  = df_ml_frac13.groupby("architecture")["min_val_loss"].mean()
+means26  = df_ml_frac26.groupby("architecture")["min_val_loss"].mean()
+means52  = df_ml_frac52.groupby("architecture")["min_val_loss"].mean()
+means100 = df_ml_frac100.groupby("architecture")["min_val_loss"].mean()
+
+fig = go.Figure()
+for arch in COLORS_ML:
+    fig.add_trace(go.Scatter(
+        x=[N_TRAIN_ML[0.13], N_TRAIN_ML[0.26], N_TRAIN_ML[0.52], N_TRAIN_ML[1.0]],
+        y=[means13[arch], means26[arch], means52[arch], means100[arch]],
+        mode="lines+markers", name=arch,
+        line=dict(color=COLORS_ML[arch], width=2), marker=dict(size=9),
+        hovertemplate="train size=%{x:,}<br>mean val_loss=%{y:.4f}<extra>" + arch + "</extra>",
+    ))
+
+fig.update_layout(
+    xaxis_title="Training set size", yaxis_title="Mean validation loss",
+    xaxis=dict(
+        tickvals=[N_TRAIN_ML[0.13], N_TRAIN_ML[0.26], N_TRAIN_ML[0.52], N_TRAIN_ML[1.0]],
+        ticktext=["163,615", "327,230", "654,461", "1,208,579"],
+    ),
+    legend_title="Architecture", height=410, width=640,
+)
+fig.show()
+```
+:::
+
+::::
+
+## Predictions: Independent Heads at Work {.smaller}
+
+```{python}
+#| label: load-predictions-naf-multilevel-slide
+
+import json
+import urllib.request
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+
+PRED_BUCKET_ML = "https://minio.lab.sspcloud.fr/projet-text-classif/predictions/naf_multilevel"
+ARCH_FILES_ML  = {
+    "FastText":                   "fasttext.npz",
+    "FastText + Label Attention": "fasttext_labatt.npz",
+}
+LEVEL_NAMES     = ["sec", "div", "grp", "cls", "sub"]
+LEVEL_LABELS_ML = {"sec": "Section", "div": "Division", "grp": "Group", "cls": "Class", "sub": "Sub-class"}
+NAF_PARQUET_URL = "https://minio.lab.sspcloud.fr/projet-text-classif/datasets/naf_merged.parquet"
+
+PREDS_DIR_ML = Path("results/naf_multilevel/preds")
+PREDS_DIR_ML.mkdir(parents=True, exist_ok=True)
+
+preds_by_arch_ml = {}
+for arch, fname in ARCH_FILES_ML.items():
+    cache = PREDS_DIR_ML / fname
+    try:
+        if not cache.exists():
+            urllib.request.urlretrieve(f"{PRED_BUCKET_ML}/{fname}", cache)
+        d = np.load(cache, allow_pickle=True)
+        preds_by_arch_ml[arch] = {"y_test": d["y_test"].astype(int)}
+        preds_by_arch_ml[arch].update({
+            f"y_pred_{lvl}": d[f"y_pred_{lvl}"].astype(int) for lvl in LEVEL_NAMES
+        })
+    except Exception:
+        pass
+
+ARCHS_AVAIL_ML = list(preds_by_arch_ml.keys())
+
+# Multi-level's per-level label encoders differ from single-level's — reconstruct
+# them the same way naf_multilevel.qmd does (cached locally after the first run).
+classes_cache = PREDS_DIR_ML / "level_classes.json"
+if classes_cache.exists():
+    LEVEL_CLASSES = json.loads(classes_cache.read_text())
+else:
+    df_full_ml = pd.read_parquet(NAF_PARQUET_URL, columns=["libelle_cleaned"] + LEVEL_NAMES).dropna()
+    LEVEL_CLASSES = {lvl: sorted(df_full_ml[lvl].astype(str).unique().tolist()) for lvl in LEVEL_NAMES}
+    classes_cache.write_text(json.dumps(LEVEL_CLASSES))
+
+def code_of(level: str, idx: int) -> str:
+    return LEVEL_CLASSES[level][idx]
+
+# Reuses `_naf_struct`, `preds_by_arch`, `ARCHS_AVAIL`, `class_code` from the
+# single-level Predictions slide earlier in this deck, for the truncated-cascade
+# comparison — same underlying NAF structure, no need to refetch.
+DIVISION_TO_SECTION_ML = {div: s["id"] for s in _naf_struct["sections"] for div in s["divisions"]}
+
+SINGLE_LEVELS_ML = [
+    ("Section",   lambda c: DIVISION_TO_SECTION_ML.get(c[:2], "?")),
+    ("Division",  lambda c: c[:2]),
+    ("Group",     lambda c: c[:3]),
+    ("Class",     lambda c: c[:4]),
+    ("Sub-class", lambda c: c),
+]
+```
+
+::: {.panel-tabset}
+
+### Hierarchical Accuracy
+
+```{python}
+#| label: fig-hierarchy-direct-naf-multilevel-slide
+#| fig-cap: "Error rate by hierarchy level: multi-level's independent heads vs. single-level's truncated cascade"
+
+level_acc_ml = {}
+for arch in ARCHS_AVAIL_ML:
+    d = preds_by_arch_ml[arch]
+    level_acc_ml[arch] = [
+        (d[f"y_pred_{lvl}"] == d["y_test"][:, i]).mean() * 100
+        for i, lvl in enumerate(LEVEL_NAMES)
+    ]
+
+error_single_ml = {}
+for arch in ARCHS_AVAIL:
+    d = preds_by_arch[arch]
+    true_codes = [class_code(c) for c in d["y_test"]]
+    pred_codes = [class_code(c) for c in d["y_pred"]]
+    error_single_ml[arch] = [
+        100 - np.mean([fn(t) == fn(p) for t, p in zip(true_codes, pred_codes)]) * 100
+        for _, fn in SINGLE_LEVELS_ML
+    ]
+
+x_lvls_ml = [LEVEL_LABELS_ML[l] for l in LEVEL_NAMES]
+
+fig = go.Figure()
+for arch in ARCHS_AVAIL_ML:
+    err_ml = [100 - a for a in level_acc_ml[arch]]
+    fig.add_trace(go.Scatter(
+        x=x_lvls_ml, y=err_ml, mode="lines+markers", name=f"{arch} — multi-level heads",
+        line=dict(color=COLORS_ML.get(arch, "grey"), width=2.5), marker=dict(size=10),
+        hovertemplate="%{x}<br>error rate=%{y:.1f}%<extra>" + arch + " — multi-level</extra>",
+    ))
+for arch, errs in error_single_ml.items():
+    fig.add_trace(go.Scatter(
+        x=x_lvls_ml, y=errs, mode="lines+markers", name=f"{arch} — single-level (truncated)",
+        line=dict(color=COLORS_ML.get(arch, "grey"), width=2.5, dash="dot"),
+        marker=dict(size=8, symbol="diamond"),
+        hovertemplate="%{x}<br>error rate=%{y:.1f}%<extra>" + arch + " — single-level</extra>",
+    ))
+
+all_err_vals = [v for arch in ARCHS_AVAIL_ML for v in [100 - a for a in level_acc_ml[arch]]]
+all_err_vals += [v for errs in error_single_ml.values() for v in errs]
+y_pad = (max(all_err_vals) - min(all_err_vals)) * 0.1
+
+fig.update_layout(
+    template="simple_white",
+    xaxis_title="Hierarchy level", yaxis_title="Error rate (%)",
+    yaxis=dict(range=[min(all_err_vals) - y_pad, max(all_err_vals) + y_pad]),
+    legend_title="Architecture — approach", height=400, width=820,
+)
+fig.show()
+```
+
+- Counter-intuitive: dedicated independent heads were expected to clearly beat truncation at the coarser levels — instead they stay close, tying at Sub-class
+
+### Hierarchical Accuracy — v2
+
+```{python}
+#| label: fig-hierarchy-errors-naf-multilevel-slide
+#| fig-cap: "Among wrong sub-class predictions, the finest level that still lands correctly — multi-level's independent heads vs. single-level's truncated cascade"
+
+BUCKET_ORDER_ML  = ["cls", "grp", "div", "sec"]
+BUCKET_LABELS_ML = {"cls": "Class", "grp": "Group", "div": "Division", "sec": "Section"}
+ERROR_BUCKETS_ML = ["Class", "Group", "Division", "Section", "No match"]
+BUCKET_COLORS_ML = {
+    "Class":      "#66BB6A",
+    "Group":      "#FFCA28",
+    "Division":   "#FB8C00",
+    "Section":    "#E53935",
+    "No match":   "#7B0000",
+}
+
+error_shares_ml = {}
+overall_acc_ml  = {}
+for arch in ARCHS_AVAIL_ML:
+    d = preds_by_arch_ml[arch]
+    y_test = d["y_test"]
+    correct = {lvl: (d[f"y_pred_{lvl}"] == y_test[:, i]) for i, lvl in enumerate(LEVEL_NAMES)}
+    overall_acc_ml[arch] = correct["sub"].mean() * 100
+
+    wrong_idx = np.where(~correct["sub"])[0]
+    assigned  = np.full(len(wrong_idx), "No match", dtype=object)
+    remaining = np.ones(len(wrong_idx), dtype=bool)
+    for lvl in BUCKET_ORDER_ML:
+        is_correct_here = correct[lvl][wrong_idx] & remaining
+        assigned[is_correct_here] = BUCKET_LABELS_ML[lvl]
+        remaining &= ~is_correct_here
+
+    counts = pd.Series(assigned).value_counts()
+    error_shares_ml[arch] = {b: counts.get(b, 0) / len(wrong_idx) * 100 for b in ERROR_BUCKETS_ML}
+
+SINGLE_LEVEL_FN_BY_KEY_ML = {name: fn for name, fn in SINGLE_LEVELS_ML}
+SINGLE_LEVEL_FN_BY_KEY_ML = {
+    "sec": SINGLE_LEVEL_FN_BY_KEY_ML["Section"],
+    "div": SINGLE_LEVEL_FN_BY_KEY_ML["Division"],
+    "grp": SINGLE_LEVEL_FN_BY_KEY_ML["Group"],
+    "cls": SINGLE_LEVEL_FN_BY_KEY_ML["Class"],
+}
+
+error_shares_single_ml = {}
+overall_acc_single_ml  = {}
+for arch in ARCHS_AVAIL:
+    d = preds_by_arch[arch]
+    true_codes  = np.array([class_code(c) for c in d["y_test"]])
+    pred_codes  = np.array([class_code(c) for c in d["y_pred"]])
+    correct_sub = true_codes == pred_codes
+    overall_acc_single_ml[arch] = correct_sub.mean() * 100
+
+    wrong_idx = np.where(~correct_sub)[0]
+    t_wrong, p_wrong = true_codes[wrong_idx], pred_codes[wrong_idx]
+    assigned  = np.full(len(wrong_idx), "No match", dtype=object)
+    remaining = np.ones(len(wrong_idx), dtype=bool)
+    for lvl in BUCKET_ORDER_ML:
+        fn = SINGLE_LEVEL_FN_BY_KEY_ML[lvl]
+        is_correct_here = (np.array([fn(t) for t in t_wrong]) == np.array([fn(p) for p in p_wrong])) & remaining
+        assigned[is_correct_here] = BUCKET_LABELS_ML[lvl]
+        remaining &= ~is_correct_here
+
+    counts = pd.Series(assigned).value_counts()
+    error_shares_single_ml[arch] = {b: counts.get(b, 0) / len(wrong_idx) * 100 for b in ERROR_BUCKETS_ML}
+
+bar_order_ml = []
+for arch in ARCHS_AVAIL_ML:
+    bar_order_ml.append(("ml", arch))
+    if arch in preds_by_arch:
+        bar_order_ml.append(("single", arch))
+
+x_labels_combined_ml = [
+    f"{arch}<br>multi-level<i> ({100 - overall_acc_ml[arch]:.1f}% wrong)</i>" if kind == "ml"
+    else f"{arch}<br>single-level<i> ({100 - overall_acc_single_ml[arch]:.1f}% wrong)</i>"
+    for kind, arch in bar_order_ml
+]
+patterns_combined_ml = ["" if kind == "ml" else "/" for kind, arch in bar_order_ml]
+
+fig = go.Figure()
+for bucket in ERROR_BUCKETS_ML:
+    vals = [
+        error_shares_ml[arch][bucket] if kind == "ml" else error_shares_single_ml[arch][bucket]
+        for kind, arch in bar_order_ml
+    ]
+    fig.add_trace(go.Bar(
+        x=x_labels_combined_ml, y=vals, name=bucket,
+        marker=dict(color=BUCKET_COLORS_ML[bucket], pattern=dict(shape=patterns_combined_ml)),
+        text=[f"{v:.1f}%" for v in vals],
+        textposition="inside", insidetextfont=dict(color="white", size=11),
+        hovertemplate="%{x}<br>" + bucket + ": %{y:.1f}% of errors<extra></extra>",
+    ))
+
+fig.update_layout(
+    template="simple_white", barmode="stack",
+    xaxis_title=None, yaxis_title="Share of wrong sub-class predictions (%)",
+    yaxis=dict(range=[0, 100]),
+    legend_title="Finest level<br>that still lands right", height=420, width=820,
+)
+fig.show()
+```
+
+- "No match" (missing even the section) drops from ~47–48% under single-level's truncated cascade to **34.0%** (FastText) / **28.9%** (Label Attention) once each level gets its own head
+
+### Independent Heads Effect
+
+```{python}
+#| label: fig-hierarchy-independence-naf-multilevel-slide
+#| fig-cap: "Section/division accuracy among wrong sub-class predictions: truncating the wrong guess vs. asking the independent head directly"
+
+from plotly.subplots import make_subplots
+
+GAP_LEVELS_ML = ["sec", "div"]
+GAP_LABELS_ML = {"sec": "Section", "div": "Division"}
+TRUNC_FNS_ML  = {
+    "sec": lambda c: DIVISION_TO_SECTION_ML.get(c[:2], "?"),
+    "div": lambda c: c[:2],
+}
+
+fig = make_subplots(rows=1, cols=len(ARCHS_AVAIL_ML), subplot_titles=ARCHS_AVAIL_ML,
+                    horizontal_spacing=0.12)
+
+for col, arch in enumerate(ARCHS_AVAIL_ML, start=1):
+    d = preds_by_arch_ml[arch]
+    y_test = d["y_test"]
+    wrong_sub = d["y_pred_sub"] != y_test[:, 4]
+    pred_sub_codes = np.array([code_of("sub", c) for c in d["y_pred_sub"][wrong_sub]])
+
+    trunc_accs, direct_accs = [], []
+    for i, lvl in enumerate(GAP_LEVELS_ML):
+        true_codes  = np.array([code_of(lvl, c) for c in y_test[wrong_sub, i]])
+        trunc_codes = np.array([TRUNC_FNS_ML[lvl](c) for c in pred_sub_codes])
+        trunc_accs.append((trunc_codes == true_codes).mean() * 100)
+        direct_accs.append((d[f"y_pred_{lvl}"][wrong_sub] == y_test[wrong_sub, i]).mean() * 100)
+
+    x_labels = [GAP_LABELS_ML[l] for l in GAP_LEVELS_ML]
+    fig.add_trace(go.Bar(
+        x=x_labels, y=trunc_accs, name="Truncated (from the wrong sub-class guess)",
+        legendgroup="trunc", showlegend=(col == 1),
+        marker=dict(color="#bbbbbb", pattern_shape="/"),
+        text=[f"{v:.1f}%" for v in trunc_accs], textposition="outside",
+        hovertemplate="%{x}<br>truncated: %{y:.1f}%<extra></extra>",
+    ), row=1, col=col)
+    fig.add_trace(go.Bar(
+        x=x_labels, y=direct_accs, name="Direct (independent head)",
+        legendgroup="direct", showlegend=(col == 1),
+        marker=dict(color=COLORS_ML.get(arch, "grey")),
+        text=[f"{v:.1f}%" for v in direct_accs], textposition="outside",
+        hovertemplate="%{x}<br>direct: %{y:.1f}%<extra></extra>",
+    ), row=1, col=col)
+    fig.update_yaxes(range=[0, 75], title_text="Accuracy (%)" if col == 1 else "", row=1, col=col)
+
+fig.update_layout(
+    barmode="group", template="simple_white", height=400,
+    legend=dict(orientation="h", x=0.5, xanchor="center", y=-0.22, yanchor="top"),
+    margin=dict(t=40, b=90),
+)
+fig.show()
+```
+
+- Restricted to the model's own wrong sub-class guesses: asking the independent head directly beats truncating that same wrong guess by **+8.6pp** at Section / **+9.6pp** at Division for FastText, **+9.9pp** / **+13.1pp** for Label Attention
+
+:::
+
+## Taking It Further {.smaller}
+
+::: {.panel-tabset}
+
+### Independent Heads Don't Agree
+
+- The previous slide is a real win: asking a head directly beats truncating a wrong sub-class guess by up to **+13pp**, and mistakes stay **localised to one head**
+- But that's an *aggregate* statistic. For any single description, nothing forces the 5 heads to **agree with each other** — the section head can predict "C" while the sub-class head's own true parent is "A"
+- The joint loss ℒ = ℒ<sub>sec</sub> + ℒ<sub>div</sub> + ℒ<sub>grp</sub> + ℒ<sub>cls</sub> + ℒ<sub>sub</sub> only compares each head to **its own** ground truth — it never compares heads **to each other**, so disagreement is never penalized
+- 5 independent guesses that can contradict each other aren't a single coherent hierarchical code — the ambiguity didn't disappear, it just **moved downstream**
+- Even with the loss "harmonized" (summed, shared trunk), the heads don't really *communicate* — or not enough. Three ways to fix that:
+
+### Consistency Loss
+
+```{=html}
+<div style="display:flex;align-items:center;justify-content:center;gap:18px;margin:16px 0;font-family:-apple-system,'Segoe UI',sans-serif;">
+  <div style="background:#e8edf8;border:1.5px solid #1565C0;border-radius:9px;padding:10px 16px;text-align:center;">
+    <div style="font-size:9px;color:#1565C0;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">Section head</div>
+    <div style="font-size:15px;font-weight:700;color:#0d47a1;margin-top:4px;">predicts "C"</div>
+  </div>
+  <div style="display:flex;flex-direction:column;align-items:center;">
+    <div style="font-size:20px;color:#c62828;">⇹</div>
+    <div style="font-size:9px;color:#c62828;font-weight:700;white-space:nowrap;">inconsistent</div>
+  </div>
+  <div style="background:#dce8f5;border:1.5px solid #1e88e5;border-radius:9px;padding:10px 16px;text-align:center;">
+    <div style="font-size:9px;color:#1e88e5;font-weight:700;text-transform:uppercase;letter-spacing:.05em;">Sub-class head</div>
+    <div style="font-size:15px;font-weight:700;color:#0d47a1;margin-top:4px;">predicts "6201Y"</div>
+    <div style="font-size:8.5px;color:#888;margin-top:2px;">(true section of 6201Y is "A")</div>
+  </div>
+</div>
+<div style="text-align:center;font-size:11px;color:#ad1457;background:#fce4ec;border:1.5px dashed #e91e63;border-radius:8px;padding:6px 14px;max-width:440px;margin:0 auto;">
+  New term: &Lscr;<sub>cons</sub> &mdash; penalize exactly this kind of disagreement
+</div>
+```
+
+- **Idea**: add a term ℒ<sub>cons</sub> that fires whenever a finer head's prediction implies a coarser-level answer that disagrees with that coarser head's own prediction
+- **Advantages**
+  - Minimal change: same 5 independent heads, same inference cost, nothing added to the architecture
+  - Directly targets the actual failure mode (agreement) instead of hoping accuracy alone fixes it
+- **Disadvantages**
+  - Only a *soft* constraint — encourages agreement statistically, doesn't guarantee it at inference
+
+### Cascaded Heads
+
+```{=html}
+<div style="display:flex;align-items:center;justify-content:center;gap:4px;margin:16px 0;font-family:-apple-system,'Segoe UI',sans-serif;flex-wrap:nowrap;">
+  <div style="background:#e8edf8;border:1.5px solid #0D3B77;border-radius:8px;padding:8px 10px;text-align:center;min-width:64px;">
+    <div style="font-size:8px;color:#0D3B77;font-weight:700;text-transform:uppercase;">Section</div>
+  </div>
+  <div style="font-size:14px;color:#aaa;">→</div>
+  <div style="background:#e0e9f7;border:1.5px solid #1565C0;border-radius:8px;padding:8px 10px;text-align:center;min-width:64px;">
+    <div style="font-size:8px;color:#1565C0;font-weight:700;text-transform:uppercase;">Division</div>
+  </div>
+  <div style="font-size:14px;color:#aaa;">→</div>
+  <div style="background:#d8e6f6;border:1.5px solid #1976D2;border-radius:8px;padding:8px 10px;text-align:center;min-width:64px;">
+    <div style="font-size:8px;color:#1976D2;font-weight:700;text-transform:uppercase;">Group</div>
+  </div>
+  <div style="font-size:14px;color:#aaa;">→</div>
+  <div style="background:#cfe0fb;border:1.5px solid #2196F3;border-radius:8px;padding:8px 10px;text-align:center;min-width:64px;">
+    <div style="font-size:8px;color:#2196F3;font-weight:700;text-transform:uppercase;">Class</div>
+  </div>
+  <div style="font-size:14px;color:#aaa;">→</div>
+  <div style="background:#c5dafa;border:1.5px solid #42A5F5;border-radius:8px;padding:8px 10px;text-align:center;min-width:64px;">
+    <div style="font-size:8px;color:#2b8fe0;font-weight:700;text-transform:uppercase;">Sub-class</div>
+  </div>
+</div>
+<div style="text-align:center;font-size:9.5px;color:#999;">each arrow = that head's embedding, concatenated into the next head's input</div>
+```
+
+- **Idea**: stop feeding all 5 heads the same shared trunk output in parallel. Instead, chain them — the section head's embedding (taken right before its own final linear layer) is concatenated into the division head's input, and so on down to sub-class
+- **Advantages**
+  - Consistency **by construction**: each head literally conditions on the coarser levels' representations, not just a shared trunk
+  - Mirrors how a human coder actually works — section first, then narrow down
+- **Disadvantages**
+  - Purely sequential: 5 heads deep, so they can no longer be computed in parallel — slower to train **and** to run at inference
+  - Errors now **propagate forward** — a wrong section early in the chain can drag every downstream head down with it
+
+### Cross-Level Interaction
+
+```{=html}
+<div style="display:flex;flex-direction:column;align-items:center;gap:6px;margin:16px 0;font-family:-apple-system,'Segoe UI',sans-serif;">
+  <div style="display:flex;gap:6px;">
+    <div style="background:#e8edf8;border:1.5px solid #0D3B77;border-radius:7px;padding:6px 9px;font-size:8px;font-weight:700;color:#0D3B77;">Section</div>
+    <div style="background:#e0e9f7;border:1.5px solid #1565C0;border-radius:7px;padding:6px 9px;font-size:8px;font-weight:700;color:#1565C0;">Division</div>
+    <div style="background:#d8e6f6;border:1.5px solid #1976D2;border-radius:7px;padding:6px 9px;font-size:8px;font-weight:700;color:#1976D2;">Group</div>
+    <div style="background:#cfe0fb;border:1.5px solid #2196F3;border-radius:7px;padding:6px 9px;font-size:8px;font-weight:700;color:#2196F3;">Class</div>
+    <div style="background:#c5dafa;border:1.5px solid #42A5F5;border-radius:7px;padding:6px 9px;font-size:8px;font-weight:700;color:#2b8fe0;">Sub-class</div>
+  </div>
+  <div style="font-size:13px;color:#aaa;">⇕ ⇕ ⇕ ⇕ ⇕</div>
+  <div style="background:#e8f5e9;border:1.5px solid #388e3c;border-radius:8px;padding:8px 20px;font-size:9px;font-weight:700;color:#1b5e20;text-transform:uppercase;letter-spacing:.05em;">
+    &Sigma;&divide;n &mdash; average of the 5 level embeddings (shown here)
+  </div>
+  <div style="font-size:9px;color:#aaa;font-style:italic;">also possible: weighted average &middot; learned attention</div>
+  <div style="font-size:13px;color:#aaa;">↓ ↓ ↓ ↓ ↓</div>
+  <div style="font-size:9px;color:#888;">5 enriched embeddings → 5 final linear heads</div>
+</div>
+```
+
+- **Idea**: keep the 5 per-level embeddings, but before the final linear layers, let them **interact** — combine each level's embedding with the other 4 before its own head reads it. Simplest version, illustrated above: a plain **average** across the 5 embeddings; a **weighted average** or a learned **attention** block are fancier versions of the same idea
+- **Advantages**
+  - **Bidirectional** communication, unlike the cascade — a fine-level signal can inform a coarse prediction too, not just the reverse
+  - Still one parallel pass over all 5 levels, not a 5-deep sequential chain
+- **Disadvantages**
+  - Still a *soft* form of consistency, not a guarantee — same limitation as the loss-based fix
+
+:::
 
 # Conclusion
-
-## One sentence per part
-
-- <!-- TODO -->
-
-## Final message
-
-> Explainability turns a black box that codes into a tool that assists.
