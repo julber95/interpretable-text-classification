@@ -47,7 +47,11 @@ type, each holding one block of keys per level (suffixes _sec/_div/_grp/_cls/_su
                        model was actually trained with n_heads_label_attention
                        set (mean-pooling runs have no such mechanism, at any level).
                        Keys per level: words_<lvl>, word_attn_<lvl>, head_attn_<lvl>,
-                       head_word_attn_<lvl>, y_true_<lvl>.
+                       head_word_attn_<lvl>, y_true_<lvl>, and (only when
+                       label_attn_top_k is set) class_order_<lvl> — capping matters
+                       here since classes sum across all 5 levels (~1700 for NAF),
+                       which can produce an upload too large for MLflow (see
+                       scripts/resume_multilevel_explain.py for the incident this fixes).
   - class_vectors.npz  per-level direction vectors (label_embeds or linear_weight,
                        whichever that level actually has). Keys: class_vectors_<lvl>,
                        kind_<lvl>.
@@ -82,6 +86,7 @@ from src.explain import (
     _captum_to_word,
     _mask_words,
     _run_self_attn,
+    _log_artifact_safely,
 )
 from src.multilevel.naf_data import NACE_LEVELS, load_naf
 
@@ -218,21 +223,32 @@ def _run_label_attention_level(
     n_ex: int,
     batch_sz: int,
     label: str,
+    top_k: int | None = None,
 ) -> dict:
     """
     Same recipe as src.explain._run_label_attention, but calls this level's
     SentenceEmbedder directly with return_label_attention_matrix=True instead
     of clf.predict(explain_with_label_attention=True) — NAFMultiLevelModel.forward()
     never requests or surfaces that matrix on its own (see module docstring).
+
+    top_k caps how many classes' attention rows get kept per example, ranked by
+    this level's own predicted confidence (an extra classification-head forward
+    pass just for the ranking — the attention forward pass itself is unaffected).
+    None (default) keeps every class, in raw class-id order. Capping matters at
+    this scale: label_attn.npz sums cumulative classes across all 5 levels
+    (~1700 for NAF), which can produce an upload too large for MLflow — see
+    scripts/resume_multilevel_explain.py for the incident this fixes.
     """
     model = clf.pytorch_model
     device = clf.device
     sentence_embedder = model.sentence_embedders[level_idx]
     if sentence_embedder.label_attention_config is None:
         raise RuntimeError(f"Level '{level_name}' was not trained with label attention.")
+    classification_head = model.classification_heads[level_idx]
 
     n_ex = min(n_ex, len(texts))
     all_words, all_word_attn, all_head_attn, all_head_word_attn = [], [], [], []
+    all_class_ord = []
 
     n_batches = (n_ex + batch_sz - 1) // batch_sz
     with _progress(f"Label attention [{label}/{level_name}]", "green") as progress:
@@ -251,11 +267,21 @@ def _run_label_attention_level(
                     token_embeddings=x_token, attention_mask=attn_mask,
                     return_label_attention_matrix=True,
                 )
-            attn_matrix = sent_out["label_attention_matrix"]  # (B, n_head, n_classes, seq_len)
+                attn_matrix = sent_out["label_attention_matrix"]  # (B, n_head, n_classes, seq_len)
+                if top_k is not None:
+                    logits = classification_head(sent_out["sentence_embedding"]).squeeze(-1)
+                    k = min(top_k, logits.shape[-1])
+                    class_order = torch.topk(logits.softmax(dim=-1), k=k, dim=-1).indices  # (B, k)
             attn_matrix = attn_matrix.detach().cpu().numpy()
+            if top_k is not None:
+                class_order_np = class_order.cpu().numpy()
 
             for b, text in enumerate(batch_texts):
-                attn_b    = attn_matrix[b]
+                attn_b = attn_matrix[b]   # (n_head, n_classes, seq_len) — full
+                if top_k is not None:
+                    sel    = class_order_np[b]
+                    attn_b = attn_b[:, sel, :]   # (n_head, k, seq_len) — capped
+                    all_class_ord.append(sel)
                 attn_mean = attn_b.mean(axis=0)
 
                 ids      = np.array([x if x is not None else -1 for x in tok.word_ids[b]], dtype=int)
@@ -288,13 +314,16 @@ def _run_label_attention_level(
 
             progress.advance(task)
 
-    return {
+    out = {
         f"words_{level_name}":          _ragged(all_words),
         f"word_attn_{level_name}":      _ragged(all_word_attn),
         f"head_attn_{level_name}":      _ragged(all_head_attn),
         f"head_word_attn_{level_name}": _ragged(all_head_word_attn),
         f"y_true_{level_name}":         y_level[:n_ex],
     }
+    if top_k is not None:
+        out[f"class_order_{level_name}"] = np.array(all_class_ord)
+    return out
 
 
 def _predict_target_probs_level(
@@ -403,6 +432,7 @@ def main(cfg: DictConfig) -> None:
     n_captum            = cfg.get("n_captum", 200)
     captum_batch_sz     = cfg.get("captum_batch_size", 4)
     captum_top_k        = cfg.get("captum_top_k", None)
+    label_attn_top_k    = cfg.get("label_attn_top_k", None)
     batch_sz            = cfg.get("batch_size", 32)
     n_self_attn         = cfg.get("n_self_attn", 50)
     n_faithfulness      = cfg.get("n_faithfulness", 50)
@@ -449,7 +479,7 @@ def main(cfg: DictConfig) -> None:
         for level_idx, level_name in enumerate(LEVEL_NAMES):
             label_attn_data.update(_run_label_attention_level(
                 clf, level_idx, level_name, texts, y_sample[:, level_idx],
-                n_captum, batch_sz, "multilevel",
+                n_captum, batch_sz, "multilevel", label_attn_top_k,
             ))
         artifacts["label_attn.npz"] = label_attn_data
 
@@ -492,8 +522,7 @@ def main(cfg: DictConfig) -> None:
             for fname, data in artifacts.items():
                 p = Path(tmp) / fname
                 np.savez(str(p), **data)
-                mlflow.log_artifact(str(p), artifact_path="explainability")
-                log.info(f"Logged {fname} to run {run_id}")
+                _log_artifact_safely(p, fname, run_id)
 
     log.info("Done. Artifacts logged under explainability/ in the run.")
 

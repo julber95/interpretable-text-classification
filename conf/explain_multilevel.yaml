@@ -10,6 +10,10 @@ captum_batch_size: 4   # smaller batch: Captum multiplies by n_steps internally
 batch_size: 32         # plain forward passes: label attention, self-attention, faithfulness
 captum_top_k: null     # classes to run IG on per example (null = all classes at that level;
                        # cost scales ~linearly with this — cap it for section/division too if slow)
+label_attn_top_k: null # classes to keep in label_attn.npz per example (null = all classes,
+                       # in raw class-id order; cap this if the upload is too large — cumulative
+                       # classes across the 5 levels can make it so, see
+                       # scripts/resume_multilevel_explain.py for the incident this fixes)
 
 n_self_attn: 50        # examples for seq_len × seq_len self-attention matrices
                        # (only produced if the shared encoder has a transformer — it

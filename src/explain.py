@@ -13,10 +13,15 @@ Artifacts logged to each MLflow run under explainability/:
                        class_order[i]: (n_classes,) mapping row k → actual class.
   - label_attn.npz     word-level label-attention weights (Label Attention model only —
                        Mean Pooling has no such mechanism).
-                       Keys: texts, words, word_attn, head_attn, head_word_attn, y_true.
-                       word_attn[i]: (n_classes, n_words), averaged over heads, softmax-
-                       normalised over words. head_attn[i]: (n_heads, n_classes, seq_len), raw.
-                       head_word_attn[i]: (n_heads, n_classes, n_words), per-head word level.
+                       Keys: texts, words, word_attn, head_attn, head_word_attn, y_true, and
+                       (only when label_attn_top_k is set) class_order.
+                       word_attn[i]: (k, n_words), averaged over heads, softmax-normalised
+                       over words. head_attn[i]: (n_heads, k, seq_len), raw.
+                       head_word_attn[i]: (n_heads, k, n_words), per-head word level.
+                       k = n_classes in raw class-id order when label_attn_top_k is unset
+                       (default); k = label_attn_top_k in confidence order otherwise, with
+                       class_order[i]: (k,) mapping row j → actual class (same convention
+                       as captum.npz's class_order — cap this if the upload is too large).
   - class_vectors.npz  per-class direction vectors used at the classification step —
                        comparable across architectures despite different mechanisms:
                          * Label Attention → label_embeds: learned query vectors of the
@@ -224,16 +229,30 @@ def _run_label_attention(
     n_ex: int,
     batch_sz: int,
     label: str,
+    top_k: int | None = None,
 ) -> dict:
     """
     Extract word-level label-attention weights: one cross-attention query per class,
     so each class gets its own view of "which words mattered for this rating".
 
+    top_k caps how many classes' attention rows get kept per example. The forward
+    pass itself is unaffected — the model always computes the full (n_heads,
+    n_classes, seq_len) matrix — but the saved arrays shrink to top_k classes,
+    ranked by this model's own predicted confidence, avoiding an oversized artifact
+    upload on datasets with many classes (see scripts/resume_multilevel_explain.py
+    for the incident that motivated this). None (default) keeps every class, in raw
+    class-id order — the original, uncapped behaviour every existing report page
+    assumes.
+
     Returns a dict with arrays ready to be saved via np.savez:
-        texts, words, word_attn, head_attn, head_word_attn, y_true
-    word_attn[i]:      (n_classes, n_words) — averaged over heads, softmax-normalised over words.
-    head_attn[i]:      (n_heads, n_classes, seq_len) — raw, per head, token level (head specialisation).
-    head_word_attn[i]: (n_heads, n_classes, n_words) — per head, word level (token weights summed per word).
+        texts, words, word_attn, head_attn, head_word_attn, y_true, and (only when
+        top_k is set) class_order.
+    word_attn[i]:      (k, n_words) — averaged over heads, softmax-normalised over words.
+    head_attn[i]:      (n_heads, k, seq_len) — raw, per head, token level (head specialisation).
+    head_word_attn[i]: (n_heads, k, n_words) — per head, word level (token weights summed per word).
+    class_order[i]:    (k,) — present only when top_k is set; maps row j -> actual class,
+                       same convention as captum.npz's class_order.
+    where k = top_k if set, else the full number of classes.
     """
     n_ex = min(n_ex, len(texts))
 
@@ -241,6 +260,7 @@ def _run_label_attention(
     all_word_attn      = []
     all_head_attn      = []
     all_head_word_attn = []
+    all_class_ord      = []
 
     n_batches = (n_ex + batch_sz - 1) // batch_sz
     with _progress(f"Label attention  [{label}]", "green") as progress:
@@ -248,18 +268,38 @@ def _run_label_attention(
         for start in range(0, n_ex, batch_sz):
             batch_texts = texts[start : start + batch_sz]
 
-            result = clf.predict(np.array(batch_texts), explain_with_label_attention=True, device=clf.device)
+            predict_kwargs = {"top_k": top_k} if top_k is not None else {}
+            result = clf.predict(
+                np.array(batch_texts), explain_with_label_attention=True,
+                device=clf.device, **predict_kwargs,
+            )
 
-            attn_matrix  = result["label_attention_attributions"]   # (B, n_heads, n_classes, seq_len)
+            attn_matrix  = result["label_attention_attributions"]   # (B, n_heads, n_classes, seq_len) — always full
             offsets      = result["offset_mapping"]
             word_ids_all = result["word_ids"]
 
             if isinstance(attn_matrix, torch.Tensor):
                 attn_matrix = attn_matrix.detach().cpu().numpy()
 
+            if top_k is not None:
+                class_order = result["prediction"]   # (B, top_k) — confidence order
+                if isinstance(class_order, torch.Tensor):
+                    class_order = class_order.cpu().numpy()
+                # clf.predict() decodes back to the original label values whenever a
+                # value_encoder is attached — re-encode so class_order stays integer
+                # indices, same fix _run_captum applies to its own class_order.
+                if class_order.dtype.kind not in "iu":
+                    class_order = clf.value_encoder.transform_labels(
+                        class_order.reshape(-1)
+                    ).reshape(class_order.shape)
+
             for b, text in enumerate(batch_texts):
-                attn_b    = attn_matrix[b]          # (n_heads, n_classes, seq_len)
-                attn_mean = attn_b.mean(axis=0)     # (n_classes, seq_len) — averaged over heads
+                attn_b = attn_matrix[b]   # (n_heads, n_classes, seq_len) — full
+                if top_k is not None:
+                    sel    = class_order[b]        # (top_k,)
+                    attn_b = attn_b[:, sel, :]      # (n_heads, top_k, seq_len) — capped
+                    all_class_ord.append(sel)
+                attn_mean = attn_b.mean(axis=0)     # (k, seq_len) — averaged over heads
 
                 # Token → word mapping: sum token-level weights per word.
                 # map_attributions_to_word applies an extra softmax on top of already-
@@ -268,8 +308,8 @@ def _run_label_attention(
                 ids       = np.array([x if x is not None else -1 for x in word_ids_all[b]], dtype=int)
                 valid     = ids >= 0
                 ids_v     = ids[valid]
-                attn_v    = attn_mean[:, valid]           # (n_classes, n_real_tokens)
-                attn_bv   = attn_b[:, :, valid]           # (n_heads, n_classes, n_real_tokens)
+                attn_v    = attn_mean[:, valid]           # (k, n_real_tokens)
+                attn_bv   = attn_b[:, :, valid]           # (n_heads, k, n_real_tokens)
                 unique_w  = np.unique(ids_v)
                 word_attn_b = np.zeros((attn_mean.shape[0], len(unique_w)), dtype=np.float32)
                 head_word_attn_b = np.zeros((attn_b.shape[0], attn_mean.shape[0], len(unique_w)), dtype=np.float32)
@@ -292,13 +332,13 @@ def _run_label_attention(
                 word_strs = {wid: text[s:e] for wid, (s, e) in word_spans.items()}
 
                 all_words.append([word_strs[wid] for wid in unique_w])
-                all_word_attn.append(word_attn_b)             # (n_classes, n_words)
-                all_head_attn.append(attn_b)                  # (n_heads, n_classes, seq_len)
-                all_head_word_attn.append(head_word_attn_b)   # (n_heads, n_classes, n_words)
+                all_word_attn.append(word_attn_b)             # (k, n_words)
+                all_head_attn.append(attn_b)                  # (n_heads, k, seq_len)
+                all_head_word_attn.append(head_word_attn_b)   # (n_heads, k, n_words)
 
             progress.advance(task)
 
-    return {
+    out = {
         "texts":          np.array(texts[:n_ex], dtype=object),
         "words":          _ragged(all_words),
         "word_attn":      _ragged(all_word_attn),
@@ -306,6 +346,9 @@ def _run_label_attention(
         "head_word_attn": _ragged(all_head_word_attn),
         "y_true":         y_sample[:n_ex],
     }
+    if top_k is not None:
+        out["class_order"] = np.array(all_class_ord)
+    return out
 
 
 def _extract_self_attn(clf: torchTextClassifiers, texts: list) -> list:
@@ -476,6 +519,17 @@ def _mask_words(words: list, drop_idx: set) -> str:
     return " ".join(kept) if kept else " "
 
 
+def _row_for_class(source: dict, i: int, cls: int) -> int:
+    """Map a raw class id to its row index in source["word_attn"][i] — identity when
+    the array is uncapped (row index == class id), or a lookup via the source's own
+    class_order when it was capped to top_k classes (see _run_label_attention's
+    top_k). cls is always present among the rows: it's this same model's own
+    predicted class, and top_k ranking always includes the model's top prediction."""
+    if "class_order" in source:
+        return int(np.where(source["class_order"][i] == cls)[0][0])
+    return cls
+
+
 def _run_faithfulness(
     clf: torchTextClassifiers,
     captum_data: dict,
@@ -495,10 +549,12 @@ def _run_faithfulness(
     By default (guided_source=None), words are ranked by |Captum IG score| for the predicted
     class — word_attn row 0, since class_order (and therefore word_attn's rows) is sorted by
     confidence. Passing guided_source (e.g. the label_attn.npz dict) instead ranks words by
-    that source's own word_attn for the predicted class — its rows are indexed by raw class
-    id (not confidence rank), so the predicted class's row is looked up via target_class.
-    This lets the same test be re-run with Label Attention's own weights as the importance
-    signal, to check whether its built-in mechanism is as faithful as the post-hoc Captum one.
+    that source's own word_attn for the predicted class: its rows are indexed by raw class
+    id (not confidence rank) when uncapped, so the predicted class's row is looked up via
+    target_class directly — or, if guided_source was produced with label_attn_top_k set, via
+    its own stored class_order instead (see _run_label_attention's top_k). This lets the same
+    test be re-run with Label Attention's own weights as the importance signal, to check
+    whether its built-in mechanism is as faithful as the post-hoc Captum one.
 
     A random-removal control of the same size, averaged over n_random draws, isolates the
     effect of *which* words are removed from the effect of removing *any* words: faithful
@@ -518,7 +574,7 @@ def _run_faithfulness(
         guided_order = [np.argsort(-np.abs(captum_data["word_attn"][i][0])) for i in range(n_faithfulness)]
     else:
         guided_order = [
-            np.argsort(-np.abs(guided_source["word_attn"][i][target_class[i]]))
+            np.argsort(-np.abs(guided_source["word_attn"][i][_row_for_class(guided_source, i, target_class[i])]))
             for i in range(n_faithfulness)
         ]
 
@@ -562,6 +618,18 @@ def _run_faithfulness(
     }
 
 
+def _log_artifact_safely(local_path: Path, fname: str, run_id: str) -> None:
+    """Upload one artifact without letting its failure take the others down with
+    it — a single oversized or flaky upload shouldn't discard every other artifact
+    already computed in memory (see scripts/resume_multilevel_explain.py for the
+    incident that motivated this)."""
+    try:
+        mlflow.log_artifact(str(local_path), artifact_path="explainability")
+        log.info(f"Logged {fname} to run {run_id}")
+    except Exception:
+        log.exception(f"Failed to upload {fname} to run {run_id} — skipping it, continuing with the rest.")
+
+
 @hydra.main(config_path="../conf", config_name="explain", version_base=None)
 def main(cfg: DictConfig) -> None:
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
@@ -571,6 +639,7 @@ def main(cfg: DictConfig) -> None:
     n_captum            = cfg.get("n_captum", 200)
     captum_batch_sz     = cfg.get("captum_batch_size", 4)
     captum_top_k        = cfg.get("captum_top_k", None)
+    label_attn_top_k    = cfg.get("label_attn_top_k", None)
     batch_sz            = cfg.get("batch_size", 32)
     n_self_attn         = cfg.get("n_self_attn", 50)
     n_faithfulness      = cfg.get("n_faithfulness", 50)
@@ -620,7 +689,7 @@ def main(cfg: DictConfig) -> None:
         # 2. Label-attention internals — only the Label Attention model has this mechanism
         if has_label_attn:
             artifacts["label_attn.npz"] = _run_label_attention(
-                clf, texts, y_sample, n_captum, batch_sz, label
+                clf, texts, y_sample, n_captum, batch_sz, label, label_attn_top_k
             )
 
         # 3. Per-class direction vectors, saved under a common key so the report can
@@ -663,8 +732,7 @@ def main(cfg: DictConfig) -> None:
                 for fname, data in artifacts.items():
                     p = Path(tmp) / fname
                     np.savez(str(p), **data)
-                    mlflow.log_artifact(str(p), artifact_path="explainability")
-                    log.info(f"Logged {fname} to run {run_id}")
+                    _log_artifact_safely(p, fname, run_id)
 
     log.info("Done. Artifacts logged under explainability/ in each run.")
 
