@@ -1,0 +1,139 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: naf-fasttext-
+spec:
+  entrypoint: main-dag
+  serviceAccountName: argo-workflows
+  templates:
+
+    # ── DAG: 6 GPUs in parallel ────────────────────────────────────────────────
+    # Plain FastText only (no label attention), full train set (train_fraction=1.0).
+    # emb64/128/256: 1 GPU each, sweeping vocab_size in {2000,5000,10000,20000} x
+    # lr in {0.0001,0.0005,0.001} → 12 runs per GPU.
+    # emb512: split across 3 GPUs instead (one per lr value) to keep the critical
+    # path the same as the other dims despite the extra GPU count.
+    - name: main-dag
+      dag:
+        tasks:
+          - name: train-emb64
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "64"
+
+          - name: train-emb128
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "128"
+
+          - name: train-emb256
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "256"
+
+          - name: train-emb512-lr0001
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "512"
+                - name: lr
+                  value: "0.0001"
+
+          - name: train-emb512-lr0005
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "512"
+                - name: lr
+                  value: "0.0005"
+
+          - name: train-emb512-lr001
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "512"
+                - name: lr
+                  value: "0.001"
+
+    # ── GPU Trainer template ──────────────────────────────────────────────────
+    # Plain FastText (n_layers=0, no label attention), full train set.
+    # Each GPU sweeps:
+    #   vocab_size in {2000, 5000, 10000, 20000} (or a fixed value, see vocab_size input)
+    #   lr         in {0.0001, 0.0005, 0.001} (or a fixed value, see lr input)
+    # → up to 4 × 3 = 12 runs per GPU
+    - name: trainer-gpu
+      inputs:
+        parameters:
+          - name: emb_dim
+          - name: vocab_size
+            value: "2000,5000,10000,20000"
+          - name: lr
+            value: "0.0001,0.0005,0.001"
+      script:
+        image: "inseefrlab/onyxia-vscode-pytorch:py3.13.12-gpu"
+        imagePullPolicy: Always
+        command: ["/bin/bash"]
+        source: |
+          set -e
+          git clone -b main https://github.com/julber95/interpretable-text-classification.git insee_internship
+          cd insee_internship
+
+          uv run python -m src.train \
+            dataset=naf \
+            tokenizer=wordpiece \
+            model.n_layers=0 \
+            model.embedding_dim={{inputs.parameters.emb_dim}} \
+            tokenizer.output_dim={{inputs.parameters.emb_dim}} \
+            tokenizer.vocab_size={{inputs.parameters.vocab_size}} \
+            training.lr={{inputs.parameters.lr}} \
+            model.n_heads_label_attention=4 \
+            training.num_epochs=100 \
+            training.patience_early_stopping=5 \
+            train_fraction=1.0 \
+            dataset.val_size=50000 \
+            dataset.test_size=50000 \
+            experiment_name=naf \
+            -m
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            cpu: "4000m"
+            memory: "72Gi"
+          requests:
+            nvidia.com/gpu: "1"
+            cpu: "2000m"
+            memory: "36Gi"
+        env:
+          - name: NAF_PARQUET_PATH
+            value: "https://minio.lab.sspcloud.fr/projet-text-classif/datasets/naf_merged.parquet"
+          - name: MLFLOW_TRACKING_URI
+            valueFrom:
+              secretKeyRef:
+                name: vscode-pytorch-202038-secretmlflow
+                key: MLFLOW_TRACKING_URI
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: vscode-pytorch-202038-secretmlflow
+                key: MLFLOW_TRACKING_USERNAME
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: vscode-pytorch-202038-secretmlflow
+                key: MLFLOW_TRACKING_PASSWORD
+          - name: MLFLOW_S3_ENDPOINT_URL
+            valueFrom:
+              secretKeyRef:
+                name: vscode-pytorch-202038-secretmlflow
+                key: MLFLOW_S3_ENDPOINT_URL
+          - name: MLFLOW_HTTP_REQUEST_TIMEOUT
+            value: "1800"

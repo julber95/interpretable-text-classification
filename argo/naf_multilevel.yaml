@@ -1,0 +1,128 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: naf-multilevel-
+spec:
+  entrypoint: main-dag
+  serviceAccountName: argo-workflows
+  templates:
+
+    # ── DAG: 6 GPUs in parallel ────────────────────────────────────────────────
+    # emb64/128/256: 1 GPU each, sweeping label_attn in {none, 4} × vocab_size in
+    # {2000, 5000, 10000, 20000} × lr in {0.0005, 0.001} → 16 runs per GPU.
+    # emb512: split across 3 GPUs instead, because la=4 runs there take ~6-7h each
+    # (vs ~1h for la=null) — sequential on one GPU that sweep alone would take
+    # ~2 days. One GPU handles la=null (fast, full vocab sweep); the other two
+    # split the la=4 sweep in half by vocab_size to shorten the critical path.
+    # lr=0.0001 dropped: converges too slowly relative to its epoch budget, eating a
+    # disproportionate share of GPU time for no clear quality gain over 0.0005.
+    - name: main-dag
+      dag:
+        tasks:
+          - name: train-emb64
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "64"
+
+          - name: train-emb128
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "128"
+
+          - name: train-emb256
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "256"
+
+          - name: train-emb512-noattn
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "512"
+                - name: la_values
+                  value: "null"
+
+          - name: train-emb512-labattn-a
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "512"
+                - name: la_values
+                  value: "4"
+                - name: vocab_values
+                  value: "2000,5000"
+
+          - name: train-emb512-labattn-b
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: emb_dim
+                  value: "512"
+                - name: la_values
+                  value: "4"
+                - name: vocab_values
+                  value: "10000,20000"
+
+    # ── GPU Trainer template ──────────────────────────────────────────────────
+    - name: trainer-gpu
+      inputs:
+        parameters:
+          - name: emb_dim
+          - name: la_values
+            value: "null,4"
+          - name: vocab_values
+            value: "2000,5000,10000,20000"
+      script:
+        image: "inseefrlab/onyxia-vscode-pytorch:py3.13.12-gpu"
+        imagePullPolicy: Always
+        command: ["/bin/bash"]
+        source: |
+          set -e
+          git clone -b main https://github.com/julber95/interpretable-text-classification.git insee_internship
+          cd insee_internship
+
+          for la in $(echo "{{inputs.parameters.la_values}}" | tr ',' ' '); do
+            uv run python -m src.multilevel.train \
+              model.embedding_dim={{inputs.parameters.emb_dim}} \
+              tokenizer.output_dim={{inputs.parameters.emb_dim}} \
+              tokenizer.vocab_size={{inputs.parameters.vocab_values}} \
+              model.n_heads_label_attention=$la \
+              training.lr=0.0005,0.001 \
+              training.num_epochs=300 \
+              training.patience_early_stopping=5 \
+              train_fraction=1.0 \
+              dataset.val_size=50000 \
+              dataset.test_size=50000 \
+              experiment_name=naf_multilevel \
+              -m
+          done
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            cpu: "4000m"
+            memory: "72Gi"
+          requests:
+            nvidia.com/gpu: "1"
+            cpu: "2000m"
+            memory: "36Gi"
+        env:
+          - name: NAF_PARQUET_PATH
+            value: "https://minio.lab.sspcloud.fr/projet-text-classif/datasets/naf_merged.parquet"
+          - name: MLFLOW_TRACKING_URI
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_TRACKING_URI } }
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_TRACKING_USERNAME } }
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_TRACKING_PASSWORD } }
+          - name: MLFLOW_S3_ENDPOINT_URL
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_S3_ENDPOINT_URL } }
+          - name: MLFLOW_HTTP_REQUEST_TIMEOUT
+            value: "1800"

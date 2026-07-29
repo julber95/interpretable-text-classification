@@ -1,0 +1,83 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: amazon-fate-
+spec:
+  entrypoint: main-dag
+  serviceAccountName: argo-workflows
+  templates:
+
+    # ── DAG: 2 GPUs in parallel ────────────────────────────────────────────────
+    # Same FATE config (emb_dim=256, n_layers=4, n_head=2, lr=0.001) on both GPUs;
+    # only label attention and vocab_size differ between the two runs.
+    - name: main-dag
+      dag:
+        tasks:
+          - name: train-noattn-vocab5000
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: n_heads_label_attention
+                  value: "null"
+                - name: vocab_size
+                  value: "5000"
+
+          - name: train-labattn4-vocab10000
+            template: trainer-gpu
+            arguments:
+              parameters:
+                - name: n_heads_label_attention
+                  value: "4"
+                - name: vocab_size
+                  value: "10000"
+
+    # ── GPU Trainer template ──────────────────────────────────────────────────
+    - name: trainer-gpu
+      inputs:
+        parameters:
+          - name: n_heads_label_attention
+          - name: vocab_size
+      script:
+        image: "inseefrlab/onyxia-vscode-pytorch:py3.13.12-gpu"
+        imagePullPolicy: Always
+        command: ["/bin/bash"]
+        source: |
+          set -e
+          git clone -b main https://github.com/julber95/interpretable-text-classification.git insee_internship
+          cd insee_internship
+
+          uv run python -m src.train \
+            dataset=amazon \
+            tokenizer=wordpiece \
+            model.embedding_dim=256 \
+            model.n_layers=4 \
+            model.n_head=2 \
+            model.n_kv_head=2 \
+            model.n_heads_label_attention={{inputs.parameters.n_heads_label_attention}} \
+            tokenizer.vocab_size={{inputs.parameters.vocab_size}} \
+            tokenizer.output_dim=256 \
+            training.lr=0.001 \
+            training.num_epochs=100 \
+            training.patience_early_stopping=5 \
+            train_fraction=1.0 \
+            experiment_name=amazon
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            cpu: "4000m"
+            memory: "72Gi"
+          requests:
+            nvidia.com/gpu: "1"
+            cpu: "2000m"
+            memory: "36Gi"
+        env:
+          - name: MLFLOW_TRACKING_URI
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_TRACKING_URI } }
+          - name: MLFLOW_TRACKING_USERNAME
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_TRACKING_USERNAME } }
+          - name: MLFLOW_TRACKING_PASSWORD
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_TRACKING_PASSWORD } }
+          - name: MLFLOW_S3_ENDPOINT_URL
+            valueFrom: { secretKeyRef: { name: vscode-pytorch-202038-secretmlflow, key: MLFLOW_S3_ENDPOINT_URL } }
+          - name: MLFLOW_HTTP_REQUEST_TIMEOUT
+            value: "1800"
