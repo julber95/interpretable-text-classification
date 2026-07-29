@@ -819,15 +819,28 @@ def code_of(level: str, idx: int) -> str:
     return LEVEL_CLASSES[level][idx]
 
 def label_of(level: str, code: str) -> str:
-    # Only sections and sub-classes carry a human-readable label in
-    # naf2025_structure.json — division/group/class entries only reference
-    # their children, so those levels fall back to the bare code.
+    # Sections, divisions and sub-classes carry a human-readable label in
+    # naf2025_structure.json — group/class entries only reference their
+    # children, so those two levels fall back to the bare code (see
+    # _parent_division_label_ml below for a usable fallback there instead).
     if level == "sec":
         return SECTION_LABEL_ML.get(code, code)
+    if level == "div":
+        return _naf_struct_ml["divisions"].get(code, {}).get("label", code)
     if level == "sub":
         dotted = code[:2] + "." + code[2:]
         return SOUSCLASSE_LABEL_ML.get(dotted, code)
     return code
+
+
+def _parent_division_label_ml(code: str) -> str | None:
+    """Group/class codes have no official label of their own in
+    naf2025_structure.json (only sections, divisions and sub-classes do) —
+    fall back to their parent division's name for orientation, rather than a
+    bare 3-4 digit number nobody can place. None if that division is itself
+    unlabelled (shouldn't happen in practice, but keeps this defensive)."""
+    div = _naf_struct_ml["divisions"].get(code[:2])
+    return div["label"] if div else None
 ```
 
 ::: {.panel-tabset}
@@ -1433,25 +1446,38 @@ if not HAS_EXPLAIN_LA_ML:
 else:
     def _cls_display_ml(level: str, idx: int) -> str:
         code = code_of(level, idx)
-        lbl  = label_of(level, code)
+        if level in ("grp", "cls"):
+            div_lbl = _parent_division_label_ml(code)
+            return f"{code} (div. {code[:2]} — {div_lbl})" if div_lbl else code
+        lbl = label_of(level, code)
         return f"{code} — {lbl}" if lbl != code else code
 
     rng_ml = np.random.default_rng(7)
     picks_ml = []  # (arch, example_idx)
+    # Keep cards short — 5 stacked levels (doubled when a level is wrong) get long fast otherwise.
+    MAX_WORDS_ML = 8
+
+    def _short_pool_ml(idxs, cap):
+        short = [i for i in idxs if len(cap["words_sub"][i]) <= MAX_WORDS_ML]
+        return short if short else idxs  # fall back to the full pool if none qualify
+
     for arch in EXPLAIN_MODEL_KEYS_ML:
         cap = EXPLAIN_CAPTUM_ML[arch]
         correct_sec = cap["y_pred_sec"] == cap["y_true_sec"]
         correct_sub = cap["y_pred_sub"] == cap["y_true_sub"]
         seen  = {i for _, i in picks_ml}
-        smart = [i for i in np.where(correct_sec & ~correct_sub)[0] if i not in seen]
+        pool  = [i for i in np.where(correct_sec & ~correct_sub)[0] if i not in seen]
+        smart = _short_pool_ml(pool, cap)
         rng_ml.shuffle(smart)
         picks_ml += [(arch, int(i)) for i in smart[:3]]
         seen    = {i for _, i in picks_ml}
-        both_ok = [i for i in np.where(correct_sec & correct_sub)[0] if i not in seen]
+        pool    = [i for i in np.where(correct_sec & correct_sub)[0] if i not in seen]
+        both_ok = _short_pool_ml(pool, cap)
         rng_ml.shuffle(both_ok)
         picks_ml += [(arch, int(i)) for i in both_ok[:2]]
         seen       = {i for _, i in picks_ml}
-        both_wrong = [i for i in np.where(~correct_sec & ~correct_sub)[0] if i not in seen]
+        pool       = [i for i in np.where(~correct_sec & ~correct_sub)[0] if i not in seen]
+        both_wrong = _short_pool_ml(pool, cap)
         rng_ml.shuffle(both_wrong)
         picks_ml += [(arch, int(i)) for i in both_wrong[:2]]
 
@@ -1476,7 +1502,8 @@ else:
         rows_html = ""
         for lvl in LEVEL_NAMES:
             words = [str(w) for w in list(cap[f"words_{lvl}"][i])[:40]]
-            mat   = cap[f"word_attn_{lvl}"][i]  # (n_classes, n_words), row 0 = predicted class
+            mat   = cap[f"word_attn_{lvl}"][i]    # (n_classes, n_words), rows in confidence order
+            order = cap[f"class_order_{lvl}"][i]  # row j -> actual class id
             pred  = int(cap[f"y_pred_{lvl}"][i])
             true  = int(cap[f"y_true_{lvl}"][i])
             ok    = pred == true
@@ -1485,12 +1512,30 @@ else:
             mark  = "✓" if ok else "✗"
             rows_html += (
                 f'<div style="margin:8px 0;">'
-                f'<div style="font-size:11.5px;color:#777;margin-bottom:2px;">'
-                f'<b style="color:#333;">{LEVEL_LABELS_ML[lvl]}</b> → '
-                f'{_cls_display_ml(lvl, pred)} <span style="color:{bc};">{mark}</span></div>'
+                f'<div style="font-size:12.5px;font-weight:700;color:#333;margin-bottom:2px;">'
+                f'{LEVEL_LABELS_ML[lvl]} — predicted '
+                f'{_cls_display_ml(lvl, pred)} '
+                f'<span style="color:{bc};font-size:17px;">{mark}</span></div>'
                 f'<div style="line-height:2.4;">{_spans_html_ml(words[:nw], mat[0][:nw])}</div>'
-                f'</div>'
             )
+            if not ok:
+                # Show the true class too, using its own attribution row (looked
+                # up via class_order, since word_attn's rows are confidence-ranked,
+                # not raw class ids) — without this, a wrong level only ever tells
+                # you what the model guessed, never what it should have said.
+                # Coloured green (not red like the predicted row) so predicted vs.
+                # true stay visually distinct at a glance, not just by text.
+                true_rows = np.where(order == true)[0]
+                if len(true_rows):
+                    true_row  = int(true_rows[0])
+                    true_html = _spans_html_ml(words[:nw], mat[true_row][:nw])
+                    rows_html += (
+                        f'<div style="font-size:12.5px;font-weight:700;'
+                        f'color:#2E7D32;margin:6px 0 2px 0;">'
+                        f'true — {_cls_display_ml(lvl, true)}</div>'
+                        f'<div style="line-height:2.4;">{true_html}</div>'
+                    )
+            rows_html += '</div>'
         cards_ml.append(
             f'<div style="border:1px solid #e2e2e2;border-radius:8px;padding:14px 16px;background:#fcfcfc;">'
             f'<div style="font-size:13px;color:#444;margin-bottom:10px;">'
@@ -1528,69 +1573,11 @@ else:
 display(out_ml)
 ```
 
-### Label attention across the hierarchy
-
-*Method: label-attention weights*
-
-Captum is a post-hoc reconstruction; label attention is the model's *own* explanation, built into the architecture — each level's head literally attends to specific words before deciding. For one description, here is that raw attention (averaged over the mechanism's 4 heads), one heatmap per level, restricted to the 10 classes each head found most plausible (plus the true class, if it happens to fall outside that top 10). Rows are sub-classes-of-that-level, columns are the description's words.
-
-```{python}
-#| label: fig-explain-labatt-hierarchy-naf-multilevel
-#| fig-cap: "Label attention (mean over heads) for one example, at each hierarchy level — top 10 predicted classes, plus the true class if not already among them."
-
-if not HAS_EXPLAIN_LA_ML or lat_la_ml is None:
-    print("Label attention artifacts not yet available.")
-else:
-    _TOP_K_LAH_ML = 10
-
-    cap0 = EXPLAIN_CAPTUM_ML["labatt"]
-    _correct_sec0 = cap0["y_pred_sec"] == cap0["y_true_sec"]
-    _correct_sub0 = cap0["y_pred_sub"] == cap0["y_true_sub"]
-    _smart0 = np.where(_correct_sec0 & ~_correct_sub0)[0]
-    ex_idx_lah_ml = int(_smart0[0]) if len(_smart0) else 0
-
-    fig = make_subplots(
-        rows=1, cols=len(LEVEL_NAMES),
-        subplot_titles=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES],
-        horizontal_spacing=0.04,
-    )
-    for col, lvl in enumerate(LEVEL_NAMES, start=1):
-        words       = [str(w) for w in lat_la_ml[f"words_{lvl}"][ex_idx_lah_ml]]
-        head_word   = lat_la_ml[f"head_word_attn_{lvl}"][ex_idx_lah_ml]  # (n_head, k_kept, n_words)
-        class_order = lat_la_ml[f"class_order_{lvl}"][ex_idx_lah_ml]    # (k_kept,) actual class idx, confidence order
-        true_cls    = int(lat_la_ml[f"y_true_{lvl}"][ex_idx_lah_ml])
-
-        sel = list(class_order[:_TOP_K_LAH_ML])
-        if true_cls not in sel and true_cls in class_order:
-            sel = sel[:-1] + [true_cls]
-        idx_map  = {int(c): k for k, c in enumerate(class_order)}
-        rows_sel = [idx_map[c] for c in sel]
-
-        mean_attn = head_word.mean(axis=0)  # (k_kept, n_words)
-        z = mean_attn[rows_sel]
-        y_labels = [code_of(lvl, c) for c in sel]
-
-        fig.add_trace(go.Heatmap(
-            z=z, x=words, y=y_labels, coloraxis="coloraxis",
-            hovertemplate="word=%{x}<br>class=%{y}<br>weight=%{z:.3f}<extra></extra>",
-        ), row=1, col=col)
-
-    fig.update_xaxes(showticklabels=False)
-    fig.update_layout(
-        height=380, coloraxis=dict(colorscale="Viridis"),
-        margin=dict(t=60, b=20, l=20, r=20),
-        paper_bgcolor="white",
-    )
-    fig.show()
-```
-
-Averaged over all 200 examples, the mean-over-heads attention shows the same pattern already seen for Captum: no clear coarse-to-fine trend in *how* concentrated it gets (a fairly flat 38–40% resting in the single most-attended word at every level). What visibly changes between the five panels above, for this one example, is *which* words and classes draw that attention, not how sharply it's split among them — the mechanism-level counterpart to the word-attribution shift shown just above.
-
 ### Corpus-level word importance, direct at the section level
 
 *Method: Captum (Integrated Gradients)*
 
-On [Single-level classification](naf_single.qmd), the equivalent figure had to *approximate* section-level importance by grouping together the attributions of whichever sub-classes happen to fall under each section — there was no section-level prediction to ask directly. Here there is: the section head is independently trained, so the word importance below comes straight from it, for the 6 best-represented sections in the test sample.
+On [Single-level classification](naf_single.qmd), the equivalent figure had to *approximate* section-level importance by grouping together the attributions of whichever sub-classes happen to fall under each section — there was no section-level prediction to ask directly. Here there is: the section head is independently trained, so the word importance below comes straight from it, for the 6 best-represented sections in the test sample. As on that page, use the buttons above the figure to switch between the two architectures.
 
 ```{python}
 #| label: fig-explain-corpus-sec-naf-multilevel
@@ -1616,27 +1603,31 @@ else:
         ranked = sorted(scores.items(), key=lambda kv: -kv[1] / counts[kv[0]])
         return [(w, s / counts[w]) for w, s in ranked[:top_n]]
 
-    _key_corpus_ml = "labatt" if "labatt" in EXPLAIN_MODEL_KEYS_ML else EXPLAIN_MODEL_KEYS_ML[0]
-    cap_corpus_ml  = EXPLAIN_CAPTUM_ML[_key_corpus_ml]
-
-    sec_counts_ml       = pd.Series([code_of("sec", c) for c in cap_corpus_ml["y_true_sec"]]).value_counts()
+    # Reference architecture just to pick which 6 sections to show — same set used
+    # for every architecture below, so the buttons swap data, not layout.
+    _key_ref_ml   = EXPLAIN_MODEL_KEYS_ML[0]
+    cap_ref_ml    = EXPLAIN_CAPTUM_ML[_key_ref_ml]
+    sec_counts_ml = pd.Series([code_of("sec", c) for c in cap_ref_ml["y_true_sec"]]).value_counts()
     N_SECTIONS_SHOWN_ML = 6
-    shown_sections_ml   = sec_counts_ml.index[:N_SECTIONS_SHOWN_ML].tolist()
+    shown_sections_ml    = sec_counts_ml.index[:N_SECTIONS_SHOWN_ML].tolist()
 
     ROWS_ML, COLS_ML = 2, 3
     titles_ml = [f"{s} — {SECTION_LABEL_ML[s].replace('Activités', 'Act.')}" for s in shown_sections_ml]
     fig = make_subplots(rows=ROWS_ML, cols=COLS_ML, subplot_titles=titles_ml,
                          horizontal_spacing=0.09, vertical_spacing=0.20)
 
-    for si, sec in enumerate(shown_sections_ml):
-        row, col = si // COLS_ML + 1, si % COLS_ML + 1
-        top = _section_top_ml(cap_corpus_ml, sec)[::-1]
-        fig.add_trace(go.Bar(
-            x=[s for _, s in top], y=[w for w, _ in top], orientation="h",
-            marker=dict(color=SECTION_COLOR_ML.get(sec, "#888888"), line=dict(width=0)),
-            width=0.6, opacity=0.9, showlegend=False,
-            hovertemplate="<b>%{y}</b><br>Mean |IG|: %{x:.4f}<extra></extra>",
-        ), row=row, col=col)
+    for ki, key in enumerate(EXPLAIN_MODEL_KEYS_ML):
+        cap_k = EXPLAIN_CAPTUM_ML[key]
+        for si, sec in enumerate(shown_sections_ml):
+            row, col = si // COLS_ML + 1, si % COLS_ML + 1
+            top = _section_top_ml(cap_k, sec)[::-1]
+            fig.add_trace(go.Bar(
+                x=[s for _, s in top], y=[w for w, _ in top], orientation="h",
+                marker=dict(color=SECTION_COLOR_ML.get(sec, "#888888"), line=dict(width=0)),
+                width=0.6, opacity=0.9, showlegend=False,
+                visible=(ki == 0),
+                hovertemplate="<b>%{y}</b><br>Mean |IG|: %{x:.4f}<extra></extra>",
+            ), row=row, col=col)
 
     for i, ann in enumerate(fig.layout.annotations):
         if i < len(shown_sections_ml):
@@ -1645,59 +1636,239 @@ else:
 
     fig.update_xaxes(showgrid=True, gridcolor="#f0f0f0", tickfont=dict(size=10))
     fig.update_yaxes(tickfont=dict(size=11), showgrid=False)
-    fig.update_layout(height=620, margin=dict(t=70, b=30, l=20, r=20), paper_bgcolor="white", plot_bgcolor="white")
-    fig.show()
-```
 
-### How concentrated are these explanations?
+    layout_extra_ml = {}
+    if len(EXPLAIN_MODEL_KEYS_ML) > 1:
+        n_tr_ml = len(shown_sections_ml)
+        vis_ml  = {key: [j // n_tr_ml == ki for j in range(n_tr_ml * len(EXPLAIN_MODEL_KEYS_ML))]
+                   for ki, key in enumerate(EXPLAIN_MODEL_KEYS_ML)}
+        SHORT_LABELS_ML  = {"labatt": "Label Attention", "pooling": "Mean Pooling"}
+        BUTTON_LABELS_ML = {k: f"Captum: {SHORT_LABELS_ML[k]} Architecture" for k in EXPLAIN_MODEL_KEYS_ML}
+        layout_extra_ml = dict(updatemenus=[dict(
+            type="buttons", direction="right", active=0,
+            buttons=[dict(label=BUTTON_LABELS_ML[k], method="restyle",
+                          args=[{"visible": vis_ml[k]}]) for k in EXPLAIN_MODEL_KEYS_ML],
+            x=0.5, xanchor="center", y=1.06, yanchor="bottom",
+            showactive=True, bgcolor="#f5f5f5", bordercolor="#ddd", borderwidth=1,
+            font=dict(size=12, color="#222"), pad=dict(l=8, r=8, t=4, b=4),
+        )])
 
-*Method: Captum (Integrated Gradients)*
-
-A different question from *which* words matter: *how many* of them does the model actually lean on? For each description, we take its predicted class's attribution row and measure what share of the total `|attribution|` mass sits in the single most-attributed word — averaged across examples, per level.
-
-```{python}
-#| label: fig-explain-concentration-naf-multilevel
-#| fig-cap: "Mean share of a description's total |attribution| mass carried by its single most-attributed word, for the predicted class, by hierarchy level."
-
-if not HAS_EXPLAIN_LA_ML:
-    print("Artifacts not yet available.")
-else:
-    def _top_word_share_ml(cap, lvl):
-        shares = []
-        for i in range(len(cap[f"word_attn_{lvl}"])):
-            row   = np.abs(cap[f"word_attn_{lvl}"][i][0])
-            total = row.sum()
-            if total > 0:
-                shares.append(row.max() / total)
-        return float(np.mean(shares)) * 100
-
-    concentration_ml = {
-        arch: [_top_word_share_ml(EXPLAIN_CAPTUM_ML[arch], lvl) for lvl in LEVEL_NAMES]
-        for arch in EXPLAIN_MODEL_KEYS_ML
-    }
-
-    fig = go.Figure()
-    for arch in EXPLAIN_MODEL_KEYS_ML:
-        fig.add_trace(go.Scatter(
-            x=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES], y=concentration_ml[arch],
-            mode="lines+markers", name=EXPLAIN_MODEL_LABELS_ML[arch],
-            line=dict(color=COLORS_ML.get(EXPLAIN_MODEL_LABELS_ML[arch], "grey"), width=2.5),
-            marker=dict(size=9),
-        ))
     fig.update_layout(
-        xaxis_title="Hierarchy level", yaxis_title="Mean top-word share of |attribution| (%)",
-        legend_title="Architecture", height=420, yaxis=dict(range=[30, 50]),
+        height=620,
+        margin=dict(t=110 if len(EXPLAIN_MODEL_KEYS_ML) > 1 else 70, b=30, l=20, r=20),
+        paper_bgcolor="white", plot_bgcolor="white",
+        **layout_extra_ml,
     )
     fig.show()
 ```
 
-Label Attention's explanations are consistently more concentrated in a single word than FastText's — roughly 3 to 6 points higher at every level (≈41–45% vs. ≈37–40%) — but neither architecture shows a clear coarse-to-fine trend: both hover in a narrow band regardless of whether the head is making a 20-way section call or a 679-way sub-class call. The gap is between architectures, not between levels: label attention's per-class query vectors appear to latch onto a narrower keyword signature than mean pooling's more diffuse bag-of-embeddings attribution, at every granularity.
+### Label attention across the hierarchy
+
+*Method: label-attention weights*
+
+Captum is a post-hoc reconstruction; label attention is the model's *own* explanation, built into the architecture — each level's head literally attends to specific words before deciding. Below is that raw attention: one heatmap per head, plus their mean (fixed, always shown side by side, exactly as on [Single-level classification](naf_single.qmd)), restricted to the 10 classes each head found most plausible (plus the true class, if it happens to fall outside that top 10). Rows are sub-classes-of-that-level, columns are the description's words. Use the ← / → arrows to switch between examples, and the buttons below the figure to switch between hierarchy levels.
+
+```{python}
+#| label: fig-explain-labatt-hierarchy-naf-multilevel
+#| fig-cap: "Label attention for one example: each of the 4 heads' (class × word) attention matrix, and the aggregated matrix (mean over heads). Use the ← / → arrows to switch examples, and the buttons below to switch hierarchy level."
+
+import json
+import textwrap
+from IPython.display import HTML, display
+
+if not HAS_EXPLAIN_LA_ML or lat_la_ml is None:
+    print("Label attention artifacts not yet available.")
+else:
+    _TOP_K_LAH_ML = 10
+
+    # Curate a handful of examples — smart mistakes first (richest for comparing
+    # what each level's head attends to), then a couple of clean sweeps —
+    # mirroring the selection used for the word-attribution figure above.
+    cap0 = EXPLAIN_CAPTUM_ML["labatt"]
+    _correct_sec0 = cap0["y_pred_sec"] == cap0["y_true_sec"]
+    _correct_sub0 = cap0["y_pred_sub"] == cap0["y_true_sub"]
+    _rng_lah_ml = np.random.default_rng(11)
+    # Keep examples short — long descriptions make the word axis unwieldy across 5 heatmap panels.
+    _MAX_WORDS_LAH_ML = 8
+
+    def _short_pool_lah_ml(idxs):
+        short = [i for i in idxs if len(cap0["words_sub"][i]) <= _MAX_WORDS_LAH_ML]
+        return short if short else idxs  # fall back to the full pool if none qualify
+
+    _smart_ml = _short_pool_lah_ml(np.where(_correct_sec0 & ~_correct_sub0)[0].tolist())
+    _rng_lah_ml.shuffle(_smart_ml)
+    _ok_ml = _short_pool_lah_ml(np.where(_correct_sec0 & _correct_sub0)[0].tolist())
+    _rng_lah_ml.shuffle(_ok_ml)
+    lab_idx_list_ml = (_smart_ml[:5] + _ok_ml[:3]) or [0]
+
+    N_HEADS_LAH_ML = lat_la_ml["head_word_attn_sec"][lab_idx_list_ml[0]].shape[0]
+    COLS_LAH_ML = N_HEADS_LAH_ML + 1  # 4 heads + mean, always all shown side by side
+    subplot_titles_lah_ml = [f"Head {h + 1}" for h in range(N_HEADS_LAH_ML)] + ["Mean over heads"]
+
+    def _title_for_ex_level_lah_ml(idx, lvl):
+        text     = str(cap0["texts"][idx])
+        y_true   = int(cap0[f"y_true_{lvl}"][idx])
+        y_pred   = int(cap0[f"y_pred_{lvl}"][idx])
+        ok       = y_true == y_pred
+        mark     = "✓" if ok else "✗"
+        col      = "#2E7D32" if ok else "#B71C1C"
+        true_bit = f"true {LEVEL_LABELS_ML[lvl].lower()}: <b>{_cls_display_ml(lvl, y_true)}</b>"
+        pred_bit = (
+            f"predicted: <span style='color:{col};font-weight:700;'>"
+            f"{_cls_display_ml(lvl, y_pred)} {mark}</span>"
+        )
+        header = f'Label attention — {LEVEL_LABELS_ML[lvl]} — "{text}"'
+        return "<br>".join(textwrap.wrap(header, width=70) + [true_bit, pred_bit])
+
+    def _frame_for_ex_level_ml(idx, lvl):
+        """5 fixed columns (4 heads + mean) for one (example, level) combination."""
+        words       = [str(w) for w in lat_la_ml[f"words_{lvl}"][idx]]
+        head_word   = lat_la_ml[f"head_word_attn_{lvl}"][idx]  # (n_head, k_kept, n_words)
+        class_order = lat_la_ml[f"class_order_{lvl}"][idx]    # (k_kept,) actual class idx
+        true_cls    = int(lat_la_ml[f"y_true_{lvl}"][idx])
+
+        sel = list(class_order[:_TOP_K_LAH_ML])
+        if true_cls not in sel and true_cls in class_order:
+            sel = sel[:-1] + [true_cls]
+        idx_map  = {int(c): k for k, c in enumerate(class_order)}
+        rows_sel = [idx_map[c] for c in sel]
+
+        z_list, x_list, y_list = [], [], []
+        for mat in [head_word[h] for h in range(N_HEADS_LAH_ML)] + [head_word.mean(axis=0)]:
+            z_list.append(mat[rows_sel])
+            x_list.append(words)
+            y_list.append([code_of(lvl, c) for c in sel])
+        return z_list, x_list, y_list, _title_for_ex_level_lah_ml(idx, lvl)
+
+    z0, x0, y0, title0 = _frame_for_ex_level_ml(lab_idx_list_ml[0], LEVEL_NAMES[0])
+
+    n_words_lah_ml   = len(x0[0])
+    n_classes_lah_ml = max(len(yy) for yy in y0)
+    cell_px_lah_ml   = 15   # drives width — kept small so 5 panels fit without horizontal scroll
+    row_px_lah_ml    = 24   # drives height only — cells can stretch vertically for free
+    MIN_WIDTH_LAH_ML = 760  # floor: short examples (few words) would otherwise make panels/titles
+                            # cramped and overlapping (width is fixed at load — same limit as
+                            # the single-level version this mirrors, since Plotly.update below
+                            # only swaps z/x/y, not the layout)
+
+    fig = make_subplots(
+        rows=1, cols=COLS_LAH_ML,
+        subplot_titles=subplot_titles_lah_ml,
+        horizontal_spacing=0.05,
+    )
+    for i in range(COLS_LAH_ML):
+        fig.add_trace(go.Heatmap(
+            z=z0[i], x=x0[i], y=y0[i], coloraxis="coloraxis",
+            hovertemplate="word=%{x}<br>class=%{y}<br>weight=%{z:.3f}<extra></extra>",
+        ), row=1, col=i + 1)
+
+    fig.update_xaxes(showticklabels=False)
+    fig.update_yaxes(showticklabels=False)
+    for ann in fig.layout.annotations:
+        ann.font.size = 15
+
+    fig.update_layout(
+        width=max(cell_px_lah_ml * n_words_lah_ml * 5.3 + 40, MIN_WIDTH_LAH_ML),
+        height=row_px_lah_ml * n_classes_lah_ml + 215,
+        coloraxis=dict(colorscale="Viridis", colorbar=dict(
+            title="weight", orientation="h",
+            x=0.5, xanchor="center", y=-0.22, yanchor="top",
+            len=0.5, thickness=16,
+        )),
+        paper_bgcolor="white", plot_bgcolor="white",
+        margin=dict(t=120, b=90, l=20, r=20),
+        title_text=title0, title_font_size=13,
+        title_x=0.5, title_y=0.95, title_yanchor="top",
+    )
+
+    # Precompute every (example, level) combination up front, keyed "idx_level".
+    frames_lah_ml = {}
+    for idx in lab_idx_list_ml:
+        for lvl in LEVEL_NAMES:
+            z_i, x_i, y_i, title_i = _frame_for_ex_level_ml(idx, lvl)
+            frames_lah_ml[f"{idx}_{lvl}"] = {
+                "z": [zz.tolist() for zz in z_i], "x": x_i, "y": y_i, "title": title_i,
+            }
+
+    div_id_lah_ml    = "labatt-hierarchy-fig-ml"
+    plot_html_lah_ml = fig.to_html(full_html=False, include_plotlyjs=False, div_id=div_id_lah_ml)
+
+    nav_html_lah_ml = f"""
+<style>
+  .lah-ml-nav      {{ display:flex; align-items:center; gap:12px;
+                       justify-content:center; margin-bottom:10px; }}
+  .lah-ml-btn      {{ padding:6px 18px; background:#f0f0f0; border:1px solid #ccc;
+                       border-radius:5px; cursor:pointer; font-size:13px; }}
+  .lah-ml-btn:hover {{ background:#e0e0e0; }}
+  .lah-ml-count    {{ font-size:12px; color:#999; }}
+  .lah-ml-levels   {{ display:flex; align-items:center; gap:6px; justify-content:center;
+                       margin-bottom:14px; flex-wrap:wrap; }}
+  .lah-ml-levelbtn {{ padding:5px 14px; background:#f7f7f7; border:1px solid #ccc;
+                       border-radius:14px; cursor:pointer; font-size:12px; color:#555; }}
+  .lah-ml-levelbtn:hover  {{ background:#ececec; }}
+  .lah-ml-levelbtn.active {{ background:#4a148c; border-color:#4a148c; color:white; font-weight:700; }}
+  /* justify-content: safe center falls back to start-alignment instead of
+     clipping when the figure is wider than the container. */
+  .lah-ml-center   {{ display:flex; justify-content:safe center; overflow-x:auto; }}
+</style>
+<div class="lah-ml-nav">
+  <button class="lah-ml-btn" onclick="labattHierarchyNavMl(-1)">← Prev</button>
+  <span class="lah-ml-count" id="lah-ml-count"></span>
+  <button class="lah-ml-btn" onclick="labattHierarchyNavMl(1)">Next →</button>
+</div>
+<div class="lah-ml-levels" id="lah-ml-levels"></div>
+<div class="lah-ml-center">
+{plot_html_lah_ml}
+</div>
+<script>
+(function() {{
+  const FRAMES      = {json.dumps(frames_lah_ml)};
+  const EXAMPLE_IDS = {json.dumps(lab_idx_list_ml)};
+  const LEVELS      = {json.dumps(LEVEL_NAMES)};
+  const LEVEL_LABELS = {json.dumps([LEVEL_LABELS_ML[l] for l in LEVEL_NAMES])};
+  let curEx    = 0;
+  let curLevel = 0;
+
+  function renderLevelButtons() {{
+    let html = "";
+    for (let li = 0; li < LEVELS.length; li++) {{
+      const active = li === curLevel ? " active" : "";
+      html += '<button class="lah-ml-levelbtn' + active + '" ' +
+              'onclick="labattHierarchySetLevelMl(' + li + ')">' + LEVEL_LABELS[li] + '</button>';
+    }}
+    document.getElementById("lah-ml-levels").innerHTML = html;
+  }}
+
+  function render() {{
+    const f  = FRAMES[EXAMPLE_IDS[curEx] + "_" + LEVELS[curLevel]];
+    const gd = document.getElementById("{div_id_lah_ml}");
+    Plotly.update(gd, {{z: f.z, x: f.x, y: f.y}}, {{"title.text": f.title}});
+    document.getElementById("lah-ml-count").textContent = (curEx + 1) + " / " + EXAMPLE_IDS.length;
+    renderLevelButtons();
+  }}
+
+  window.labattHierarchyNavMl = function(d) {{
+    curEx = (curEx + d + EXAMPLE_IDS.length) % EXAMPLE_IDS.length;
+    render();
+  }};
+  window.labattHierarchySetLevelMl = function(li) {{
+    curLevel = li;
+    render();
+  }};
+
+  renderLevelButtons();
+  document.getElementById("lah-ml-count").textContent = "1 / " + EXAMPLE_IDS.length;
+}})();
+</script>
+"""
+    display(HTML(nav_html_lah_ml))
+```
 
 ### Are these explanations faithful across the hierarchy?
 
 *Method: Captum (Integrated Gradients), word-deletion stress test*
 
-The same faithfulness test used on the single-level page — delete the words Captum ranked as most important and watch the predicted class's probability collapse, against a random-removal control — run independently at each level. First, the raw curves themselves, one small panel per level; then the **gap** between the two curves (area between random and guided) as a single headline number per level: bigger means Captum's ranking is a more trustworthy guide to what that level's head actually uses.
+The same faithfulness test used on the single-level page — delete the words Captum ranked as most important and watch the predicted class's probability collapse, against a random-removal control — run independently at each level, one small panel per level.
 
 ```{python}
 #| label: fig-explain-faithfulness-curves-naf-multilevel
@@ -1744,248 +1915,4 @@ else:
     )
     fig.show()
 ```
-
-```{python}
-#| label: fig-explain-faithfulness-hierarchy-naf-multilevel
-#| fig-cap: "Faithfulness gap (area between random- and guided-removal curves) by hierarchy level."
-
-if not HAS_EXPLAIN_LA_ML:
-    print("Artifacts not yet available.")
-else:
-    def _faithfulness_gap_ml(fai, lvl):
-        g = np.nanmean(fai[f"guided_probs_{lvl}"], axis=0)
-        r = np.nanmean(fai[f"random_probs_{lvl}"], axis=0)
-        return float(np.trapezoid(r - g, fai[f"fractions_{lvl}"]))
-
-    gaps_ml = {
-        arch: [_faithfulness_gap_ml(EXPLAIN_FAITHFUL_ML[arch], lvl) for lvl in LEVEL_NAMES]
-        for arch in EXPLAIN_MODEL_KEYS_ML
-    }
-
-    fig = go.Figure()
-    for arch in EXPLAIN_MODEL_KEYS_ML:
-        fig.add_trace(go.Scatter(
-            x=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES], y=gaps_ml[arch],
-            mode="lines+markers", name=EXPLAIN_MODEL_LABELS_ML[arch],
-            line=dict(color=COLORS_ML.get(EXPLAIN_MODEL_LABELS_ML[arch], "grey"), width=2.5),
-            marker=dict(size=9),
-        ))
-    fig.update_layout(
-        xaxis_title="Hierarchy level", yaxis_title="Faithfulness gap (random − guided)",
-        legend_title="Architecture", height=420,
-    )
-    fig.show()
-```
-
-FastText's Captum ranking is the more trustworthy guide overall, by a wide and stable margin: its gap sits at ≈0.31 at every level except section (≈0.25), meaning its top-ranked words collapse the predicted class roughly 3× faster than random removal, regardless of hierarchy depth. Label Attention's gap is smaller everywhere — its post-hoc Captum explanation is a noticeably less reliable guide to what it actually uses — and, unlike FastText, it drifts upward from coarse to fine (0.045 at group → 0.133 at class → 0.171 at sub-class), though section (0.076) breaks strict monotonicity by sitting above group. Label attention's explanations only approach FastText's level of faithfulness at the finest sub-class head — consistent with the sharper-but-less-validated attributions seen just above.
-
-### Class geometry across the hierarchy
-
-*Method: class direction vectors*
-
-Does the classification space get more crowded as the hierarchy narrows? For each level, we take that level's class vectors (label-attention query vectors for Label Attention, linear classification-head weight rows for FastText) and compute the mean pairwise cosine similarity between classes — higher means classes sit closer together in that space.
-
-```{python}
-#| label: fig-explain-geometry-hierarchy-naf-multilevel
-#| fig-cap: "Mean pairwise cosine similarity between class direction vectors, by hierarchy level."
-
-if not HAS_EXPLAIN_LA_ML:
-    print("Artifacts not yet available.")
-else:
-    def _mean_cos_sim_ml(vecs, sample=2000, seed=0):
-        v = vecs / (np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9)
-        n = v.shape[0]
-        rng = np.random.default_rng(seed)
-        if n > sample:
-            idx = rng.choice(n, size=sample, replace=False)
-            v = v[idx]
-        sim = v @ v.T
-        iu = np.triu_indices(v.shape[0], k=1)
-        return float(sim[iu].mean())
-
-    geometry_ml = {
-        arch: [
-            _mean_cos_sim_ml(EXPLAIN_CLASS_VECS_ML[arch][f"class_vectors_{lvl}"])
-            for lvl in LEVEL_NAMES
-        ]
-        for arch in EXPLAIN_MODEL_KEYS_ML
-    }
-
-    fig = go.Figure()
-    for arch in EXPLAIN_MODEL_KEYS_ML:
-        fig.add_trace(go.Scatter(
-            x=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES], y=geometry_ml[arch],
-            mode="lines+markers", name=EXPLAIN_MODEL_LABELS_ML[arch],
-            line=dict(color=COLORS_ML.get(EXPLAIN_MODEL_LABELS_ML[arch], "grey"), width=2.5),
-            marker=dict(size=9),
-        ))
-    fig.update_layout(
-        xaxis_title="Hierarchy level", yaxis_title="Mean pairwise cosine similarity",
-        legend_title="Architecture", height=420,
-    )
-    fig.show()
-```
-
-FastText's classification-head geometry crowds together steadily as the hierarchy narrows: classes go from nearly orthogonal at section (mean cosine ≈ −0.02, 20 classes) to noticeably closer at sub-class (≈0.18, 679 classes) — roughly what you'd expect from packing more categories into the same embedding space. Label Attention's query vectors don't follow that pattern: they hover in a narrow ≈0.10–0.15 band at every level, with no clear crowding effect as the class count grows thirtyfold. Label attention's per-class query mechanism seems to carve out its own consistent notion of "how far apart classes should be," largely independent of how many there are — plain mean pooling's classification head has no such mechanism, and pays for it in geometry as classes multiply.
-
-### Do levels agree on which word matters?
-
-*Method: label-attention weights*
-
-Word attributions across the hierarchy already hinted that different levels can lean on different words for the same description. Here it's quantified across all 200 examples: does the single most-attended word at a coarser level match the single most-attended word at the sub-class level (Label Attention, mean over heads, predicted class)?
-
-```{python}
-#| label: fig-explain-agreement-hierarchy-naf-multilevel
-#| fig-cap: "Share of examples where the top-attended word at each level matches the top-attended word at the sub-class level (Label Attention)."
-
-if not HAS_EXPLAIN_LA_ML or lat_la_ml is None:
-    print("Label attention artifacts not yet available.")
-else:
-    def _top_word_ml(lvl, i):
-        words = lat_la_ml[f"words_{lvl}"][i]
-        row = np.abs(lat_la_ml[f"word_attn_{lvl}"][i][0])
-        n = min(len(words), len(row))
-        if n == 0:
-            return None
-        return str(words[int(np.argmax(row[:n]))]).lower()
-
-    _n_ex_lah_ml = len(lat_la_ml["words_sec"])
-    _coarser_levels_ml = [l for l in LEVEL_NAMES if l != "sub"]
-    agreement_ml = {}
-    for lvl in _coarser_levels_ml:
-        match, total = 0, 0
-        for i in range(_n_ex_lah_ml):
-            w_ref, w_lvl = _top_word_ml("sub", i), _top_word_ml(lvl, i)
-            if w_ref is not None and w_lvl is not None:
-                total += 1
-                match += int(w_ref == w_lvl)
-        agreement_ml[lvl] = 100 * match / total if total else 0.0
-
-    fig = go.Figure(go.Bar(
-        x=[LEVEL_LABELS_ML[l] for l in _coarser_levels_ml],
-        y=[agreement_ml[l] for l in _coarser_levels_ml],
-        marker=dict(color="#00BCD4"),
-        text=[f"{agreement_ml[l]:.0f}%" for l in _coarser_levels_ml], textposition="outside",
-    ))
-    fig.update_layout(
-        xaxis_title="Hierarchy level", yaxis_title="Share of examples agreeing with sub-class (%)",
-        height=380, yaxis=dict(range=[0, 70]),
-    )
-    fig.show()
-```
-
-The same word tops the ranking at both ends of the hierarchy about **half the time** — 45–49% across section, division, group and class, with no meaningful trend by depth. So the model is neither purely "reusing the same evidence at every level" nor "picking entirely fresh evidence each time": roughly one description in two gets the same star witness for its coarse and fine verdicts, and one in two doesn't — consistent with the geometry finding above, where label attention doesn't obviously reorganise itself level by level either.
-
-### Do confused sections share vocabulary?
-
-*Method: Captum (Integrated Gradients)*
-
-[Top section confusions](#top-section-confusions) found the model confuses **M** with **K** and **J** far more than other section pairs. Does that confusion show up as shared vocabulary — do the top attributed words for M-predicted examples overlap with those for K- or J-predicted examples more than for an unrelated pair of sections?
-
-```{python}
-#| label: fig-explain-confusion-vocab-naf-multilevel
-#| fig-cap: "Jaccard overlap between the top-15 attributed words of each section's predicted examples, for the most-confused pairs vs. a random baseline."
-
-if not HAS_EXPLAIN_LA_ML:
-    print("Artifacts not yet available.")
-else:
-    def _section_words_ml(cap, sec_code, top_n=15):
-        idx = np.where(np.array([code_of("sec", c) for c in cap["y_pred_sec"]]) == sec_code)[0]
-        scores, counts = {}, {}
-        for i in idx:
-            words = [str(w).lower() for w in cap["words_sec"][i]]
-            attn  = np.abs(cap["word_attn_sec"][i][0][:len(words)])
-            for w, s in zip(words, attn):
-                scores[w] = scores.get(w, 0.0) + float(s)
-                counts[w] = counts.get(w, 0) + 1
-        if not scores:
-            return set()
-        ranked = sorted(scores.items(), key=lambda kv: -kv[1] / counts[kv[0]])
-        return set(w for w, _ in ranked[:top_n])
-
-    def _jaccard_ml(a, b):
-        return len(a & b) / len(a | b) if a and b else None
-
-    _key_conf_ml  = "labatt" if "labatt" in EXPLAIN_MODEL_KEYS_ML else EXPLAIN_MODEL_KEYS_ML[0]
-    cap_conf_ml   = EXPLAIN_CAPTUM_ML[_key_conf_ml]
-    _pred_sec_ml  = np.array([code_of("sec", c) for c in cap_conf_ml["y_pred_sec"]])
-    _sections_present_ml = sorted(set(_pred_sec_ml.tolist()))
-    _sec_words_ml = {s: _section_words_ml(cap_conf_ml, s) for s in _sections_present_ml}
-
-    CONFUSED_PAIRS_ML = [("M", "K"), ("M", "J"), ("N", "M")]  # from Top section confusions above (unordered, direction doesn't change vocabulary overlap)
-    labels_conf_ml, vals_conf_ml = [], []
-    for a, b in CONFUSED_PAIRS_ML:
-        j = _jaccard_ml(_sec_words_ml.get(a, set()), _sec_words_ml.get(b, set()))
-        if j is not None:
-            labels_conf_ml.append(f"{a} / {b}")
-            vals_conf_ml.append(j)
-
-    rng_conf_ml       = np.random.default_rng(3)
-    _confused_codes_ml = {"M", "K", "J", "N"}
-    _others_ml        = [s for s in _sections_present_ml if s not in _confused_codes_ml]
-    _rand_pairs_ml    = [(a, b) for i, a in enumerate(_others_ml) for b in _others_ml[i + 1:]]
-    rng_conf_ml.shuffle(_rand_pairs_ml)
-    _baseline_js_ml = [
-        j for a, b in _rand_pairs_ml[:10]
-        if (j := _jaccard_ml(_sec_words_ml.get(a, set()), _sec_words_ml.get(b, set()))) is not None
-    ]
-    labels_conf_ml.append("random pairs (mean)")
-    vals_conf_ml.append(float(np.mean(_baseline_js_ml)) if _baseline_js_ml else 0.0)
-
-    fig = go.Figure(go.Bar(
-        x=labels_conf_ml, y=vals_conf_ml,
-        marker=dict(color=["#B71C1C"] * (len(labels_conf_ml) - 1) + ["#999999"]),
-        text=[f"{v:.3f}" for v in vals_conf_ml], textposition="outside",
-    ))
-    fig.update_layout(
-        xaxis_title=None, yaxis_title="Jaccard overlap (top-15 words)",
-        height=380, yaxis=dict(range=[0, 0.15]),
-    )
-    fig.show()
-```
-
-Barely at all: the top-15 attributed words for the confused M/K and M/J pairs overlap almost as little (Jaccard ≈ 0.00–0.03) as a random baseline pair of unrelated sections (≈0.01). The model's confusion between these sections isn't explained by them literally keying off the same words — whatever drives M getting mistaken for K or J happens example by example, or through subtler semantic proximity that a top-15-word overlap is too coarse to catch, not through a shared vocabulary visible at the corpus level.
-
-### Do attention heads specialize more at finer levels?
-
-*Method: label-attention weights*
-
-Label attention's 4 heads don't have to agree with each other. Here we ask whether that disagreement is itself a function of hierarchy depth: for the predicted class, how much do the 4 heads' individual "how concentrated is my attention" scores differ from one another, averaged across examples, per level?
-
-```{python}
-#| label: fig-explain-head-spec-naf-multilevel
-#| fig-cap: "Mean standard deviation, across the 4 attention heads, of each head's top-word attribution share (predicted class), by hierarchy level — higher means the heads behave more differently from one another."
-
-if not HAS_EXPLAIN_LA_ML or lat_la_ml is None:
-    print("Label attention artifacts not yet available.")
-else:
-    def _head_specialization_ml(lvl):
-        hw = lat_la_ml[f"head_word_attn_{lvl}"]  # (n_head, k_kept, n_words) per example
-        stds = []
-        for i in range(len(hw)):
-            m = hw[i][:, 0, :]  # (n_head, n_words), predicted class row
-            shares = []
-            for h in range(m.shape[0]):
-                row = np.abs(m[h])
-                total = row.sum()
-                if total > 0:
-                    shares.append(row.max() / total)
-            if len(shares) == m.shape[0]:
-                stds.append(np.std(shares))
-        return float(np.mean(stds)) * 100
-
-    spec_ml = [_head_specialization_ml(lvl) for lvl in LEVEL_NAMES]
-
-    fig = go.Figure(go.Scatter(
-        x=[LEVEL_LABELS_ML[l] for l in LEVEL_NAMES], y=spec_ml,
-        mode="lines+markers", line=dict(color="#00BCD4", width=2.5), marker=dict(size=9),
-    ))
-    fig.update_layout(
-        xaxis_title="Hierarchy level", yaxis_title="Std. across heads of top-word share (pp)",
-        height=380, yaxis=dict(range=[9, 12.5]),
-    )
-    fig.show()
-```
-
-A small but consistent climb: from 10.6 percentage points at section to 11.4 at sub-class, rising at every step in between. It's a modest effect, not a dramatic one, but it points the same direction as the concentration and geometry findings above: the finer the level, the more room — and apparently the more need — for the 4 heads to carve up the explanation differently from each other, rather than converging on the same handful of words.
 
