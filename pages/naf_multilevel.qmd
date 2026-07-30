@@ -353,34 +353,39 @@ def arch_label_ml(row):
     la = str(row["n_heads_label_attn"]) == "4"
     return "FastText + Label Attention" if la else "FastText"
 
+REMOTE_BASE = "https://minio.lab.sspcloud.fr/projet-text-classif/runs_csvs"
+
 def fetch_runs_ml(experiment_name: str, cache_path: Path, train_fraction: float) -> pd.DataFrame:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
         return pd.read_csv(cache_path)
-    raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
-    raw = raw[raw["status"] == "FINISHED"].copy()
-    raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
-    raw = raw.rename(columns={k: v for k, v in RENAME_COLS_ML.items() if k in raw.columns})
-    for col in ["emb_dim", "vocab_size"]:
-        raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
-    raw["lr"]         = raw["lr"].astype(float)
-    raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
-    raw["architecture"] = raw.apply(arch_label_ml, axis=1)
-    raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS_ML, keep="first")
+    try:
+        raw = pd.read_csv(f"{REMOTE_BASE}/{cache_path.relative_to('runs_csvs')}")
+    except Exception:
+        raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
+        raw = raw[raw["status"] == "FINISHED"].copy()
+        raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
+        raw = raw.rename(columns={k: v for k, v in RENAME_COLS_ML.items() if k in raw.columns})
+        for col in ["emb_dim", "vocab_size"]:
+            raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
+        raw["lr"]         = raw["lr"].astype(float)
+        raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
+        raw["architecture"] = raw.apply(arch_label_ml, axis=1)
+        raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS_ML, keep="first")
     raw.to_csv(cache_path, index=False)
     return raw
 
 # train_fraction=0.13 — earliest, smallest sweep
-df_ml_frac13 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac13.csv"), train_fraction=0.13)
+df_ml_frac13 = fetch_runs_ml("naf_multilevel", Path("runs_csvs/naf_multilevel/runs_frac13.csv"), train_fraction=0.13)
 
 # train_fraction=0.26 — intermediate sweep
-df_ml_frac26 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac26.csv"), train_fraction=0.26)
+df_ml_frac26 = fetch_runs_ml("naf_multilevel", Path("runs_csvs/naf_multilevel/runs_frac26.csv"), train_fraction=0.26)
 
 # train_fraction=0.52 — third sweep
-df_ml_frac52 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac52.csv"), train_fraction=0.52)
+df_ml_frac52 = fetch_runs_ml("naf_multilevel", Path("runs_csvs/naf_multilevel/runs_frac52.csv"), train_fraction=0.52)
 
 # train_fraction=1.0 — full usable set, the latest and largest sweep — used as the main dataset below
-df_ml_frac100 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac100.csv"), train_fraction=1.0)
+df_ml_frac100 = fetch_runs_ml("naf_multilevel", Path("runs_csvs/naf_multilevel/runs_frac100.csv"), train_fraction=1.0)
 
 df_ml = df_ml_frac100
 ```
@@ -424,6 +429,8 @@ fig.show()
 ```
 
 Growing the training data (163,615 → 327,230 → 654,461 → 1,208,579 examples) steadily improves mean validation loss for both architectures — FastText from ≈0.537 to ≈0.491 to ≈0.457 to ≈0.439, FastText + Label Attention from ≈0.723 to ≈0.591 to ≈0.492 to ≈0.440 — with the label-attention variant benefiting more at each step, the same pattern as [Single-level classification](naf_single.qmd): the gap between the two architectures narrows from ≈0.186 at 163,615 examples to ≈0.100 at 327,230 to ≈0.035 at 654,461 to essentially **zero** (≈0.002) at 1,208,579, as label attention gets enough examples per class to learn meaningful per-class query vectors — here shared jointly across five hierarchy levels rather than one — and fully closes the gap with plain FastText once the full training set is used.
+
+*Note: the two middle sweeps land on slightly different example counts than [Single-level classification](naf_single.qmd)'s own 314,230 / 628,461 (both endpoints, 163,615 and 1,208,579, match exactly) — most likely a small difference in which corpus snapshot each intermediate sweep ran against, not a discrepancy in how multi-level filters examples.*
 
 ### Capacity & robustness
 
@@ -1915,4 +1922,384 @@ else:
     )
     fig.show()
 ```
+
+## Going Further
+
+The [Architecture](#hyperparameter-sweep) section flagged this from the start, and [Effect of independent heads](#effect-of-independent-heads) confirmed it empirically: asking a coarser head directly beats truncating the sub-class model's own wrong guess by a wide margin — +8.6pp at section / +9.6pp at division for FastText, +9.9pp / +13.1pp for Label Attention — and mistakes really do stay localised to one head rather than dragging every level down together. That is a genuine win. But it is an *aggregate* statistic, measured over 50,000 test examples. For any *single* description, nothing in this architecture forces the five heads to agree with one another: they are five independent softmaxes, each trained against its own ground truth, with no term anywhere in the joint loss that ever compares one head's prediction to another's:
+
+```{python}
+#| echo: false
+from IPython.display import HTML
+HTML("""
+<div style="font-family:-apple-system,'Segoe UI',sans-serif;margin:1rem 0;display:flex;justify-content:center;">
+  <div style="background:#fce4ec;border:1.5px solid #e91e63;border-radius:9px;padding:10px 26px;text-align:center;">
+    <div style="font-size:15px;font-weight:700;color:#c2185b;">
+      ℒ = ℒ<sub>sec</sub> + ℒ<sub>div</sub> + ℒ<sub>grp</sub> + ℒ<sub>cls</sub> + ℒ<sub>sub</sub>
+    </div>
+    <div style="font-size:9.5px;color:#ad1457;margin-top:4px;">
+      five independent cross-entropies, summed — none of them ever look at each other
+    </div>
+  </div>
+</div>
+""")
+```
+
+That summation is also naive in a second way, independent of the consistency question below: it weights every level's loss equally, regardless of how many classes it has to distinguish (20 at section vs. 679 at sub-class) or how hard that distinction actually is. A fixed heuristic (e.g. weighting by log-class-count) or weights learned jointly with the model (uncertainty-based task weighting, GradNorm-style gradient balancing) are both straightforward extensions to try instead of the plain unweighted sum shown above.
+
+It is entirely possible — and does happen — for the section head to predict "C" on the very same example where the sub-class head's own true parent is "A". For a coding officer, five independent guesses that can openly contradict each other is not obviously more useful than the single flat prediction [Single-level classification](naf_single.qmd) produces: the ambiguity a single sub-class code hides hasn't disappeared here, it has just moved from "one wrong code" to "five codes that do not even agree with each other on the same activity". Sharing one token encoder, trained jointly, was hoped to nudge the heads toward implicit agreement — the geometry and word-agreement analyses in [Explainability](#explainability) suggest it does so only partially, and only as a side-effect, not by design. Three concrete ways to make the heads actually communicate follow, each trading off a different cost.
+
+### A Consistency Term in the Loss
+
+**The idea.** Add a sixth term to the training loss, alongside the five per-level cross-entropies, that explicitly penalises disagreement between levels instead of hoping the shared trunk produces it as a by-product. For every adjacent pair of levels, compare the coarser head's predicted distribution against the coarser-level *parent* of the finer head's own top prediction — since taking an argmax is not differentiable, this has to be a soft comparison over probabilities, not a hard equality check:
+
+Only **adjacent** pairs need comparing — section against division, division against group, group against class, class against sub-class — not every pair of levels. Consistency composes along the chain: if each adjacent link agrees, section and sub-class agree automatically as a consequence, with no need for a separate term jumping straight from one end of the hierarchy to the other.
+
+```{python}
+#| echo: false
+from IPython.display import HTML
+HTML("""
+<style>
+.gf1-blk  { display:flex; flex-direction:column; align-items:center; gap:4px; }
+.gf1-lbl  { font-size:8px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+.gf1-chip { border-radius:8px; padding:8px 11px; text-align:center; min-width:52px; }
+.gf1-code { font-size:12px; font-weight:700; }
+.gf1-link { display:flex; flex-direction:column; align-items:center; padding:0 2px; gap:2px; }
+.gf1-link span { font-size:13px; }
+.gf1-link small { font-size:7px; font-weight:700; white-space:nowrap; }
+</style>
+<div style="font-family:-apple-system,'Segoe UI',sans-serif;margin:1.2rem 0;">
+<div style="border:2px solid #d0d0d0;border-radius:14px;background:#fff;padding:22px 24px;box-shadow:0 2px 14px rgba(0,0,0,.06);max-width:760px;margin:0 auto;">
+
+  <p style="text-align:center;font-size:12.5px;font-weight:700;color:#1a2a4a;margin:0 0 4px;">
+    Four adjacent-pair checks, one example
+  </p>
+  <p style="text-align:center;font-size:9px;color:#999;margin:0 0 16px;">
+    Predicted codes shown below each level &mdash; the model's five heads, not the ground truth
+  </p>
+
+  <div style="display:flex;justify-content:center;align-items:center;flex-wrap:nowrap;">
+    <div class="gf1-blk">
+      <div class="gf1-lbl" style="color:#1565C0;">Section</div>
+      <div class="gf1-chip" style="background:#e8edf8;border:1.5px solid #1565C0;">
+        <div class="gf1-code" style="color:#0d47a1;">&quot;M&quot;</div>
+      </div>
+    </div>
+    <div class="gf1-link">
+      <span style="color:#c62828;">&#8596;</span>
+      <small style="color:#c62828;">&#10007; parent-of(&ldquo;62&rdquo;) = J</small>
+    </div>
+    <div class="gf1-blk">
+      <div class="gf1-lbl" style="color:#1976D2;">Division</div>
+      <div class="gf1-chip" style="background:#e0e9f7;border:1.5px solid #1976D2;">
+        <div class="gf1-code" style="color:#0d47a1;">&quot;62&quot;</div>
+      </div>
+    </div>
+    <div class="gf1-link">
+      <span style="color:#2e7d32;">&#8596;</span>
+      <small style="color:#2e7d32;">&#10003; agree</small>
+    </div>
+    <div class="gf1-blk">
+      <div class="gf1-lbl" style="color:#1e88e5;">Group</div>
+      <div class="gf1-chip" style="background:#d8e6f6;border:1.5px solid #1e88e5;">
+        <div class="gf1-code" style="color:#0d47a1;">&quot;620&quot;</div>
+      </div>
+    </div>
+    <div class="gf1-link">
+      <span style="color:#2e7d32;">&#8596;</span>
+      <small style="color:#2e7d32;">&#10003; agree</small>
+    </div>
+    <div class="gf1-blk">
+      <div class="gf1-lbl" style="color:#2196F3;">Class</div>
+      <div class="gf1-chip" style="background:#cfe0fb;border:1.5px solid #2196F3;">
+        <div class="gf1-code" style="color:#0d47a1;">&quot;6201&quot;</div>
+      </div>
+    </div>
+    <div class="gf1-link">
+      <span style="color:#2e7d32;">&#8596;</span>
+      <small style="color:#2e7d32;">&#10003; agree</small>
+    </div>
+    <div class="gf1-blk">
+      <div class="gf1-lbl" style="color:#42A5F5;">Sub-class</div>
+      <div class="gf1-chip" style="background:#c5dafa;border:1.5px solid #42A5F5;">
+        <div class="gf1-code" style="color:#0d47a1;">&quot;6201Y&quot;</div>
+      </div>
+    </div>
+  </div>
+
+  <div style="text-align:center;font-size:10px;color:#c62828;font-weight:700;margin:14px 0 4px;">
+    Only the Section &harr; Division link disagrees — the chain from Division down to Sub-class is internally consistent.
+  </div>
+
+  <div style="display:flex;justify-content:center;margin-top:10px;">
+    <div style="background:#e0f2f1;border:1.5px dashed #00897b;border-radius:9px;padding:10px 18px;text-align:center;max-width:620px;">
+      <div style="font-size:8.5px;font-weight:700;color:#00695c;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px;">New term &mdash; sum over adjacent pairs only</div>
+      <div style="font-size:13px;font-weight:700;color:#00695c;">
+        ℒ<sub>cons</sub> = &sum;<sub>k</sub> CE( P(L<sub>k</sub>),
+        parent-of(argmax&nbsp;P(L<sub>k+1</sub>)) )
+      </div>
+      <div style="font-size:8px;color:#00897b;margin-top:4px;">
+        L<sub>1..5</sub> = Section, Division, Group, Class, Sub-class
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;justify-content:center;margin-top:12px;">
+    <div style="background:#fce4ec;border:1.5px solid #e91e63;border-radius:9px;padding:8px 20px;text-align:center;">
+      <div style="font-size:12.5px;font-weight:700;color:#c2185b;">
+        ℒ = ℒ<sub>sec</sub>+ℒ<sub>div</sub>+ℒ<sub>grp</sub>+ℒ<sub>cls</sub>+ℒ<sub>sub</sub> &nbsp;+&nbsp; λ&middot;ℒ<sub>cons</sub>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
+""")
+```
+
+**Advantages**
+
+- Minimal architectural change: still five independent heads, same shared trunk, same inference cost — the fix lives entirely in the training loss, not in the model.
+- Directly targets the actual failure mode this page measured (disagreement between levels on the same example), rather than hoping raw accuracy gains fix it as a side-effect.
+- A single scalar λ controls the trade-off against the five per-level cross-entropies, and can be tuned — or annealed over training — independently of everything else.
+
+**Disadvantages**
+
+- Only a *soft* constraint: it makes disagreement less likely on average, it does not make it impossible — two heads can still contradict each other on any given example at inference time.
+- Making it differentiable is genuinely fiddly. As written above, `parent-of(argmax P(L_{k+1})))` runs an argmax — a discrete, non-differentiable operation — so in practice it has to be treated as a fixed pseudo-label at each step (a `.detach()`, no different from an ordinary ground-truth target). That makes the term **one-directional**: gradients flow into the coarser head (pushing it to match the finer head's current guess), but not back into the finer head, which never learns anything from this term. A "clean" fix exists — replace the argmax with the finer head's *full* distribution, marginalised into a soft target over parent classes via a fixed class→parent membership matrix (`P(L_{k+1}) @ M`, then `CE(P(L_k), that)` or a KL-divergence), which is differentiable both ways — but it means building and maintaining that membership matrix for every adjacent pair of levels (up to 679 × 20 entries at the coarsest split), for a bidirectionality that may or may not matter much in practice.
+
+### Cascaded Heads: Coarse → Fine
+
+**The idea.** Stop feeding every SentenceEmbedder the exact same shared trunk output in parallel — the fan-out shown in the [Architecture](#hyperparameter-sweep) diagram above. Instead, chain the five levels: the section head's own sentence embedding, taken *before* its final linear layer, is concatenated onto the shared trunk output before it ever reaches the division head's SentenceEmbedder, and so on down to sub-class. Each level literally conditions on what the coarser level just decided, mirroring how a human coding officer actually works — settle on the section first, then narrow down.
+
+```{python}
+#| echo: false
+from IPython.display import HTML
+HTML("""
+<style>
+.gf2b-badge  { border-radius:20px; padding:3px 10px; font-size:8px; font-weight:700; letter-spacing:.04em; white-space:nowrap; text-align:center; }
+.gf2b-se     { width:100%; border-radius:9px; padding:8px 6px; text-align:center; box-sizing:border-box; }
+.gf2b-se-title { font-size:9px; font-weight:700; }
+.gf2b-se-input { font-size:7.5px; margin-top:3px; font-family:monospace; }
+.gf2b-lin    { width:100%; background:#fff3e0; border:1.5px solid #f57c00; border-radius:9px; padding:7px 6px; text-align:center; box-sizing:border-box; }
+.gf2b-lin-t  { font-size:9px; font-weight:700; color:#bf360c; }
+.gf2b-yhat   { width:100%; background:#f8f9fa; border:1.5px solid #90a4ae; border-radius:9px; padding:6px 6px; text-align:center; box-sizing:border-box; }
+.gf2b-yhat-t { font-size:10.5px; font-weight:700; color:#333; }
+.gf2b-loss   { font-size:10.5px; font-weight:700; color:#c62828; text-align:center; }
+.gf2b-arrow  { font-size:13px; color:#bbb; text-align:center; }
+.gf2b-embarrow { font-size:8px; color:#999; text-align:center; white-space:nowrap; }
+.gf2b-connect  { font-size:15px; color:#999; text-align:center; white-space:nowrap; }
+.gf2b-connect small { display:block; font-size:6.5px; font-weight:700; color:#777; margin-top:1px; }
+</style>
+<div style="font-family:-apple-system,'Segoe UI',sans-serif;margin:1.2rem 0;">
+<div style="border:2px solid #d0d0d0;border-radius:14px;background:#fff;padding:22px 20px;box-shadow:0 2px 14px rgba(0,0,0,.06);overflow-x:auto;">
+
+  <p style="text-align:center;font-size:11.5px;font-weight:700;color:#1a2a4a;margin:0 0 16px;">Cascade &mdash; same SentenceEmbedder &rarr; Linear &rarr; &#375; per level, chained instead of forked</p>
+
+  <div style="display:grid;grid-template-columns:minmax(78px,1fr) 20px minmax(78px,1fr) 20px minmax(78px,1fr) 20px minmax(78px,1fr) 20px minmax(78px,1fr);column-gap:0;row-gap:8px;align-items:center;justify-items:center;min-width:600px;">
+
+    <!-- Row 1: badges (main columns only: 1,3,5,7,9) -->
+    <div class="gf2b-badge" style="grid-column:1;grid-row:1;background:#e8edf8;color:#1565C0;">Section</div>
+    <div class="gf2b-badge" style="grid-column:3;grid-row:1;background:#e0e9f7;color:#1976D2;">Division</div>
+    <div class="gf2b-badge" style="grid-column:5;grid-row:1;background:#d8e6f6;color:#1e88e5;">Group</div>
+    <div class="gf2b-badge" style="grid-column:7;grid-row:1;background:#cfe0fb;color:#2196F3;">Class</div>
+    <div class="gf2b-badge" style="grid-column:9;grid-row:1;background:#c5dafa;color:#2b8fe0;">Sub-class</div>
+
+    <!-- Row 2: SentenceEmbedder boxes -->
+    <div class="gf2b-se" style="grid-column:1;grid-row:2;background:#e8edf8;border:1.5px solid #1565C0;">
+      <div class="gf2b-se-title" style="color:#0d47a1;">SentenceEmbedder</div>
+      <div class="gf2b-se-input" style="color:#1976d2;">input: T</div>
+    </div>
+    <div class="gf2b-connect" style="grid-column:2;grid-row:2;">&#8594;<small>e<sub>sec</sub></small></div>
+    <div class="gf2b-se" style="grid-column:3;grid-row:2;background:#e0e9f7;border:1.5px solid #1976D2;">
+      <div class="gf2b-se-title" style="color:#0d47a1;">SentenceEmbedder</div>
+      <div class="gf2b-se-input" style="color:#1976d2;">input: T&oplus;e<sub>sec</sub></div>
+    </div>
+    <div class="gf2b-connect" style="grid-column:4;grid-row:2;">&#8594;<small>e<sub>div</sub></small></div>
+    <div class="gf2b-se" style="grid-column:5;grid-row:2;background:#d8e6f6;border:1.5px solid #1e88e5;">
+      <div class="gf2b-se-title" style="color:#0d47a1;">SentenceEmbedder</div>
+      <div class="gf2b-se-input" style="color:#1976d2;">input: T&oplus;e<sub>div</sub></div>
+    </div>
+    <div class="gf2b-connect" style="grid-column:6;grid-row:2;">&#8594;<small>e<sub>grp</sub></small></div>
+    <div class="gf2b-se" style="grid-column:7;grid-row:2;background:#cfe0fb;border:1.5px solid #2196F3;">
+      <div class="gf2b-se-title" style="color:#0d47a1;">SentenceEmbedder</div>
+      <div class="gf2b-se-input" style="color:#1976d2;">input: T&oplus;e<sub>grp</sub></div>
+    </div>
+    <div class="gf2b-connect" style="grid-column:8;grid-row:2;">&#8594;<small>e<sub>cls</sub></small></div>
+    <div class="gf2b-se" style="grid-column:9;grid-row:2;background:#c5dafa;border:1.5px solid #42A5F5;">
+      <div class="gf2b-se-title" style="color:#0d47a1;">SentenceEmbedder</div>
+      <div class="gf2b-se-input" style="color:#1976d2;">input: T&oplus;e<sub>cls</sub></div>
+    </div>
+
+    <!-- Row 3: embedding-output arrows down (main columns only) -->
+    <div class="gf2b-embarrow" style="grid-column:1;grid-row:3;">&#8595;&nbsp;e<sub>sec</sub></div>
+    <div class="gf2b-embarrow" style="grid-column:3;grid-row:3;">&#8595;&nbsp;e<sub>div</sub></div>
+    <div class="gf2b-embarrow" style="grid-column:5;grid-row:3;">&#8595;&nbsp;e<sub>grp</sub></div>
+    <div class="gf2b-embarrow" style="grid-column:7;grid-row:3;">&#8595;&nbsp;e<sub>cls</sub></div>
+    <div class="gf2b-embarrow" style="grid-column:9;grid-row:3;">&#8595;&nbsp;e<sub>sub</sub></div>
+
+    <!-- Row 4: Linear boxes -->
+    <div class="gf2b-lin" style="grid-column:1;grid-row:4;"><div class="gf2b-lin-t">Linear</div></div>
+    <div class="gf2b-lin" style="grid-column:3;grid-row:4;"><div class="gf2b-lin-t">Linear</div></div>
+    <div class="gf2b-lin" style="grid-column:5;grid-row:4;"><div class="gf2b-lin-t">Linear</div></div>
+    <div class="gf2b-lin" style="grid-column:7;grid-row:4;"><div class="gf2b-lin-t">Linear</div></div>
+    <div class="gf2b-lin" style="grid-column:9;grid-row:4;"><div class="gf2b-lin-t">Linear</div></div>
+
+    <!-- Row 5: arrows down -->
+    <div class="gf2b-arrow" style="grid-column:1;grid-row:5;">&#8595;</div>
+    <div class="gf2b-arrow" style="grid-column:3;grid-row:5;">&#8595;</div>
+    <div class="gf2b-arrow" style="grid-column:5;grid-row:5;">&#8595;</div>
+    <div class="gf2b-arrow" style="grid-column:7;grid-row:5;">&#8595;</div>
+    <div class="gf2b-arrow" style="grid-column:9;grid-row:5;">&#8595;</div>
+
+    <!-- Row 6: predictions -->
+    <div class="gf2b-yhat" style="grid-column:1;grid-row:6;"><div class="gf2b-yhat-t">&#375;<sub>sec</sub></div></div>
+    <div class="gf2b-yhat" style="grid-column:3;grid-row:6;"><div class="gf2b-yhat-t">&#375;<sub>div</sub></div></div>
+    <div class="gf2b-yhat" style="grid-column:5;grid-row:6;"><div class="gf2b-yhat-t">&#375;<sub>grp</sub></div></div>
+    <div class="gf2b-yhat" style="grid-column:7;grid-row:6;"><div class="gf2b-yhat-t">&#375;<sub>cls</sub></div></div>
+    <div class="gf2b-yhat" style="grid-column:9;grid-row:6;"><div class="gf2b-yhat-t">&#375;<sub>sub</sub></div></div>
+
+    <!-- Row 7: losses -->
+    <div class="gf2b-loss" style="grid-column:1;grid-row:7;">&Lscr;<sub>sec</sub></div>
+    <div class="gf2b-loss" style="grid-column:3;grid-row:7;">&Lscr;<sub>div</sub></div>
+    <div class="gf2b-loss" style="grid-column:5;grid-row:7;">&Lscr;<sub>grp</sub></div>
+    <div class="gf2b-loss" style="grid-column:7;grid-row:7;">&Lscr;<sub>cls</sub></div>
+    <div class="gf2b-loss" style="grid-column:9;grid-row:7;">&Lscr;<sub>sub</sub></div>
+
+  </div>
+
+  <p style="text-align:center;font-size:9px;color:#999;margin-top:14px;">
+    &oplus; = concatenation. Every column keeps the exact same SentenceEmbedder &rarr; Linear &rarr; &#375;<sub>k</sub> &rarr; &Lscr;<sub>k</sub> shape from the Architecture diagram above &mdash; the only change is what feeds each SentenceEmbedder: the shared trunk T alone for Section, T concatenated with the previous level's own embedding for every level after it.
+  </p>
+
+</div>
+</div>
+""")
+```
+
+**Advantages**
+
+- Consistency **by construction**, not by training incentive: a finer head structurally cannot ignore the coarser levels' representations, since they are part of its own input.
+- Mirrors the coding-officer workflow this page's own framing cares about: section first, then narrow down, rather than five simultaneous, unrelated guesses.
+
+**Disadvantages**
+
+- Purely sequential: five heads deep, computed one after another instead of in parallel off one shared trunk — slower to train and slower at inference, at exactly the scale (1.2M training examples) the [Hyperparameter sweep](#hyperparameter-sweep) above already found expensive to iterate on.
+- Errors now **propagate forward**: a wrong section early in the chain can drag every downstream head down with it, in a way today's independent heads structurally cannot.
+
+### Cross-Level Attention
+
+**The idea.** Keep all five levels' SentenceEmbedder outputs exactly as they are today, but insert a small **attention** block between them and their linear heads: treat the five per-level sentence embeddings as a sequence of five "tokens" and let each one attend to the other four before classification. A **linear-attention** formulation, rather than plain softmax self-attention, keeps this cheap — though with only five tokens the quadratic cost of full attention is already trivial, so the real appeal of a linear formulation here is a simpler, lower-variance mixing rule, not asymptotic complexity. What the attention block hands off to the five linear heads is then a genuine design choice, with two natural options:
+
+- **Variant A — stay separate.** Each level keeps its own enriched embedding (e′<sub>sec</sub>, …, e′<sub>sub</sub>), now informed by the other four, and its own unchanged linear head reads only its own embedding — closest to today's architecture, attention is the only new component.
+- **Variant B — pool into one.** The five enriched embeddings are pooled (mean, or a learned weighted pool) into a **single shared embedding**, and all five linear heads read that same vector. The only thing that can still make the five heads disagree is their own weights — the representation they see is, by construction, identical.
+
+```{python}
+#| echo: false
+from IPython.display import HTML
+HTML("""
+<style>
+.gf3b-tok   { display:flex; flex-direction:column; align-items:center; gap:3px; }
+.gf3b-name  { font-size:7px; font-weight:700; text-transform:uppercase; }
+.gf3b-box   { border-radius:7px; padding:5px 7px; font-size:8.5px; font-weight:700; text-align:center; min-width:44px; box-sizing:border-box; }
+.gf3b-lin   { background:#fff3e0; border:1.5px solid #f57c00; color:#bf360c; border-radius:7px; padding:4px 6px; font-size:8px; font-weight:700; text-align:center; min-width:44px; }
+.gf3b-yhat  { background:#f8f9fa; border:1.5px solid #90a4ae; color:#333; border-radius:7px; padding:4px 6px; font-size:8.5px; font-weight:700; text-align:center; min-width:44px; }
+.gf3b-arr5  { text-align:center; font-size:12px; color:#aaa; letter-spacing:5px; margin:5px 0; }
+.gf3b-panel { flex:1; min-width:230px; }
+.gf3b-ptitle{ text-align:center; font-size:10px; font-weight:700; color:#1a2a4a; margin:0 0 10px; }
+</style>
+<div style="font-family:-apple-system,'Segoe UI',sans-serif;margin:1.2rem 0;">
+<div style="border:2px solid #d0d0d0;border-radius:14px;background:#fff;padding:22px 22px 18px;box-shadow:0 2px 14px rgba(0,0,0,.06);max-width:820px;margin:0 auto;">
+
+  <p style="text-align:center;font-size:11.5px;font-weight:700;color:#1a2a4a;margin:0 0 14px;">Five per-level embeddings, attending to each other &mdash; then two ways to classify</p>
+
+  <div style="display:flex;justify-content:center;gap:8px;">
+    <div class="gf3b-tok"><div class="gf3b-name" style="color:#1565C0;">Section</div><div class="gf3b-box" style="background:#e8edf8;border:1.5px solid #1565C0;color:#0d47a1;">e<sub>sec</sub></div></div>
+    <div class="gf3b-tok"><div class="gf3b-name" style="color:#1976D2;">Division</div><div class="gf3b-box" style="background:#e0e9f7;border:1.5px solid #1976D2;color:#0d47a1;">e<sub>div</sub></div></div>
+    <div class="gf3b-tok"><div class="gf3b-name" style="color:#1e88e5;">Group</div><div class="gf3b-box" style="background:#d8e6f6;border:1.5px solid #1e88e5;color:#0d47a1;">e<sub>grp</sub></div></div>
+    <div class="gf3b-tok"><div class="gf3b-name" style="color:#2196F3;">Class</div><div class="gf3b-box" style="background:#cfe0fb;border:1.5px solid #2196F3;color:#0d47a1;">e<sub>cls</sub></div></div>
+    <div class="gf3b-tok"><div class="gf3b-name" style="color:#2b8fe0;">Sub-class</div><div class="gf3b-box" style="background:#c5dafa;border:1.5px solid #42A5F5;color:#0d47a1;">e<sub>sub</sub></div></div>
+  </div>
+
+  <div class="gf3b-arr5">&#8645;&#8645;&#8645;&#8645;&#8645;</div>
+
+  <div style="display:flex;justify-content:center;">
+    <div style="background:#ede7f6;border:1.5px solid #7b1fa2;border-radius:9px;padding:9px 26px;text-align:center;">
+      <div style="font-size:9px;font-weight:700;color:#4a148c;text-transform:uppercase;letter-spacing:.06em;">Linear attention</div>
+      <div style="font-size:8px;color:#7b1fa2;margin-top:2px;">5 levels attend to each other, bidirectionally</div>
+    </div>
+  </div>
+
+  <div style="display:flex;justify-content:center;align-items:center;gap:16px;margin:6px 0 2px;">
+    <span style="font-size:16px;color:#aaa;">&#8601;</span>
+    <span style="font-size:9px;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:.06em;">either / or &mdash; not both</span>
+    <span style="font-size:16px;color:#aaa;">&#8600;</span>
+  </div>
+
+  <div style="display:flex;justify-content:center;gap:22px;flex-wrap:wrap;margin-top:6px;">
+
+    <div class="gf3b-panel">
+      <p class="gf3b-ptitle">Variant A &mdash; stay separate</p>
+      <div style="display:flex;justify-content:center;gap:5px;">
+        <div class="gf3b-box" style="background:#e8edf8;border:1.5px solid #1565C0;color:#0d47a1;">e&prime;<sub>sec</sub></div>
+        <div class="gf3b-box" style="background:#e0e9f7;border:1.5px solid #1976D2;color:#0d47a1;">e&prime;<sub>div</sub></div>
+        <div class="gf3b-box" style="background:#d8e6f6;border:1.5px solid #1e88e5;color:#0d47a1;">e&prime;<sub>grp</sub></div>
+        <div class="gf3b-box" style="background:#cfe0fb;border:1.5px solid #2196F3;color:#0d47a1;">e&prime;<sub>cls</sub></div>
+        <div class="gf3b-box" style="background:#c5dafa;border:1.5px solid #42A5F5;color:#0d47a1;">e&prime;<sub>sub</sub></div>
+      </div>
+      <div class="gf3b-arr5" style="letter-spacing:32px;padding-left:10px;">&#8595;&#8595;&#8595;&#8595;&#8595;</div>
+      <div style="display:flex;justify-content:center;gap:5px;">
+        <div class="gf3b-lin">Linear</div><div class="gf3b-lin">Linear</div><div class="gf3b-lin">Linear</div><div class="gf3b-lin">Linear</div><div class="gf3b-lin">Linear</div>
+      </div>
+      <div class="gf3b-arr5" style="letter-spacing:32px;padding-left:10px;">&#8595;&#8595;&#8595;&#8595;&#8595;</div>
+      <div style="display:flex;justify-content:center;gap:5px;">
+        <div class="gf3b-yhat">&#375;<sub>sec</sub></div><div class="gf3b-yhat">&#375;<sub>div</sub></div><div class="gf3b-yhat">&#375;<sub>grp</sub></div><div class="gf3b-yhat">&#375;<sub>cls</sub></div><div class="gf3b-yhat">&#375;<sub>sub</sub></div>
+      </div>
+      <p style="text-align:center;font-size:8px;color:#999;margin-top:8px;">Each head still reads its own (now enriched) embedding.</p>
+    </div>
+
+    <div style="border-left:1.5px dashed #ddd;"></div>
+
+    <div class="gf3b-panel">
+      <p class="gf3b-ptitle">Variant B &mdash; pool into one</p>
+      <div style="display:flex;justify-content:center;">
+        <div style="background:#ede7f6;border:1.5px solid #7b1fa2;border-radius:8px;padding:6px 20px;text-align:center;">
+          <div style="font-size:9px;font-weight:700;color:#4a148c;">pool (mean / learned)</div>
+        </div>
+      </div>
+      <div style="text-align:center;font-size:12px;color:#aaa;margin:5px 0;">&#8595;</div>
+      <div style="display:flex;justify-content:center;">
+        <div class="gf3b-box" style="background:#ede7f6;border:1.5px solid #7b1fa2;color:#4a148c;min-width:70px;">e<sub>fused</sub></div>
+      </div>
+      <div style="text-align:center;font-size:11px;color:#aaa;margin:5px 0;">&#8601;&nbsp;&#8595;&nbsp;&#8595;&nbsp;&#8595;&nbsp;&#8600;</div>
+      <div style="display:flex;justify-content:center;gap:5px;">
+        <div class="gf3b-lin">Linear<br><span style="font-weight:400;font-size:7px;">W<sub>sec</sub></span></div>
+        <div class="gf3b-lin">Linear<br><span style="font-weight:400;font-size:7px;">W<sub>div</sub></span></div>
+        <div class="gf3b-lin">Linear<br><span style="font-weight:400;font-size:7px;">W<sub>grp</sub></span></div>
+        <div class="gf3b-lin">Linear<br><span style="font-weight:400;font-size:7px;">W<sub>cls</sub></span></div>
+        <div class="gf3b-lin">Linear<br><span style="font-weight:400;font-size:7px;">W<sub>sub</sub></span></div>
+      </div>
+      <div class="gf3b-arr5" style="letter-spacing:32px;padding-left:10px;">&#8595;&#8595;&#8595;&#8595;&#8595;</div>
+      <div style="display:flex;justify-content:center;gap:5px;">
+        <div class="gf3b-yhat">&#375;<sub>sec</sub></div><div class="gf3b-yhat">&#375;<sub>div</sub></div><div class="gf3b-yhat">&#375;<sub>grp</sub></div><div class="gf3b-yhat">&#375;<sub>cls</sub></div><div class="gf3b-yhat">&#375;<sub>sub</sub></div>
+      </div>
+      <p style="text-align:center;font-size:8px;color:#999;margin-top:8px;">Same e<sub>fused</sub> feeds all five heads — only their own weights (W<sub>sec</sub>&hellip;W<sub>sub</sub>) can still make them disagree.</p>
+    </div>
+
+  </div>
+
+</div>
+</div>
+""")
+```
+
+**Advantages**
+
+- **Bidirectional**: unlike the cascade above, a fine-level signal can inform a coarse prediction too, not only the reverse — the model learns which levels are informative for each other, rather than a fixed coarse-to-fine order being imposed on it.
+- Still one parallel pass over the five levels, not a five-deep sequential chain — much closer to today's cost profile than the cascade option above.
+- Variant B pushes consistency further than Variant A for free: forcing every head to read the exact same fused embedding removes one whole source of disagreement (different inputs) — whatever the heads still disagree on has to come from their own weights, not from seeing different things.
+
+**Disadvantages**
+
+- More moving parts than either other option: a new attention module (and, for Variant B, a pooling step) sits on top of the shared trunk and the five heads, adding parameters and one more thing to tune.
+- Variant B trades away per-level specialisation for that extra consistency: a single pooled embedding is a narrower bottleneck than five separate ones, so whatever nuance a level-specific embedding could capture on its own has to survive being averaged in with the other four first.
 
