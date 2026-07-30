@@ -1,7 +1,7 @@
 [project]
 name = "textclsf-insee"
 version = "0.1.0"
-description = "Add your description here"
+description = "Lightweight, explainable text classification for NAF business-activity coding at INSEE — FastText/FATE/Label Attention architectures, extended to a novel multi-level model predicting NAF's full hierarchy jointly from a single encoder."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13"
