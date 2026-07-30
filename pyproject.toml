@@ -3,6 +3,7 @@ name = "textclsf-insee"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.13"
 dependencies = [
     "datasets>=4.8.5",

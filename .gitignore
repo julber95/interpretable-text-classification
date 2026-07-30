@@ -7,6 +7,9 @@ env/
 lightning_logs/
 checkpoints/
 
+# MLflow local fallback store (used only when MLFLOW_TRACKING_URI is unset)
+mlruns/
+
 # Jupyter
 .ipynb_checkpoints/
 
@@ -38,8 +41,8 @@ naf_files/
 
 index.html
 pages/*.html
-pages/slides/*.html
-pages/slides/*_files/
+pages/slides/**/*.html
+pages/slides/**/*_files/
 pages/slides_files/
 /_site/
 /site_libs/
@@ -52,3 +55,8 @@ results/**/*.npz
 results/**/*.parquet
 results/**/*.json
 **/*.quarto_ipynb
+
+# Cached MLflow run tables — fetched from s3://projet-text-classif/runs_csvs/
+# (or regenerated from a live MLflow tracking server) by pages/*.qmd at render
+# time, see fetch_runs()/fetch_runs_ml().
+runs_csvs/
