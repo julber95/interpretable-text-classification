@@ -1,8 +1,9 @@
+# @package _global_
 defaults:
-  - dataset: ag_news
-  - tokenizer: ngram
-  - model: default
-  - training: default
+  - /dataset: ag_news
+  - /tokenizer: ngram
+  - /model: default
+  - /training: default
   - _self_
 
 seed: 42

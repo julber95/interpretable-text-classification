@@ -1,5 +1,6 @@
+# @package _global_
 defaults:
-  - dataset: naf
+  - /dataset: naf
   - _self_
 
 run_id: "???"          # MLflow run_id of the multi-level model to explain

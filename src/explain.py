@@ -630,7 +630,7 @@ def _log_artifact_safely(local_path: Path, fname: str, run_id: str) -> None:
         log.exception(f"Failed to upload {fname} to run {run_id} — skipping it, continuing with the rest.")
 
 
-@hydra.main(config_path="../conf", config_name="explain", version_base=None)
+@hydra.main(config_path="../conf", config_name="entrypoint/explain", version_base=None)
 def main(cfg: DictConfig) -> None:
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
     if tracking_uri:

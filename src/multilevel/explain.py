@@ -422,7 +422,7 @@ def _run_faithfulness_level(
     }
 
 
-@hydra.main(config_path="../../conf", config_name="explain_multilevel", version_base=None)
+@hydra.main(config_path="../../conf", config_name="entrypoint/explain_multilevel", version_base=None)
 def main(cfg: DictConfig) -> None:
     tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
     if tracking_uri:

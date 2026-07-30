@@ -1,8 +1,9 @@
+# @package _global_
 defaults:
-  - dataset: naf
-  - tokenizer: wordpiece
-  - model: default
-  - training: default
+  - /dataset: naf
+  - /tokenizer: wordpiece
+  - /model: default
+  - /training: default
   - _self_
 
 seed: 42

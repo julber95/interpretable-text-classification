@@ -1,5 +1,6 @@
+# @package _global_
 defaults:
-  - dataset: amazon
+  - /dataset: amazon
   - _self_
 
 run_id_labatt:  "8286dc715ad54791bbb1407d840d528b"   # best Label Attention model
