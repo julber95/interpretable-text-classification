@@ -7,7 +7,7 @@ format:
   revealjs:
     slide-number: true
     theme: insee-theme.scss
-    logo: ../../assets/insee_logo.svg
+    logo: ../../../assets/insee_logo.svg
     scrollable: true
     embed-resources: true
     transition: fade
