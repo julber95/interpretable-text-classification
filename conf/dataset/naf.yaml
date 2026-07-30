@@ -1,6 +1,6 @@
 name: naf
 data_files:
-  train: ${oc.env:NAF_PARQUET_PATH}
+  train: ${oc.env:NAF_PARQUET_PATH,https://minio.lab.sspcloud.fr/projet-text-classif/datasets/naf_merged.parquet}
 text_col: libelle_cleaned
 label_col: nace2025
 val_size: 50000

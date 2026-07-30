@@ -6,12 +6,15 @@ import numpy as np
 from sklearn.preprocessing import LabelEncoder as SKLabelEncoder
 
 # All 5 NAF 2025 levels — columns already present in naf_merged.parquet.
+# Code counts below are the full official nomenclature size, not what ends up
+# observed in a given train split (which is usually smaller, e.g. ~20 sections
+# instead of 21 — some codes are rare enough to be absent from a random split).
 NACE_LEVELS: list[tuple[str, int | None]] = [
     ("sec", None),  # Section   — 21 codes (A–U)
-    ("div", 2),     # Division  — 84 codes
-    ("grp", 3),     # Group     — ~287 codes
-    ("cls", 4),     # Class     — ~651 codes
-    ("sub", 5),     # Sub-class — ~680 codes
+    ("div", 2),     # Division  — 87 codes
+    ("grp", 3),     # Group     — 287 codes
+    ("cls", 4),     # Class     — 651 codes
+    ("sub", 5),     # Sub-class — 747 codes
 ]
 
 _DEFAULT_URL = "https://minio.lab.sspcloud.fr/projet-text-classif/datasets/naf_merged.parquet"

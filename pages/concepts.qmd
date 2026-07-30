@@ -123,7 +123,7 @@ A concrete example with a **sigmoid output** $\sigma(z) = \frac{1}{1+e^{-z}}$, w
 | Logit $z$ | Output $\sigma(z)$ | Gradient $\sigma'(z)$ | Gradient × logit |
 |---|---|---|---|
 | 0.5 (uncertain) | 0.62 | **0.24** | 0.12 |
-| 2 (moderately confident) | 0.88 | **0.10** | 0.21 |
+| 2 (moderately confident) | 0.88 | **0.10** | 0.20 |
 | **10 (very confident)** | **0.9999** | **0.0001** | **0.001** |
 
 When the logit reaches 10, $\sigma$ is deep in its flat region: moving from the baseline $z = 0$ to $z = 10$ pushed the output from 0.50 to 0.9999 (a contribution of $\approx 0.50$), yet the local gradient at $z = 10$ is $0.0001$, making the naive attribution 500 times smaller than the actual contribution.

@@ -7,7 +7,7 @@ spec:
   serviceAccountName: argo-workflows
   templates:
 
-    # ── DAG: 3 GPUs en parallèle, un par lr ───────────────────────────────────
+    # ── DAG: 3 GPUs in parallel, one per lr ────────────────────────────────────
     - name: main-dag
       dag:
         tasks:
