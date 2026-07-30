@@ -54,6 +54,7 @@ schemas/
 results/**/*.npz
 results/**/*.parquet
 results/**/*.json
+results/**/*.csv
 **/*.quarto_ipynb
 
 # Cached MLflow run tables — fetched from s3://projet-text-classif/runs_csvs/
