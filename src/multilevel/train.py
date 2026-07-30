@@ -9,10 +9,8 @@ Usage:
     uv run python -m src.multilevel.train model.embedding_dim=256 model.n_heads_label_attention=4
 """
 
-import logging
 import os
 import time
-import warnings
 from pathlib import Path
 
 import hydra
@@ -29,28 +27,16 @@ from torchTextClassifiers.tokenizers import WordPieceTokenizer
 from src.multilevel import MultiLevelCrossEntropyLoss
 from src.multilevel.naf_data import NACE_LEVELS, load_naf
 from src.multilevel.naf_model import build_model
+from src.utils import resolve_accelerator, suppress_noisy_logs
 
-warnings.filterwarnings("ignore", category=UserWarning, module="pytorch_lightning")
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
-logging.getLogger("datasets").setLevel(logging.WARNING)
+suppress_noisy_logs()
 
 RESULTS_DIR = Path(__file__).parent.parent.parent / "results"
 
 
-def _resolve_accelerator() -> str:
-    if torch.cuda.is_available():
-        try:
-            torch.zeros(1).cuda()
-            return "cuda"
-        except RuntimeError:
-            pass
-    return "cpu"
-
-
-@hydra.main(config_path="../../conf", config_name="train_multilevel", version_base=None)
+@hydra.main(config_path="../../conf", config_name="entrypoint/train_multilevel", version_base=None)
 def main(cfg: DictConfig):
-    accelerator = _resolve_accelerator()
+    accelerator = resolve_accelerator()
 
     dataset_cfg = OmegaConf.to_container(cfg.dataset, resolve=True)
     tok_cfg     = OmegaConf.to_container(cfg.tokenizer, resolve=True)
@@ -66,9 +52,12 @@ def main(cfg: DictConfig):
     print(f"lr={t.lr} | batch_size={t.batch_size}")
     print(f"{'='*50}")
 
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
-    if tracking_uri:
-        mlflow.set_tracking_uri(tracking_uri)
+    # Always resolve to one explicit URI (env var, or an absolute local fallback)
+    # and set it before anything touches MLflow — leaving this unset let the
+    # fluent client and MLFlowLogger below resolve "mlruns" independently,
+    # which could disagree on the experiment/run location.
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI") or Path("mlruns").resolve().as_uri()
+    mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(cfg.get("experiment_name", "naf_multilevel"))
 
     train_fraction = cfg.get("train_fraction", 1.0)
@@ -100,7 +89,7 @@ def main(cfg: DictConfig):
 
     with mlflow.start_run():
         mlflow.log_params({
-            "embedding_dim":           emb_dim,
+            "emb_dim":                 emb_dim,
             "n_layers":                0,
             "vocab_size":              vocab_size,
             "n_heads_label_attention": n_heads_label_attn,
@@ -116,7 +105,7 @@ def main(cfg: DictConfig):
 
         mlf_logger = MLFlowLogger(
             experiment_name=cfg.get("experiment_name", "naf_multilevel"),
-            tracking_uri=tracking_uri or "mlruns",
+            tracking_uri=tracking_uri,
             run_id=mlflow.active_run().info.run_id,
         )
         steps_per_epoch = max(1, len(X_train) // t.batch_size)
@@ -150,8 +139,8 @@ def main(cfg: DictConfig):
 
         preds_per_level = batch_predict_multilevel(X_test)
 
-        for (name, _), n_cls, preds in zip(NACE_LEVELS, num_classes_per_level, preds_per_level):
-            y_true = y_test[:, NACE_LEVELS.index((name, _))]
+        for lvl, ((name, _), n_cls, preds) in enumerate(zip(NACE_LEVELS, num_classes_per_level, preds_per_level)):
+            y_true = y_test[:, lvl]
             acc    = round(accuracy_score(y_true, preds), 4)
             f1     = round(f1_score(y_true, preds, average="macro", zero_division=0), 4)
             mlflow.log_metrics({

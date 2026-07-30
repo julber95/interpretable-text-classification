@@ -12,10 +12,8 @@ Override any config value from the CLI. Config groups:
     training:  default (then override training.lr, training.batch_size, etc.)
 """
 
-import logging
 import os
 import time
-import warnings
 from pathlib import Path
 
 import hydra
@@ -33,11 +31,9 @@ from torchTextClassifiers import ModelConfig, TrainingConfig, torchTextClassifie
 from torchTextClassifiers.tokenizers import NGramTokenizer
 from torchTextClassifiers.value_encoder import DictEncoder, ValueEncoder
 
-# Suppress noisy logs
-warnings.filterwarnings("ignore", category=UserWarning, module="pytorch_lightning")
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
-logging.getLogger("datasets").setLevel(logging.WARNING)
+from src.utils import resolve_accelerator, suppress_noisy_logs
+
+suppress_noisy_logs()
 
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 
@@ -181,8 +177,8 @@ def build_tokenizer(tok_cfg: dict, X_train: np.ndarray):
     if tok_cfg["type"] == "ngram":
         tokenizer = NGramTokenizer(
             min_count=tok_cfg.get("min_count", 1),
-            min_n=tok_cfg.get("min_n", 3),
-            max_n=tok_cfg.get("max_n", 6),
+            min_n=tok_cfg.get("min_n", 2),
+            max_n=tok_cfg.get("max_n", 4),
             num_tokens=tok_cfg.get("num_tokens", 100000),
             len_word_ngrams=tok_cfg.get("len_word_ngrams", 1),
         )
@@ -201,20 +197,9 @@ def build_tokenizer(tok_cfg: dict, X_train: np.ndarray):
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
-def _resolve_accelerator() -> str:
-    """Test actual CUDA init — is_available() can return True even when init fails."""
-    if torch.cuda.is_available():
-        try:
-            torch.zeros(1).cuda()
-            return "cuda"
-        except RuntimeError:
-            pass
-    return "cpu"
-
-
-@hydra.main(config_path="../conf", config_name="train", version_base=None)
+@hydra.main(config_path="../conf", config_name="entrypoint/train", version_base=None)
 def main(cfg: DictConfig):
-    accelerator = _resolve_accelerator()
+    accelerator = resolve_accelerator()
 
     dataset_cfg = OmegaConf.to_container(cfg.dataset, resolve=True)
     tok_cfg     = OmegaConf.to_container(cfg.tokenizer, resolve=True)
@@ -228,9 +213,12 @@ def main(cfg: DictConfig):
     print(f"lr={t.lr} | batch_size={t.batch_size}")
     print(f"{'='*50}")
 
-    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
-    if tracking_uri:
-        mlflow.set_tracking_uri(tracking_uri)
+    # Always resolve to one explicit URI (env var, or an absolute local fallback)
+    # and set it before anything touches MLflow — leaving this unset let the
+    # fluent client and MLFlowLogger below resolve "mlruns" independently,
+    # which could disagree on the experiment/run location.
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI") or Path("mlruns").resolve().as_uri()
+    mlflow.set_tracking_uri(tracking_uri)
     # 1 MLflow experiment per dataset — all hyperparameter runs for a dataset are grouped together
     experiment_name = cfg.get("experiment_name") or dataset_name
     mlflow.set_experiment(experiment_name)
@@ -296,7 +284,7 @@ def main(cfg: DictConfig):
 
         mlf_logger = MLFlowLogger(
             experiment_name=dataset_name,
-            tracking_uri=tracking_uri or "mlruns",
+            tracking_uri=tracking_uri,
             run_id=mlflow.active_run().info.run_id,
         )
         steps_per_epoch = max(1, len(X_train) // t.batch_size)
