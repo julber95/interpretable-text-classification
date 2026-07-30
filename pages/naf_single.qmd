@@ -37,34 +37,39 @@ def arch_label(row):
     suffix = " + Label Attention" if la else ""
     return f"FATE (L={row['n_layers']}){suffix}"
 
+REMOTE_BASE = "https://minio.lab.sspcloud.fr/projet-text-classif/runs_csvs"
+
 def fetch_runs(experiment_name: str, cache_path: Path, train_fraction: float) -> pd.DataFrame:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
         return pd.read_csv(cache_path)
-    raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
-    raw = raw[raw["status"] == "FINISHED"].copy()
-    raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
-    raw = raw.rename(columns={k: v for k, v in RENAME_COLS.items() if k in raw.columns})
-    for col in ["emb_dim", "n_layers", "vocab_size"]:
-        raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
-    raw["lr"]         = raw["lr"].astype(float)
-    raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
-    raw["architecture"] = raw.apply(arch_label, axis=1)
-    raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS, keep="first")
+    try:
+        raw = pd.read_csv(f"{REMOTE_BASE}/{cache_path.relative_to('runs_csvs')}")
+    except Exception:
+        raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
+        raw = raw[raw["status"] == "FINISHED"].copy()
+        raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
+        raw = raw.rename(columns={k: v for k, v in RENAME_COLS.items() if k in raw.columns})
+        for col in ["emb_dim", "n_layers", "vocab_size"]:
+            raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
+        raw["lr"]         = raw["lr"].astype(float)
+        raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
+        raw["architecture"] = raw.apply(arch_label, axis=1)
+        raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS, keep="first")
     raw.to_csv(cache_path, index=False)
     return raw
 
 # train_fraction=0.13 — earliest, smallest sweep
-df_frac13 = fetch_runs("naf", Path("results/naf/runs_frac13.csv"), train_fraction=0.13)
+df_frac13 = fetch_runs("naf", Path("runs_csvs/naf/runs_frac13.csv"), train_fraction=0.13)
 
 # train_fraction=0.26 — intermediate sweep
-df_frac26 = fetch_runs("naf", Path("results/naf/runs_frac26.csv"), train_fraction=0.26)
+df_frac26 = fetch_runs("naf", Path("runs_csvs/naf/runs_frac26.csv"), train_fraction=0.26)
 
 # train_fraction=0.52 — third sweep
-df_frac52 = fetch_runs("naf", Path("results/naf/runs_frac52.csv"), train_fraction=0.52)
+df_frac52 = fetch_runs("naf", Path("runs_csvs/naf/runs_frac52.csv"), train_fraction=0.52)
 
 # train_fraction=1.0 — full usable set, the latest and largest sweep
-df_frac100 = fetch_runs("naf", Path("results/naf/runs_frac100.csv"), train_fraction=1.0)
+df_frac100 = fetch_runs("naf", Path("runs_csvs/naf/runs_frac100.csv"), train_fraction=1.0)
 
 df = df_frac100
 ```
@@ -859,7 +864,7 @@ Three complementary instruments are used throughout:
 
 - **Layer Integrated Gradients (Captum)**: a gradient-based, post-hoc attribution method that assigns every input word a signed score for every class: positive = pushes the prediction toward that sub-class, negative = pushes away. It only needs a forward+backward pass through the model, so it can be computed identically for both architectures which is exactly what makes the comparison fair.
 - **Label-attention weights**: for the Label Attention model only: the *raw cross-attention weights* between each class query and the description's tokens. An explanation that's *built into* the architecture, rather than reconstructed after the fact.
-- **Class direction vectors**: we compare two 679×emb_dim matrices, one per model: the label-attention queries (`label_embeds`, 679×64) from the Label Attention model, and the weight matrix of the linear classification head (`linear_weight`, 679×512) from FastText. We examine how the 679 sub-class vectors are arranged relative to each other in each matrix, to see what each architecture's internal geometry reveals about the classification space.
+- **Class direction vectors**: we compare two 679×emb_dim matrices, one per model: the label-attention queries (`label_embeds`, 679×emb_dim) from the Label Attention model, and the weight matrix of the linear classification head (`linear_weight`, 679×emb_dim) from FastText. We examine how the 679 sub-class vectors are arranged relative to each other in each matrix, to see what each architecture's internal geometry reveals about the classification space.
 
 ```{python}
 #| label: load-explain-artifacts-naf

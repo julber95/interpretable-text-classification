@@ -11,50 +11,53 @@ from pathlib import Path
 import mlflow
 import pandas as pd
 
-CACHE_PATH = Path("results/amazon/runs.csv")
+REMOTE_BASE = "https://minio.lab.sspcloud.fr/projet-text-classif/runs_csvs"
+CACHE_PATH = Path("runs_csvs/amazon/runs.csv")
 CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+def arch_label(row):
+    la = str(row["n_heads_label_attn"]) == "4"
+    if row["n_layers"] == 0:
+        return "FastText + Label Attention" if la else "FastText"
+    suffix = " + Label Attention" if la else ""
+    return f"FATE (L={row['n_layers']}){suffix}"
 
 if CACHE_PATH.exists():
     df = pd.read_csv(CACHE_PATH)
     if "metrics.train_time_s" in df.columns:
         df = df.rename(columns={"metrics.train_time_s": "train_time_s"})
 else:
-    df = mlflow.search_runs(experiment_names=["amazon"], max_results=2000)
-    df = df[df["status"] == "FINISHED"].copy()
-    df = df.rename(columns={
-        "params.emb_dim":                  "emb_dim",
-        "params.n_layers":                 "n_layers",
-        "params.n_head":                   "n_head",
-        "params.n_heads_label_attention":  "n_heads_label_attn",
-        "params.vocab_size":               "vocab_size",
-        "params.lr":                       "lr",
-        "metrics.num_params":              "num_params",
-        "metrics.test_accuracy":           "test_accuracy",
-        "metrics.test_f1_macro":           "test_f1_macro",
-        "metrics.train_time_s":            "train_time_s",
-    })
-    
+    try:
+        df = pd.read_csv(f"{REMOTE_BASE}/amazon/runs.csv")
+    except Exception:
+        df = mlflow.search_runs(experiment_names=["amazon"], max_results=2000)
+        df = df[df["status"] == "FINISHED"].copy()
+        df = df.rename(columns={
+            "params.emb_dim":                  "emb_dim",
+            "params.n_layers":                 "n_layers",
+            "params.n_head":                   "n_head",
+            "params.n_heads_label_attention":  "n_heads_label_attn",
+            "params.vocab_size":               "vocab_size",
+            "params.lr":                       "lr",
+            "metrics.num_params":              "num_params",
+            "metrics.test_accuracy":           "test_accuracy",
+            "metrics.test_f1_macro":           "test_f1_macro",
+            "metrics.train_time_s":            "train_time_s",
+        })
 
-    client = mlflow.MlflowClient()
-    def get_min_val_loss(run_id):
-        history = client.get_metric_history(run_id, "val_loss")
-        return min(m.value for m in history) if history else None
+        client = mlflow.MlflowClient()
+        def get_min_val_loss(run_id):
+            history = client.get_metric_history(run_id, "val_loss")
+            return min(m.value for m in history) if history else None
 
-    df["min_val_loss"] = df["run_id"].apply(get_min_val_loss)
+        df["min_val_loss"] = df["run_id"].apply(get_min_val_loss)
 
-    for col in ["emb_dim", "n_layers", "vocab_size"]:
-        df[col] = df[col].astype(int)
-    df["lr"] = df["lr"].astype(float)
-    df["num_params"] = df["num_params"].astype(int)
+        for col in ["emb_dim", "n_layers", "vocab_size"]:
+            df[col] = df[col].astype(int)
+        df["lr"] = df["lr"].astype(float)
+        df["num_params"] = df["num_params"].astype(int)
+        df["architecture"] = df.apply(arch_label, axis=1)
 
-    def arch_label(row):
-        la = str(row["n_heads_label_attn"]) == "4"
-        if row["n_layers"] == 0:
-            return "FastText + Label Attention" if la else "FastText"
-        suffix = " + Label Attention" if la else ""
-        return f"FATE (L={row['n_layers']}){suffix}"
-
-    df["architecture"] = df.apply(arch_label, axis=1)
     df.to_csv(CACHE_PATH, index=False)
 ```
 
@@ -889,7 +892,7 @@ HTML(html)
 
 ## Explainability
 
-This section turns the spotlight on *why* the models predict what they predict, not just *how often* they're right. The analysis is built around a focused comparison: our **best-performing model** : FATE (L=4) with Label Attention is set against its direct counterpart **FATE (L=4) without label attention** (identical architecture and hyperparameters, mean pooling as the sole difference). This pairing isolates the contribution of the label attention mechanism to how the model reasons about text. Both models are probed with an identical battery of analyses on the *same* 200 sampled test reviews, so every figure below is a direct, paired comparison rather than two separate reports glued together.
+This section turns the spotlight on *why* the models predict what they predict, not just *how often* they're right. The analysis is built around a focused comparison: our **best-performing model** : FATE (L=4) without Label Attention is set against its direct counterpart **FATE (L=4) with label attention** (identical architecture and hyperparameters, mean pooling as the sole difference). This pairing isolates the contribution of the label attention mechanism to how the model reasons about text. Both models are probed with an identical battery of analyses on the *same* 200 sampled test reviews, so every figure below is a direct, paired comparison rather than two separate reports glued together.
 
 Four complementary instruments are used throughout:
 
@@ -1858,12 +1861,12 @@ Both models trace the same qualitative shape: a "V" rather than a smooth 1★→
 
 *Method: Captum (Integrated Gradients)*
 
-All the analyses so far take attribution scores at face value but a high attribution score is only meaningful if the model would *actually* change its mind were that word removed. This is the **faithfulness** question, and the standard way to test it the "comprehensiveness" test from the ERASER benchmark : progressively delete the words Captum ranked as most important for the predicted class, and watch how fast that class's predicted probability collapses. As a control, we also delete the *same number* of **randomly chosen** words, averaged over 3 draws, isolating the effect of *which* words are removed from the trivial effect of mutilating the sentence at all.
+All the analyses so far take attribution scores at face value but a high attribution score is only meaningful if the model would *actually* change its mind were that word removed. This is the **faithfulness** question, and the standard way to test it is the "comprehensiveness" test from the ERASER benchmark : progressively delete the words Captum ranked as most important for the predicted class, and watch how fast that class's predicted probability collapses. As a control, we also delete the *same number* of **randomly chosen** words, averaged over 3 draws, isolating the effect of *which* words are removed from the trivial effect of mutilating the sentence at all.
 
 How to read it:
 
 - The **solid lines** (guided removal) should drop *faster* than the **dotted lines** (random removal) of the same colour : the larger that gap, the more the explanation reflects words the model genuinely depends on, rather than scores that merely *correlate* with importance without *causing* it.
-- If a model's guided and random curves are nearly **superimposed**, its Captum attributions are not very faithful: deleting the words it called "important" hurts the prediction no more than deleting random ones  the explanation is, in a meaningful sense, decorative.
+- If a model's guided and random curves are nearly **superimposed**, its Captum attributions are not very faithful: deleting the words it called "important" hurts the prediction no more than deleting random ones — the explanation is, in a meaningful sense, decorative.
 - Comparing the **gap** between the two curves across architectures tells you which one's attributions are more trustworthy *as a debugging/auditing tool* — a property that matters in production independently of raw accuracy.
 
 ```{python}

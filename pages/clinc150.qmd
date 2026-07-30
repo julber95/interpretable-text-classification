@@ -35,27 +35,32 @@ def arch_label(row):
     suffix = " + Label Attention" if la else ""
     return f"FATE (L={row['n_layers']}){suffix}"
 
+REMOTE_BASE = "https://minio.lab.sspcloud.fr/projet-text-classif/runs_csvs"
+
 def fetch_runs(experiment_name: str, cache_path: Path) -> pd.DataFrame:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
         return pd.read_csv(cache_path)
-    raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
-    raw = raw[raw["status"] == "FINISHED"].copy()
-    raw = raw.rename(columns={k: v for k, v in RENAME_COLS.items() if k in raw.columns})
-    for col in ["emb_dim", "n_layers", "vocab_size"]:
-        raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
-    raw["lr"]         = raw["lr"].astype(float)
-    raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
-    raw["architecture"] = raw.apply(arch_label, axis=1)
-    raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS, keep="first")
+    try:
+        raw = pd.read_csv(f"{REMOTE_BASE}/{cache_path.relative_to('runs_csvs')}")
+    except Exception:
+        raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
+        raw = raw[raw["status"] == "FINISHED"].copy()
+        raw = raw.rename(columns={k: v for k, v in RENAME_COLS.items() if k in raw.columns})
+        for col in ["emb_dim", "n_layers", "vocab_size"]:
+            raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
+        raw["lr"]         = raw["lr"].astype(float)
+        raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
+        raw["architecture"] = raw.apply(arch_label, axis=1)
+        raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS, keep="first")
     raw.to_csv(cache_path, index=False)
     return raw
 
 # clinc150 avec OOS (151 classes) — expérience d'origine
-df = fetch_runs("clinc150", Path("results/clinc150/runs.csv"))
+df = fetch_runs("clinc150", Path("runs_csvs/clinc150/runs.csv"))
 
 # clinc150 sans OOS (150 classes) — expérience clinc150_noos
-df_noos = fetch_runs("clinc150_noos", Path("results/clinc150/runs_no_oos.csv"))
+df_noos = fetch_runs("clinc150_noos", Path("runs_csvs/clinc150/runs_no_oos.csv"))
 
 df = df_noos  # le rapport utilise la version sans OOS
 
@@ -789,18 +794,7 @@ import json
 with open("assets/clinc150_domains.json") as f:
     INTENT_TO_DOMAIN = json.load(f)
 
-# Per-class correctness count across all 6 models
-correctness = {}
-for c in IN_SCOPE:
-    correctness[c] = sum(
-        int((preds_by_arch[a]["y_pred"][preds_by_arch[a]["y_test"] == c] == c).all()
-            if (preds_by_arch[a]["y_test"] == c).sum() == 0
-            else (preds_by_arch[a]["y_pred"][preds_by_arch[a]["y_test"] == c] == c).mean() > 0.5)
-        for a in ARCHS_AVAIL
-    )
-
-# Actually: count models where per-class accuracy > 0.5
-n_models = len(ARCHS_AVAIL)
+# Per-class accuracy across all 6 models, one score list per class
 class_scores = {}
 for c in IN_SCOPE:
     scores = []
