@@ -892,49 +892,53 @@ from pathlib import Path
 import mlflow
 import pandas as pd
 
-CACHE_PATH = Path("results/amazon/runs.csv")
+REMOTE_BASE = "https://minio.lab.sspcloud.fr/projet-text-classif/runs_csvs"
+CACHE_PATH = Path("runs_csvs/amazon/runs.csv")
 CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+def arch_label(row):
+    la = str(row["n_heads_label_attn"]) == "4"
+    if row["n_layers"] == 0:
+        return "FastText + Label Attention" if la else "FastText"
+    suffix = " + Label Attention" if la else ""
+    return f"FATE (L={row['n_layers']}){suffix}"
 
 if CACHE_PATH.exists():
     df = pd.read_csv(CACHE_PATH)
     if "metrics.train_time_s" in df.columns:
         df = df.rename(columns={"metrics.train_time_s": "train_time_s"})
 else:
-    df = mlflow.search_runs(experiment_names=["amazon"], max_results=2000)
-    df = df[df["status"] == "FINISHED"].copy()
-    df = df.rename(columns={
-        "params.emb_dim":                  "emb_dim",
-        "params.n_layers":                 "n_layers",
-        "params.n_head":                   "n_head",
-        "params.n_heads_label_attention":  "n_heads_label_attn",
-        "params.vocab_size":               "vocab_size",
-        "params.lr":                       "lr",
-        "metrics.num_params":              "num_params",
-        "metrics.test_accuracy":           "test_accuracy",
-        "metrics.test_f1_macro":           "test_f1_macro",
-        "metrics.train_time_s":            "train_time_s",
-    })
+    try:
+        df = pd.read_csv(f"{REMOTE_BASE}/amazon/runs.csv")
+    except Exception:
+        df = mlflow.search_runs(experiment_names=["amazon"], max_results=2000)
+        df = df[df["status"] == "FINISHED"].copy()
+        df = df.rename(columns={
+            "params.emb_dim":                  "emb_dim",
+            "params.n_layers":                 "n_layers",
+            "params.n_head":                   "n_head",
+            "params.n_heads_label_attention":  "n_heads_label_attn",
+            "params.vocab_size":               "vocab_size",
+            "params.lr":                       "lr",
+            "metrics.num_params":              "num_params",
+            "metrics.test_accuracy":           "test_accuracy",
+            "metrics.test_f1_macro":           "test_f1_macro",
+            "metrics.train_time_s":            "train_time_s",
+        })
 
-    client = mlflow.MlflowClient()
-    def get_min_val_loss(run_id):
-        history = client.get_metric_history(run_id, "val_loss")
-        return min(m.value for m in history) if history else None
+        client = mlflow.MlflowClient()
+        def get_min_val_loss(run_id):
+            history = client.get_metric_history(run_id, "val_loss")
+            return min(m.value for m in history) if history else None
 
-    df["min_val_loss"] = df["run_id"].apply(get_min_val_loss)
+        df["min_val_loss"] = df["run_id"].apply(get_min_val_loss)
 
-    for col in ["emb_dim", "n_layers", "vocab_size"]:
-        df[col] = df[col].astype(int)
-    df["lr"] = df["lr"].astype(float)
-    df["num_params"] = df["num_params"].astype(int)
+        for col in ["emb_dim", "n_layers", "vocab_size"]:
+            df[col] = df[col].astype(int)
+        df["lr"] = df["lr"].astype(float)
+        df["num_params"] = df["num_params"].astype(int)
+        df["architecture"] = df.apply(arch_label, axis=1)
 
-    def arch_label(row):
-        la = str(row["n_heads_label_attn"]) == "4"
-        if row["n_layers"] == 0:
-            return "FastText + Label Attention" if la else "FastText"
-        suffix = " + Label Attention" if la else ""
-        return f"FATE (L={row['n_layers']}){suffix}"
-
-    df["architecture"] = df.apply(arch_label, axis=1)
     df.to_csv(CACHE_PATH, index=False)
 
 COLORS = {
@@ -1768,27 +1772,32 @@ def arch_label_naf(row):
     suffix = " + Label Attention" if la else ""
     return f"FATE (L={row['n_layers']}){suffix}"
 
+REMOTE_BASE = "https://minio.lab.sspcloud.fr/projet-text-classif/runs_csvs"
+
 def fetch_runs_naf(experiment_name: str, cache_path: Path, train_fraction: float) -> pd.DataFrame:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
         return pd.read_csv(cache_path)
-    raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
-    raw = raw[raw["status"] == "FINISHED"].copy()
-    raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
-    raw = raw.rename(columns={k: v for k, v in RENAME_COLS.items() if k in raw.columns})
-    for col in ["emb_dim", "n_layers", "vocab_size"]:
-        raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
-    raw["lr"]         = raw["lr"].astype(float)
-    raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
-    raw["architecture"] = raw.apply(arch_label_naf, axis=1)
-    raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS, keep="first")
+    try:
+        raw = pd.read_csv(f"{REMOTE_BASE}/{cache_path.relative_to('runs_csvs')}")
+    except Exception:
+        raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
+        raw = raw[raw["status"] == "FINISHED"].copy()
+        raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
+        raw = raw.rename(columns={k: v for k, v in RENAME_COLS.items() if k in raw.columns})
+        for col in ["emb_dim", "n_layers", "vocab_size"]:
+            raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
+        raw["lr"]         = raw["lr"].astype(float)
+        raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
+        raw["architecture"] = raw.apply(arch_label_naf, axis=1)
+        raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS, keep="first")
     raw.to_csv(cache_path, index=False)
     return raw
 
-df_frac13  = fetch_runs_naf("naf", Path("results/naf/runs_frac13.csv"),  train_fraction=0.13)
-df_frac26  = fetch_runs_naf("naf", Path("results/naf/runs_frac26.csv"),  train_fraction=0.26)
-df_frac52  = fetch_runs_naf("naf", Path("results/naf/runs_frac52.csv"),  train_fraction=0.52)
-df_frac100 = fetch_runs_naf("naf", Path("results/naf/runs_frac100.csv"), train_fraction=1.0)
+df_frac13  = fetch_runs_naf("naf", Path("runs_csvs/naf/runs_frac13.csv"),  train_fraction=0.13)
+df_frac26  = fetch_runs_naf("naf", Path("runs_csvs/naf/runs_frac26.csv"),  train_fraction=0.26)
+df_frac52  = fetch_runs_naf("naf", Path("runs_csvs/naf/runs_frac52.csv"),  train_fraction=0.52)
+df_frac100 = fetch_runs_naf("naf", Path("runs_csvs/naf/runs_frac100.csv"), train_fraction=1.0)
 ```
 
 ```{python}
@@ -2804,27 +2813,32 @@ def arch_label_ml(row):
     la = str(row["n_heads_label_attn"]) == "4"
     return "FastText + Label Attention" if la else "FastText"
 
+REMOTE_BASE = "https://minio.lab.sspcloud.fr/projet-text-classif/runs_csvs"
+
 def fetch_runs_ml(experiment_name: str, cache_path: Path, train_fraction: float) -> pd.DataFrame:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
         return pd.read_csv(cache_path)
-    raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
-    raw = raw[raw["status"] == "FINISHED"].copy()
-    raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
-    raw = raw.rename(columns={k: v for k, v in RENAME_COLS_ML.items() if k in raw.columns})
-    for col in ["emb_dim", "vocab_size"]:
-        raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
-    raw["lr"]         = raw["lr"].astype(float)
-    raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
-    raw["architecture"] = raw.apply(arch_label_ml, axis=1)
-    raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS_ML, keep="first")
+    try:
+        raw = pd.read_csv(f"{REMOTE_BASE}/{cache_path.relative_to('runs_csvs')}")
+    except Exception:
+        raw = mlflow.search_runs(experiment_names=[experiment_name], max_results=5000)
+        raw = raw[raw["status"] == "FINISHED"].copy()
+        raw = raw[pd.to_numeric(raw["params.train_fraction"], errors="coerce") == train_fraction]
+        raw = raw.rename(columns={k: v for k, v in RENAME_COLS_ML.items() if k in raw.columns})
+        for col in ["emb_dim", "vocab_size"]:
+            raw[col] = pd.to_numeric(raw[col], errors="coerce").astype("Int64")
+        raw["lr"]         = raw["lr"].astype(float)
+        raw["num_params"] = pd.to_numeric(raw["num_params"], errors="coerce").astype("Int64")
+        raw["architecture"] = raw.apply(arch_label_ml, axis=1)
+        raw = raw.sort_values("min_val_loss").drop_duplicates(subset=KEY_COLS_ML, keep="first")
     raw.to_csv(cache_path, index=False)
     return raw
 
-df_ml_frac13  = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac13.csv"),  train_fraction=0.13)
-df_ml_frac26  = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac26.csv"),  train_fraction=0.26)
-df_ml_frac52  = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac52.csv"),  train_fraction=0.52)
-df_ml_frac100 = fetch_runs_ml("naf_multilevel", Path("results/naf_multilevel/runs_frac100.csv"), train_fraction=1.0)
+df_ml_frac13  = fetch_runs_ml("naf_multilevel", Path("runs_csvs/naf_multilevel/runs_frac13.csv"),  train_fraction=0.13)
+df_ml_frac26  = fetch_runs_ml("naf_multilevel", Path("runs_csvs/naf_multilevel/runs_frac26.csv"),  train_fraction=0.26)
+df_ml_frac52  = fetch_runs_ml("naf_multilevel", Path("runs_csvs/naf_multilevel/runs_frac52.csv"),  train_fraction=0.52)
+df_ml_frac100 = fetch_runs_ml("naf_multilevel", Path("runs_csvs/naf_multilevel/runs_frac100.csv"), train_fraction=1.0)
 ```
 
 ```{python}
