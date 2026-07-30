@@ -4,4 +4,84 @@ title: "Presentations"
 
 Slide decks associated with this project.
 
-- [End-of-Internship Presentation — INSEE, July 28, 2026](slides/end-of-internship-presentation.html)
+```{=html}
+<style>
+.pres-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 1.6rem 0 2.2rem;
+}
+.pres-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  border: 1px solid #dde3ec;
+  border-left: 4px solid #1565C0;
+  border-radius: 12px;
+  padding: 22px 26px;
+  background: #fafbff;
+  transition: box-shadow .2s, transform .2s, border-color .2s;
+}
+.pres-card:hover {
+  box-shadow: 0 6px 20px rgba(0,0,0,.08);
+  transform: translateY(-2px);
+  border-color: #90a4ae;
+}
+.pres-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: #1565C0;
+  margin-bottom: 6px;
+}
+.pres-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1a2a4a;
+  margin-bottom: 6px;
+}
+.pres-meta {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 10px;
+}
+.pres-desc {
+  font-size: 13px;
+  color: #555;
+  line-height: 1.55;
+  max-width: 560px;
+}
+.pres-cta {
+  flex-shrink: 0;
+  display: inline-block;
+  text-decoration: none !important;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff !important;
+  background: #1565C0;
+  border-radius: 20px;
+  padding: 9px 20px;
+  white-space: nowrap;
+  transition: background .2s;
+}
+.pres-cta:hover { background: #0d47a1; }
+</style>
+
+<div class="pres-list">
+
+  <div class="pres-card">
+    <div>
+      <div class="pres-eyebrow">Slide deck</div>
+      <div class="pres-title">End-of-Internship Presentation</div>
+      <div class="pres-meta">INSEE · July 28, 2026</div>
+      <div class="pres-desc">End-of-internship presentation given to the INSEE team.</div>
+    </div>
+    <a class="pres-cta" href="slides/end-of-internship-presentation/end-of-internship-presentation.html">Open presentation &rarr;</a>
+  </div>
+
+</div>
+```
