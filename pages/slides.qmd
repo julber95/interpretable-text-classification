@@ -76,6 +76,26 @@ Slide decks associated with this project.
   <div class="pres-card">
     <div>
       <div class="pres-eyebrow">Slide deck</div>
+      <div class="pres-title">Internship Defense (Short Version)</div>
+      <div class="pres-meta">Master 1 IDD · Université Paris-Dauphine – PSL · September 2, 2026</div>
+      <div class="pres-desc">Condensed ~15-slide version used for the oral defense.</div>
+    </div>
+    <a class="pres-cta" href="slides/internship-defense-short/internship-defense-short.html">Open presentation &rarr;</a>
+  </div>
+
+  <div class="pres-card">
+    <div>
+      <div class="pres-eyebrow">Slide deck</div>
+      <div class="pres-title">Internship Defense (Full Version)</div>
+      <div class="pres-meta">Master 1 IDD · Université Paris-Dauphine – PSL · September 2, 2026</div>
+      <div class="pres-desc">Complete, detailed defense presentation for the end of the Master's internship.</div>
+    </div>
+    <a class="pres-cta" href="slides/internship-defense/internship-defense.html">Open presentation &rarr;</a>
+  </div>
+
+  <div class="pres-card">
+    <div>
+      <div class="pres-eyebrow">Slide deck</div>
       <div class="pres-title">End-of-Internship Presentation</div>
       <div class="pres-meta">INSEE · July 28, 2026</div>
       <div class="pres-desc">End-of-internship presentation given to the INSEE team.</div>
